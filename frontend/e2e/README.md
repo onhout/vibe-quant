@@ -59,6 +59,16 @@ with its own 60 s timeout.
   when an indicator is added to / removed from the GA pool.
 - `data-management.spec.ts` — the /data page: ingest form, download history and the
   symbol-coverage table (the last one exercises the archive scan; 60 s timeout).
+- `paper-trading.spec.ts` — the "Validated only" checkbox is asserted as a filter: the Strategy
+  select's options must equal the API-derived set (strategies with a completed validation run)
+  with the box checked, all strategies unchecked, and the validated set again. The Auto-Stop
+  inputs must render their defaults (20 / 5 / 5 / 3).
+- `results-analysis.spec.ts` — the Overfitting Filters card on `/results/<id>`: the first discovery
+  run on the DB copy with gate data (picked by data, not id) must show the PASS/FAIL/N/A verdict for
+  Walk-Forward (discovery verdict, else efficiency > 0.5), Cross-Window and Cross-Regime, and the
+  value for Purged K-Fold, DSR and Bootstrap (their thresholds are covered by
+  `src/__tests__/audit-results-display.test.ts`). Without a gate-data run the test skips with a
+  message. A completed validation run (no gate data) must show "Not Run" and N/A rows.
 - Page specs: `backtest-launch`, `discovery`, `navigation`, `paper-trading`,
   `results-analysis`, `settings`, `strategy-management`, `workflow`.
 
