@@ -1115,6 +1115,9 @@ def main() -> int:
 
         num_seeds = max(1, args.num_seeds)
         progress_file = str(log_dir() / f"discovery_{args.run_id}_progress.json")
+        # A leftover file (another DB's run with the same id) would be served by
+        # the progress API as ours until our first generation overwrites it.
+        Path(progress_file).unlink(missing_ok=True)
 
         if num_seeds == 1:
             # Single-seed run (default)

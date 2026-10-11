@@ -899,3 +899,26 @@ def test_cross_window_months_equals_form_parses_negative() -> None:
 
     args = build_parser().parse_args(["--run-id", "0", "--cross-window-months=-15,3"])
     assert parse_cross_window_months(args.cross_window_months) == [-15, 3]
+
+
+def test_stale_progress_file_never_shown_for_a_new_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A progress file left by another DB's run with the same id must not survive
+    into this run: the API would show its generation/best fitness as ours."""
+    import json
+
+    from vibe_quant.utils import log_dir
+
+    monkeypatch.setenv("VIBE_QUANT_LOG_DIR", str(tmp_path / "logs"))  # xdist workers share one
+    db_path = tmp_path / "state.db"
+    run_id = _create_discovery_run(db_path)
+    stale = log_dir() / f"discovery_{run_id}_progress.json"
+    stale.write_text(json.dumps({"generation": 1, "max_generations": 3, "best_fitness": 0.10225}))
+    # Fails in generation 1, before the pipeline writes any progress of its own.
+    monkeypatch.setattr("vibe_quant.discovery.__main__._mock_backtest", _always_raises)
+    monkeypatch.setattr(
+        "sys.argv", _seed_argv(db_path, run_id, "--seed", "1", "--max-workers", "-1")
+    )
+    assert main() != 0
+    assert not stale.exists()
