@@ -13,12 +13,16 @@ Prefix EVERY shell command with `cd <absolute worktree path> && `. Run Python as
 GOAL: <one sentence: the exact change or extraction>
 
 FILES YOU MAY EDIT OR CREATE (inside the worktree): <exact paths>. Leave every other file unchanged.
-FILES TO READ FIRST: <exact paths, the fewest that suffice>
+FILES TO READ FIRST: <exact paths + line ranges, the fewest that suffice — read them all in ONE turn>
 
 SPEED RULES (measured: one model turn costs 4–10 s; the full test suite costs ~3 min):
 - Batch independent reads/greps/commands into ONE turn (parallel tool calls). Read whole functions or the line ranges given below, not 70-line slices. No todo lists.
 - While iterating, run only the targeted test files. The full suite runs ONCE, inside swarm-check at the end — do not also run `pytest tests/unit` separately.
+- The gate is main's `scripts/agents/swarm-check.sh <worktree>`. Only when your task changes the gate itself (`scripts/agents/swarm_check.py`), prove it with the worktree's copy: `<worktree>/scripts/agents/swarm-check.sh <worktree>`.
 - Chain checks in one shell call: `ruff check && mypy && <targeted pytest>`.
+- E2E: iterate with `playwright test <spec> -g "<scenario>"`; run the full spec once at the end.
+- Tests of anything launched asynchronously (API returns 201/running, work happens in a subprocess) must poll the run's FINAL status and fail on `failed` — a 201 proves nothing.
+- Mutation self-check: at most 3 mutants, only on the lines you changed, each run against the targeted test file only.
 
 FACTS YOU NEED (exact code excerpts / line ranges, so you don't have to search):
 - <pasted schema / signature / convention>
@@ -35,7 +39,7 @@ STEPS:
 
 DONE WHEN: <checkable criterion: command + expected output>.
 
-GIT: <either "Do not commit." or "Commit in the worktree: `git add <paths> && git commit -m '<msg> (<bead-id>)'`">. Never push, never touch main.
+GIT: <either "Do not commit." or "Commit in the worktree with a verbose message in the format of docs/orchestration/prompts/commit-message.md (Why / What / How / Decisions / Verification): `git add <paths> && git commit -F <msgfile>`">. Never push, never touch main.
 
 <bus-protocol block from docs/orchestration/prompts/bus-protocol.md, placeholders filled: {AGENT}=<slug>, {BUS}=<abs job bus dir>, {REPO}=/Users/verebelyin/projects/vibe-quant, {PEERS}=<parallel agents: id: scope; ...>>
 

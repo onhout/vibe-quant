@@ -87,6 +87,7 @@ Good fits for the cheaper `fast` tier: Pine/FMZ spec triage to JSON, first-draft
 
 Start from [`prompts/cmd-task.md`](prompts/cmd-task.md). Cheap models follow a brief literally, so:
 
+- **Paste the code, don't point at it.** Each DeepSeek turn costs 4–10 s and 69% of its turns used a single tool (job 20261010-backlog). Paste the exact line-numbered excerpts it must change or call, give read lists with line ranges, and tell it to batch reads in one turn and skip todo lists.
 - **Self-contained.** Paste the facts the model needs: file paths, the schema, 1–2 worked examples, the 2–3 gotchas that apply. Keep CLAUDE.md out of its reading list; at ~19KB it's mostly noise for a narrow task.
 - **Worktree first.** Absolute worktree path and the `cd <worktree> &&` rule (see § Workspace).
 - **Positive scope.** "Edit only `a.py` and `tests/test_a.py`" rather than a list of forbidden things.

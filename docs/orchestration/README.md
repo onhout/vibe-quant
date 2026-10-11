@@ -114,7 +114,7 @@ comms: asked=<n> dms=<n> replies=<n>; board posts relied on: <ids or none>
 
 | Tool | What | Used by |
 |---|---|---|
-| `scripts/agents/swarm-check.sh <wt> [--scope globs] [--base main]` | automated pre-review gate: scope, clean tree, ruff, mypy, targeted tests, exactness (any `vibe_quant/` change outside UI/IO dirs), frontend; fails closed (bad base, empty diff, git errors) | chief, before every review |
+| `scripts/agents/swarm-check.sh <wt> [--scope globs] [--base main] [--no-cache]` | PASS is cached per HEAD+base+scope+tool hash (clean tree only), so the chief's re-run after the maker's is instant; automated pre-review gate: scope, clean tree, ruff, mypy, targeted tests, exactness (any `vibe_quant/` change outside UI/IO dirs), frontend; fails closed (bad base, empty diff, git errors) | chief, before every review |
 | `scripts/agents/stall_watch.py watch --job <job_dir> [--kill]` | legacy: flags `cmd-task.sh` processes only (it cannot see T3 subagents). For T3 Command Code children use T3 notifications, `task_status` when overdue, and `git -C <worktree> status` | manual one-offs |
 | `scripts/agents/telemetry.py record/ingest-cmd-log/review/report` | cross-job task ledger `docs/orchestration/telemetry/tasks.jsonl` (committed): rounds-to-done, pass-1 rate, tokens, wall time by model/runtime/agent | chief (`record --runtime cmd` per T3 Command Code round, reviews, report); cmd-task.sh (auto, legacy) |
 | `scripts/agents/bus.py needs-user ask/open/answer --user` | queue of decisions only the user makes; shown first in `digest` and the SessionStart brief | any agent asks; only the user closes |
@@ -131,6 +131,8 @@ Route each diff to the cheapest checker that can judge it (user, 2026-10-09). **
 | fitness/metric/fill/funding/indicator math, look-ahead-sensitive code, data writes, codegen, NT lifecycle, schema, concurrency or process control (signals, kill, locks), risk/paper/live, NEW scripts/modules, anything > ~150 hand-written non-test lines | `reviewer` (Sonnet) |
 | design reviews (architect handoffs) | `reviewer` with `model: "opus"`, `mode: design` |
 | a `reviewer-lite` escalation, or a later reviewer finding that lite missed | `reviewer` (Sonnet); post the miss to `#self-improvement` |
+
+**Nits never cost a round:** surviving mutants / test-teeth gaps outside money code (tooling, UI copy, docs, test helpers) go to a follow-up bead (user 2026-10-11). Mutation work is capped (≤ 5 mutants, ~3 min per review; makers ≤ 3).
 
 **Fix route** (from the reviewer's `fix-route:` line): `deepseek` → re-delegate to DeepSeek via T3 with the findings verbatim (new `clientRequestId`); `sonnet` (any blocking finding, ≥ 3 should-fix, 2nd failed round, or the maker misunderstood the task) → a Sonnet `implementer` fixes with the findings verbatim, and the fix delta goes to a **fresh** reviewer.
 
@@ -168,7 +170,7 @@ Six gated phases:
 3. **Plan → beads.** The orchestrator files one bead per task (`bd create`) with the acceptance criteria as user-testable checks.
 4. **Build.** One DeepSeek T3 subagent per bead (Command Code, `deepseek/deepseek-v4.1-flash`), each in its own worktree, test-first. Parallelise only tasks the plan marks as disjoint. The Sonnet `implementer` only fixes (`fix-route: sonnet`) or takes over after a stall / 2 failed rounds.
 5. **Check.** `reviewer` (spec + quality verdicts) and `verifier` (gates + exactness proofs) run on each diff. A blocking finding sends the task back to an implementer with the finding pasted into the brief. After 3 rounds on the same task, escalate: switch model, re-scope, or ask the user.
-6. **Land.** The orchestrator merges worktrees one at a time onto the job branch, runs the full gate set on the merged result, squash-merges it to `main` (one commit per job), closes beads and pushes (CLAUDE.md § Session Completion).
+6. **Land.** The orchestrator merges worktrees one at a time onto the job branch, runs the full gate set on the merged result, lands it on `main` as one verbose commit per task ([`prompts/commit-message.md`](prompts/commit-message.md); never one squash per job), closes beads and pushes (CLAUDE.md § Session Completion).
 
 ### Research lane
 
