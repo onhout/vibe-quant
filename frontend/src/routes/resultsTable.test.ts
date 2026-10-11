@@ -1,0 +1,146 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+import type { RunSummaryItem } from "@/api/generated/models";
+import { RunsTable } from "./results";
+
+function run(over: Partial<RunSummaryItem> & { run_id: number }): RunSummaryItem {
+  return {
+    run_mode: "validation",
+    symbols: ["BTCUSDT"],
+    timeframe: "4h",
+    status: "completed",
+    ...over,
+  };
+}
+
+const RUNS: RunSummaryItem[] = [
+  run({
+    run_id: 1,
+    strategy_name: "strat-a",
+    sharpe_ratio: 1,
+    total_return: 0.3,
+    created_at: "2026-01-03T00:00:00Z",
+  }),
+  run({
+    run_id: 2,
+    strategy_name: "strat-b",
+    sharpe_ratio: 3,
+    total_return: -0.1,
+    created_at: "2026-01-01T00:00:00Z",
+  }),
+  run({
+    run_id: 3,
+    strategy_name: "strat-c",
+    sharpe_ratio: 2,
+    total_return: 0.05,
+    created_at: "2026-01-02T00:00:00Z",
+  }),
+];
+
+function rowOrder(sorting: { id: string; desc: boolean }[], runs = RUNS): string[] {
+  const html = renderToStaticMarkup(
+    createElement(RunsTable, {
+      runs,
+      sorting,
+      onSortingChange: () => undefined,
+      onRowClick: () => undefined,
+    }),
+  );
+  return [...html.matchAll(/strat-[a-z]/g)].map((m) => m[0]);
+}
+
+describe("results RunsTable sorting", () => {
+  it("sorts by sharpe descending and ascending", () => {
+    expect(rowOrder([{ id: "sharpe_ratio", desc: true }])).toEqual([
+      "strat-b",
+      "strat-c",
+      "strat-a",
+    ]);
+    expect(rowOrder([{ id: "sharpe_ratio", desc: false }])).toEqual([
+      "strat-a",
+      "strat-c",
+      "strat-b",
+    ]);
+  });
+
+  it("sorts by created_at (the page default, newest first)", () => {
+    expect(rowOrder([{ id: "created_at", desc: true }])).toEqual(["strat-a", "strat-c", "strat-b"]);
+  });
+
+  it("sorts text columns alphabetically", () => {
+    const reversed = [...RUNS].reverse();
+    expect(rowOrder([{ id: "strategy_name", desc: false }], reversed)).toEqual([
+      "strat-a",
+      "strat-b",
+      "strat-c",
+    ]);
+  });
+
+  it("renders every column's formatted cell for a row", () => {
+    const html = renderToStaticMarkup(
+      createElement(RunsTable, {
+        runs: [RUNS[1] as RunSummaryItem],
+        sorting: [],
+        onSortingChange: () => undefined,
+        onRowClick: () => undefined,
+      }),
+    );
+    expect(html).toContain("-10.00%");
+    expect(html).toContain("3.00");
+    expect(html).toContain("BTCUSDT");
+  });
+
+  it("keeps null metrics at one end, not interleaved, when sorting descending", () => {
+    const withNull = [
+      ...RUNS,
+      run({ run_id: 4, strategy_name: "strat-d", sharpe_ratio: null, created_at: null }),
+    ];
+    const order = rowOrder([{ id: "sharpe_ratio", desc: true }], withNull);
+    expect(order.slice(0, 3)).toEqual(["strat-b", "strat-c", "strat-a"]);
+    expect(order).toHaveLength(4);
+  });
+
+  describe("strategy name sorting is explicit natural/case-insensitive, missing last", () => {
+    const named = (names: (string | null)[]) =>
+      names.map((strategy_name, i) => run({ run_id: i + 1, strategy_name }));
+    const order = (names: (string | null)[], desc: boolean) => {
+      const html = renderToStaticMarkup(
+        createElement(RunsTable, {
+          runs: named(names),
+          sorting: [{ id: "strategy_name", desc }],
+          onSortingChange: () => undefined,
+          onRowClick: () => undefined,
+        }),
+      );
+      return [...html.matchAll(/strat-\d+|alpha|Beta|Unnamed run/g)].map((m) => m[0]);
+    };
+
+    it("orders strat-2 before strat-10 in both directions", () => {
+      const names = ["strat-10", "strat-2", "strat-1"];
+      expect(order(names, false)).toEqual(["strat-1", "strat-2", "strat-10"]);
+      expect(order(names, true)).toEqual(["strat-10", "strat-2", "strat-1"]);
+    });
+
+    it("applies natural order even when the first ten rows have no digits", () => {
+      // v9 auto-inference samples the first 10 rows and would pick plain text here
+      const names = [..."abcdefghij"].map((c) => `alpha-${c}`).concat(["strat-10", "strat-2"]);
+      const html = renderToStaticMarkup(
+        createElement(RunsTable, {
+          runs: named(names),
+          sorting: [{ id: "strategy_name", desc: false }],
+          onSortingChange: () => undefined,
+          onRowClick: () => undefined,
+        }),
+      );
+      const got = [...html.matchAll(/strat-\d+/g)].map((m) => m[0]);
+      expect(got).toEqual(["strat-2", "strat-10"]);
+    });
+
+    it("ignores case and keeps null/empty names last whichever the direction", () => {
+      const names = ["Beta", null, "alpha", ""];
+      expect(order(names, false)).toEqual(["alpha", "Beta", "Unnamed run", "Unnamed run"]);
+      expect(order(names, true)).toEqual(["Beta", "alpha", "Unnamed run", "Unnamed run"]);
+    });
+  });
+});

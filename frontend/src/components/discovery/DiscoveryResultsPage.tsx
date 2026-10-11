@@ -3,11 +3,15 @@ import {
   type ColumnDef,
   type SortingState,
   type ExpandedState,
+  type OnChangeFn,
+  type SortFn,
+  createExpandedRowModel,
+  createSortedRowModel,
   flexRender,
-  getCoreRowModel,
-  getExpandedRowModel,
-  getSortedRowModel,
-  useReactTable,
+  rowExpandingFeature,
+  rowSortingFeature,
+  tableFeatures,
+  useTable,
 } from "@tanstack/react-table";
 import { ArrowUpDown, ChevronRight, Square } from "lucide-react";
 import { toast } from "sonner";
@@ -89,7 +93,24 @@ interface TableMeta {
   isKilling: boolean;
 }
 
-const columns: ColumnDef<DiscoveryJobResponse>[] = [
+const features = tableFeatures({
+  rowSortingFeature,
+  rowExpandingFeature,
+  sortedRowModel: createSortedRowModel(),
+  expandedRowModel: createExpandedRowModel(),
+  tableMeta: {} as TableMeta,
+});
+
+/** Chronological sort where a missing started_at (queued/running job) counts as newest. */
+const startedAtSort: SortFn<typeof features, DiscoveryJobResponse> = (rowA, rowB, columnId) => {
+  const a = rowA.getValue<string | null>(columnId);
+  const b = rowB.getValue<string | null>(columnId);
+  const at = a ? Date.parse(a) : Number.POSITIVE_INFINITY;
+  const bt = b ? Date.parse(b) : Number.POSITIVE_INFINITY;
+  return at === bt ? 0 : at < bt ? -1 : 1;
+};
+
+const columns: ColumnDef<typeof features, DiscoveryJobResponse>[] = [
   {
     id: "expander",
     header: "",
@@ -104,7 +125,6 @@ const columns: ColumnDef<DiscoveryJobResponse>[] = [
         />
       );
     },
-    size: 32,
     enableSorting: false,
   },
   {
@@ -205,6 +225,7 @@ const columns: ColumnDef<DiscoveryJobResponse>[] = [
   },
   {
     accessorKey: "started_at",
+    sortFn: startedAtSort,
     header: ({ column }) => <SortHeader column={column}>Started</SortHeader>,
     cell: ({ row }) => (
       <span className="text-xs text-muted-foreground">
@@ -225,7 +246,7 @@ const columns: ColumnDef<DiscoveryJobResponse>[] = [
     cell: ({ row, table }) => {
       const isRunning = row.original.status.toLowerCase() === "running";
       if (!isRunning) return null;
-      const meta = table.options.meta as TableMeta | undefined;
+      const meta = table.options.meta;
       return (
         <Button
           type="button"
@@ -253,6 +274,104 @@ function TableSkeleton() {
         // biome-ignore lint/suspicious/noArrayIndexKey: skeleton rows
         <Skeleton key={i} className="h-12 w-full" />
       ))}
+    </div>
+  );
+}
+
+export function DiscoveryJobsTable({
+  jobs,
+  sorting,
+  onSortingChange,
+  expanded,
+  onExpandedChange,
+  onKill,
+  isKilling,
+}: {
+  jobs: DiscoveryJobResponse[];
+  sorting: SortingState;
+  onSortingChange: OnChangeFn<SortingState>;
+  expanded: ExpandedState;
+  onExpandedChange: OnChangeFn<ExpandedState>;
+  onKill: (id: number) => void;
+  isKilling: boolean;
+}) {
+  const table = useTable({
+    features,
+    data: jobs,
+    columns,
+    state: { sorting, expanded },
+    onSortingChange,
+    onExpandedChange,
+    getRowCanExpand: (row) => {
+      const s = row.original.status.toLowerCase();
+      return s === "completed" || s === "failed";
+    },
+    getRowId: (row) => String(row.run_id),
+    meta: { onKill, isKilling } satisfies TableMeta,
+  });
+
+  return (
+    <div className="overflow-auto rounded-md border">
+      <Table>
+        <TableHeader>
+          {table.getHeaderGroups().map((hg) => (
+            <TableRow key={hg.id}>
+              {hg.headers.map((header) => (
+                <TableHead key={header.id}>
+                  {header.isPlaceholder
+                    ? null
+                    : flexRender(
+                        header.column.columnDef.header,
+                        header.getContext(),
+                      )}
+                </TableHead>
+              ))}
+            </TableRow>
+          ))}
+        </TableHeader>
+        <TableBody>
+          {table.getRowModel().rows.map((row) => (
+            <Fragment key={row.id}>
+              <TableRow
+                className={cn(
+                  row.getCanExpand() && "cursor-pointer hover:bg-muted/50",
+                  row.getIsExpanded() && "bg-muted/30",
+                )}
+                onClick={() => row.getCanExpand() && row.toggleExpanded()}
+              >
+                {row.getAllCells().map((cell) => (
+                  <TableCell key={cell.id}>
+                    {flexRender(
+                      cell.column.columnDef.cell,
+                      cell.getContext(),
+                    )}
+                  </TableCell>
+                ))}
+              </TableRow>
+              {row.getIsExpanded() && (
+                <TableRow>
+                  <TableCell colSpan={columns.length} className="p-0">
+                    <div className="border-t border-border bg-muted/10 p-4">
+                      {row.original.status.toLowerCase() === "failed" ? (
+                        <div className="space-y-2">
+                          <h4 className="text-sm font-semibold text-red-400">
+                            Error Details
+                          </h4>
+                          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-red-500/20 bg-red-950/20 p-3 font-mono text-xs text-red-300">
+                            {row.original.error_message || "No error details available. Check server logs for run #" + row.original.run_id + "."}
+                          </pre>
+                        </div>
+                      ) : (
+                        <DiscoveryResults runId={row.original.run_id} />
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}
+            </Fragment>
+          ))}
+        </TableBody>
+      </Table>
     </div>
   );
 }
@@ -311,23 +430,6 @@ export function DiscoveryResultsPage() {
     [killMutation],
   );
 
-  const table = useReactTable({
-    data: filteredJobs,
-    columns,
-    state: { sorting, expanded },
-    onSortingChange: setSorting,
-    onExpandedChange: setExpanded,
-    getRowCanExpand: (row) => {
-      const s = row.original.status.toLowerCase();
-      return s === "completed" || s === "failed";
-    },
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getExpandedRowModel: getExpandedRowModel(),
-    getRowId: (row) => String(row.run_id),
-    meta: { onKill: handleKill, isKilling: killMutation.isPending } satisfies TableMeta,
-  });
-
   return (
     <div className="mx-auto max-w-7xl space-y-6">
       <h1 className="text-lg font-semibold text-foreground">Discovery Results</h1>
@@ -355,68 +457,15 @@ export function DiscoveryResultsPage() {
           description="Launch a discovery from the Discovery page to see results here."
         />
       ) : (
-        <div className="overflow-auto rounded-md border">
-          <Table>
-            <TableHeader>
-              {table.getHeaderGroups().map((hg) => (
-                <TableRow key={hg.id}>
-                  {hg.headers.map((header) => (
-                    <TableHead key={header.id}>
-                      {header.isPlaceholder
-                        ? null
-                        : flexRender(
-                            header.column.columnDef.header,
-                            header.getContext(),
-                          )}
-                    </TableHead>
-                  ))}
-                </TableRow>
-              ))}
-            </TableHeader>
-            <TableBody>
-              {table.getRowModel().rows.map((row) => (
-                <Fragment key={row.id}>
-                  <TableRow
-                    className={cn(
-                      row.getCanExpand() && "cursor-pointer hover:bg-muted/50",
-                      row.getIsExpanded() && "bg-muted/30",
-                    )}
-                    onClick={() => row.getCanExpand() && row.toggleExpanded()}
-                  >
-                    {row.getVisibleCells().map((cell) => (
-                      <TableCell key={cell.id}>
-                        {flexRender(
-                          cell.column.columnDef.cell,
-                          cell.getContext(),
-                        )}
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                  {row.getIsExpanded() && (
-                    <TableRow>
-                      <TableCell colSpan={columns.length} className="p-0">
-                        <div className="border-t border-border bg-muted/10 p-4">
-                          {row.original.status.toLowerCase() === "failed" ? (
-                            <div className="space-y-2">
-                              <h4 className="text-sm font-semibold text-red-400">
-                                Error Details
-                              </h4>
-                              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-red-500/20 bg-red-950/20 p-3 font-mono text-xs text-red-300">
-                                {row.original.error_message || "No error details available. Check server logs for run #" + row.original.run_id + "."}
-                              </pre>
-                            </div>
-                          ) : (
-                            <DiscoveryResults runId={row.original.run_id} />
-                          )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </Fragment>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+        <DiscoveryJobsTable
+          jobs={filteredJobs}
+          sorting={sorting}
+          onSortingChange={setSorting}
+          expanded={expanded}
+          onExpandedChange={setExpanded}
+          onKill={handleKill}
+          isKilling={killMutation.isPending}
+        />
       )}
     </div>
   );

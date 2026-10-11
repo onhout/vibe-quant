@@ -1,11 +1,14 @@
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ColumnDef,
+  createSortedRowModel,
   flexRender,
-  getCoreRowModel,
-  getSortedRowModel,
+  type OnChangeFn,
+  rowSortingFeature,
   type SortingState,
-  useReactTable,
+  sortFn_alphanumeric,
+  tableFeatures,
+  useTable,
 } from "@tanstack/react-table";
 import { ArrowUpDown } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -107,13 +110,25 @@ interface ColumnMetaWithClass {
   className?: string;
 }
 
-function columnClass(meta: unknown): string | undefined {
-  return (meta as ColumnMetaWithClass | undefined)?.className;
+function columnClass(meta: ColumnMetaWithClass | undefined): string | undefined {
+  return meta?.className;
 }
 
-const columns: ColumnDef<RunSummaryItem>[] = [
+const features = tableFeatures({
+  rowSortingFeature,
+  sortedRowModel: createSortedRowModel(),
+  sortFns: { alphanumeric: sortFn_alphanumeric },
+  columnMeta: {} as ColumnMetaWithClass,
+});
+
+const columns: ColumnDef<typeof features, RunSummaryItem>[] = [
   {
-    accessorKey: "strategy_name",
+    // Explicit string sort (natural, case-insensitive: strat-2 < strat-10); missing
+    // names go last in both directions. accessorFn maps null/"" to undefined for sortUndefined.
+    id: "strategy_name",
+    accessorFn: (row) => row.strategy_name || undefined,
+    sortFn: "alphanumeric",
+    sortUndefined: "last",
     header: ({ column }) => <SortHeader column={column}>Strategy</SortHeader>,
     cell: ({ row }) =>
       row.original.strategy_name ? (
@@ -255,7 +270,10 @@ const columns: ColumnDef<RunSummaryItem>[] = [
     ),
   },
   {
-    accessorKey: "created_at",
+    id: "created_at",
+    accessorFn: (row) => row.created_at || undefined,
+    sortFn: "alphanumeric",
+    sortUndefined: "last",
     header: ({ column }) => <SortHeader column={column}>Date</SortHeader>,
     cell: ({ row }) => (
       <span className="text-xs text-muted-foreground">{formatDate(row.original.created_at)}</span>
@@ -271,6 +289,67 @@ function TableSkeleton() {
         // biome-ignore lint/suspicious/noArrayIndexKey: skeleton rows
         <Skeleton key={i} className="h-12 w-full" />
       ))}
+    </div>
+  );
+}
+
+export function RunsTable({
+  runs,
+  sorting,
+  onSortingChange,
+  onRowClick,
+}: {
+  runs: RunSummaryItem[];
+  sorting: SortingState;
+  onSortingChange: OnChangeFn<SortingState>;
+  onRowClick: (runId: number) => void;
+}) {
+  const table = useTable({
+    features,
+    data: runs,
+    columns,
+    state: { sorting },
+    onSortingChange,
+  });
+
+  return (
+    <div className="overflow-auto rounded-md border">
+      <Table>
+        <TableHeader className="sticky top-0 z-10 bg-card">
+          {table.getHeaderGroups().map((hg) => (
+            <TableRow key={hg.id}>
+              {hg.headers.map((header) => (
+                <TableHead
+                  key={header.id}
+                  className={cn("whitespace-nowrap", columnClass(header.column.columnDef.meta))}
+                >
+                  {header.isPlaceholder
+                    ? null
+                    : flexRender(header.column.columnDef.header, header.getContext())}
+                </TableHead>
+              ))}
+            </TableRow>
+          ))}
+        </TableHeader>
+        <TableBody>
+          {table.getRowModel().rows.map((row) => (
+            <TableRow
+              key={row.id}
+              className="cursor-pointer"
+              onClick={() => onRowClick(row.original.run_id)}
+            >
+              {row.getAllCells().map((cell) => (
+                <TableCell
+                  key={cell.id}
+                  className={cn("whitespace-nowrap", columnClass(cell.column.columnDef.meta))}
+                >
+                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                </TableCell>
+              ))}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
     </div>
   );
 }
@@ -304,15 +383,6 @@ export function ResultsPage() {
   const strategiesResp = strategiesQuery.data;
   const strategies =
     strategiesResp && strategiesResp.status === 200 ? strategiesResp.data.strategies : [];
-
-  const table = useReactTable({
-    data: filteredRuns,
-    columns,
-    state: { sorting },
-    onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-  });
 
   return (
     <div className="flex flex-col gap-6">
@@ -370,52 +440,14 @@ export function ResultsPage() {
             {filteredRuns.length} run{filteredRuns.length !== 1 ? "s" : ""}
             {modeFilter === ALL && " — screening runs hidden; pick “All modes” to include them"}
           </p>
-          <div className="overflow-auto rounded-md border">
-            <Table>
-              <TableHeader className="sticky top-0 z-10 bg-card">
-                {table.getHeaderGroups().map((hg) => (
-                  <TableRow key={hg.id}>
-                    {hg.headers.map((header) => (
-                      <TableHead
-                        key={header.id}
-                        className={cn(
-                          "whitespace-nowrap",
-                          columnClass(header.column.columnDef.meta),
-                        )}
-                      >
-                        {header.isPlaceholder
-                          ? null
-                          : flexRender(header.column.columnDef.header, header.getContext())}
-                      </TableHead>
-                    ))}
-                  </TableRow>
-                ))}
-              </TableHeader>
-              <TableBody>
-                {table.getRowModel().rows.map((row) => (
-                  <TableRow
-                    key={row.id}
-                    className="cursor-pointer"
-                    onClick={() =>
-                      navigate({
-                        to: "/results/$runId",
-                        params: { runId: String(row.original.run_id) },
-                      })
-                    }
-                  >
-                    {row.getVisibleCells().map((cell) => (
-                      <TableCell
-                        key={cell.id}
-                        className={cn("whitespace-nowrap", columnClass(cell.column.columnDef.meta))}
-                      >
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <RunsTable
+            runs={filteredRuns}
+            sorting={sorting}
+            onSortingChange={setSorting}
+            onRowClick={(runId) =>
+              navigate({ to: "/results/$runId", params: { runId: String(runId) } })
+            }
+          />
         </div>
       )}
     </div>
