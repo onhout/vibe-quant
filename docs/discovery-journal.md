@@ -4,6 +4,35 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: RESULT H-11 — REJECTED on the decision universe; carry on the 66 established coins is the strongest (in-sample) lead
+
+`h11_funding_carry.py` (spec ee9f376), run once on the decision universe. Funding files: `data/swarm/20261011-h11-funding-b` (189 coins), `-a` (66 coins), downloaded by the audit agent from Binance Vision.
+
+**Decision universe — 189 coins listed 2020-11..2023-12, 2022-06-01..2026-09-30:**
+
+| Component | Sharpe | Return | Max DD | Beta |
+|---|---|---|---|---|
+| NET price + funding − costs | 0.5134541548126954 | 0.45976132453067975 | 0.2938528771468186 | -0.033719121115276 |
+| NET, funding capped ±0.1% | 0.16655995613308852 | 0.05175196234945756 | 0.31883309352722145 | -0.03405996426204183 |
+| price leg only (net of costs) | -0.4165558069054373 | -0.3910973510426605 | 0.48170313166771406 | -0.03424867629446252 |
+| funding leg only | 11.955638543721703 | 1.4013622237659145 | 0.008549422437838183 | 0.000529555179186524 |
+
+Carry collected 20.2%/yr; rankable 79.2 coins (min 24). (1) FAIL, (2) FAIL, (3) PASS, (4) PASS → **REJECT.** The carry is real, but the shorted high-funding coins kept rallying (price leg −0.42), the H-3 crowding effect.
+
+**Secondary — 66 established coins (NOT evidence: H-11 was motivated by the audit's funding observation on this universe):**
+
+| Window | NET | NET capped | price leg |
+|---|---|---|---|
+| 2020-10..2026-09 | 1.498206235803456 | 1.3017819655166851 | 0.8377157649592655 |
+| 2020-10..2022-05 | 2.050779171673196 | 1.8273845515664207 | 1.3643992349614689 |
+| 2022-06..2026-09 | 1.2357966479559972 | 1.049738336613587 | 0.5773866487957713 |
+
+(beta −0.009..−0.024, carry 10.8%/yr, 51 rankable coins.) On older, established coins carry plus price work in both halves; on newer coins the price leg eats the carry. Same universe split as H-10 (66: +0.81) vs H-10b (189: −0.94). Possible mechanism (untested): hype-phase newer coins have squeeze-prone crowded longs; established coins mean-revert their funding.
+
+**Status:** no strategy passes a pre-registered replication. The established-coin carry lead cannot be confirmed on any historical data without forking paths (every candidate coin set has now been looked at); the only clean evidence left is forward data — a paper test, which needs a portfolio-level engine strategy and the user's approval.
+
+---
+
 ## 2026-10-11: PRE-REGISTRATION H-11 — cross-sectional funding carry on the out-of-universe coins
 
 Committed before the script exists. Mechanism: perp funding pays the side opposite to crowded leverage; a dollar-neutral book short the highest-funding and long the lowest-funding coins collects the funding differential while hedging market direction (crypto carry, Schmeling/Schrimpf/Todorov, BIS 2023). Motivated by the audit finding that H-10's shorts collected ≈3.6%/yr funding on the 66-coin universe — so H-11 is tested ONLY on the H-10b universe (189 coins listed 2020-11..2023-12), where no carry ranking has been computed. Known risk (H-3, 2026-10-08): high-funding coins kept rallying — that is exactly what the test prices in.
