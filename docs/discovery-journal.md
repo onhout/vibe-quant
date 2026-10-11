@@ -4,6 +4,22 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: 15m probe — least-mined timeframe (runs 891–893, 0 champions, best candidate of the day)
+
+User asked for params that avoid rejections. Gates were NOT loosened (every forced champion collapsed in validation, Batch 41/43); instead the search moved to 15m, the least-mined timeframe (~340 prior trials vs 22k on 4h) where more trades tighten CIs. 2 runs in parallel, eval_windows 2, cross-window [1,2] + WFA 120 d, 2024-01-01..2026-09-30.
+
+| Run | Config | Pop×Gen | Wall | Best score | Outcome |
+|---|---|---|---|---|---|
+| 891 | BTC 15m, RSI/CCI/STOCH/BBANDS/MFI, seed 20261041 | 24×8 | killed after gen 1 (673 s/gen, zero 24/24) | 0 | BBANDS/MFI backtests 80–170 s on 15m — too slow |
+| 892 | SOL 15m, ROC/DONCHIAN/RSI/CCI/NATR, seed 20261042 | 24×8 | 1172 s (147 s/gen) | 0.4277 | 5 rejected. Best d0d09ee80404 (both dirs, ROC+CCI entry, RSI/NATR exit, SL 0.5% TP 1.3%): worst-window sharpe 0.96, PF 1.48, DD 9.9%, 246 trades; pooled ann SR 1.129 → DSR p 0.8337 (N 501), bootstrap lower 0.23 < floor 1.0 (t 2.19) |
+| 893 | BTC 15m, CCI/RSI/STOCH/ROC/DONCHIAN, seed 20261043 | 20×6 | 939 s (157 s/gen) | 0 | zero 20/20 every gen: 23 of 117 sub-window backtests were ≥50 trades and profitable, never both windows |
+
+**Findings:** (1) SOL 15m gave the strongest candidate of the day (ann SR 1.13 vs ≈0.6 on 4h/1h) and the smallest DSR N (501), but DSR p 0.83 is still far from 0.05 (needs ann SR ≈3 here). (2) The bootstrap floor is non-monotonic: 1m 0.5, 4h/1d 0.0, everything else (5m/15m/1h) 1.0 — filed vibe-quant-fen0o for a user decision; 892 would fail DSR regardless. (3) BTC 15m with these oscillators has no edge that survives both halves of the train window. (4) No errors in any log.
+
+**Next:** SOL 15m ROC+CCI family is the only lead; a pre-registered follow-up (fixed family, longer window from 2022-06 for more T) is the honest next test — not gate changes.
+
+---
+
 ## 2026-10-11: Tuned follow-up — 2 uncontended portfolio runs (runs 889–890, 0 champions)
 
 Tuned from the 880–888 lessons: only 2 runs in parallel (8 workers, no contention), multi-symbol portfolio + ≥3.75 y windows to clear the 50-trade gate, eval_windows 2 (less zero-gradient than 3), cross-window [1,2] + WFA 120 d armed, `vibe-quant-9s8c4` fix live (no stale progress).
