@@ -1,6 +1,6 @@
 # Cheap agents: Command Code as T3 subagents
 
-[Command Code](https://commandcode.ai) serves open models (DeepSeek, Qwen, GLM, Kimi, MiniMax, MiMo, …) for a fraction of Claude's price. Its models are **cheap and literal**: fast at well-specified mechanical work, weak at judgement, at keeping scope, and at noticing they're wrong. Brief them like a new contractor. Every Command Code output is a maker artifact and needs a checker.
+[Command Code](https://commandcode.ai) serves open models (only DeepSeek V4.1 Flash and MiMo V2.6 Pro are allowed here) for a fraction of Claude's price. Its models are **cheap and literal**: fast at well-specified mechanical work, weak at judgement, at keeping scope, and at noticing they're wrong. Brief them like a new contractor. Every Command Code output is a maker artifact and needs a checker.
 
 **Since 2026-10-10 (user): Command Code tasks are dispatched as T3 subagents through the `t3-code` MCP server (`delegate_task`), never through the built-in Agent/Task tool and not through `scripts/agents/cmd-task.sh`.** They then show up as subagents of the chief's thread.
 
@@ -47,14 +47,12 @@ Each Command Code call carries ~17–20k input tokens of system-prompt overhead 
 
 Model slugs as listed by `orchestrator_capabilities` for `commandcode_command` on 2026-10-10 (case matters; re-check the catalog when a slug fails).
 
-| Tier | Default model slug | Alternates | Use for |
-|---|---|---|---|
-| `fast` | `deepseek/deepseek-v4.1-flash-fast` (`options: {"effort": "high"}`) | `Qwen/Qwen3.8-Flash`, `z-ai/glm-5.3-flash` | single-file mechanical edits, bulk classification/extraction to JSON, log summarisation |
-| `code` | `deepseek/deepseek-v4.1-flash` (no options advertised in the T3 catalog; user 2026-10-10: "cheaper and better than MiMo", high not max — max may cause the read-loop stall) | `zai-org/GLM-5.3`, `Qwen/Qwen3.8-Max-0902`, `MiniMaxAI/MiniMax-M3` | multi-file but fully specified changes, tests from a written spec, boilerplate |
-| `pro` | `xiaomi/mimo-v2.6-pro` (fixed reasoning effort; user 2026-10-08: "better than DeepSeek, ~Sonnet 5.5 level") | `xiaomi/mimo-v2.6-pro-ultraspeed` | harder multi-file / judgement-light coding a Claude implementer would otherwise do; fix rounds that need care |
-| `long` | `moonshotai/Kimi-K3` (1M ctx) | `z-ai/glm-5.3-flash`, `xiaomi/mimo-v2.6-pro` | reading a lot to produce a short structured output |
+**Allowed models (user 2026-10-11, hard rule):** only `deepseek/deepseek-v4.1-flash` (not `deepseek/deepseek-v4-flash`, not `-fast`) and `xiaomi/mimo-v2.6-pro`. Never Kimi, GLM, Qwen, MiniMax or any other Command Code model.
 
-Never `glm-5.3` as the implementer default (user). Qwen 3.8 Max 0902 A/B vs MiMo (2026-10-08, same brief): equivalent correct diff, a peer of MiMo, not the default.
+| Tier | Model slug | Use for |
+|---|---|---|
+| `code` (default) | `deepseek/deepseek-v4.1-flash` (`options: {"effort": "high"}`; user 2026-10-10: "cheaper and better than MiMo", high not max — max may cause the read-loop stall) | every well-specified task: code, tests, mechanical edits, bulk extraction, read-heavy audits |
+| `pro` | `xiaomi/mimo-v2.6-pro` (fixed reasoning effort; user 2026-10-08: "better than DeepSeek, ~Sonnet 5.5 level") | harder multi-file / judgement-light coding a Claude implementer would otherwise do; fix rounds that need care |
 
 ## Routing
 
@@ -79,9 +77,9 @@ A Command Code brief still needs:
 2. Done checkable by a command (test, parser, `jq` schema, `rg` count) or by a quick diff read.
 3. A wrong answer caught by the checker before it reaches `main`, the DB or a decision.
 
-Good fits for the cheaper `fast` tier: Pine/FMZ spec triage to JSON, first-draft DSL YAML from a spec (the parser checks it), docstrings, renames across known files, fixture/table generation, journal entry formatting from a handoff, summarising run logs.
+Good fits for DeepSeek even when tiny: Pine/FMZ spec triage to JSON, first-draft DSL YAML from a spec (the parser checks it), docstrings, renames across known files, fixture/table generation, journal entry formatting from a handoff, summarising run logs.
 
-**Escalation:** a `fast` task that fails its check twice moves to `code`. A DeepSeek `code` task gets at most 2 rounds; then the Sonnet `implementer` takes it with all findings and failure output. (Re-routing failed work to Sonnet is the defined escalation, not a provider fallback for a `delegate_task` error — those go to the user verbatim.)
+**Escalation:** A DeepSeek `code` task gets at most 2 rounds; then the Sonnet `implementer` takes it with all findings and failure output. (Re-routing failed work to Sonnet is the defined escalation, not a provider fallback for a `delegate_task` error — those go to the user verbatim.)
 
 ## Writing the brief
 
@@ -109,3 +107,5 @@ The `verifier` (or the orchestrator for tiny tasks) must:
 
 - 2026-10-10: dispatch moved from `cmd-task.sh` to T3 `delegate_task` subagents (`commandcode_command`), with the user's protocol (async, unique `clientRequestId`, keep `taskId`, no tight polling, no `t3_thread_send` / `t3_thread_launch` / `create_threads`, errors verbatim, no provider fallback, verify before reporting). Tier slugs updated to the T3 catalog — user request.
 - 2026-10-10: DeepSeek is the default maker for all coding tasks; Sonnet reviews and fixes on `fix-route: sonnet` (user: "the workhorse should be deepseek because it is almost free").
+
+- 2026-10-11: allowed Command Code models reduced to `deepseek/deepseek-v4.1-flash` + `xiaomi/mimo-v2.6-pro`; `fast`/`long` tiers and all other alternates removed — user: "DONT run Kimi K3" (job 20261011-testspeed).

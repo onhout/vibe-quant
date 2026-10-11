@@ -2,7 +2,7 @@
 
 How one **orchestrator** (a Claude Code session running the [`orchestrate`](../../.claude/skills/orchestrate/SKILL.md) skill) splits large work across specialist agents. This file is the single source for the roster, the brief format, the handoff contract and the workspace layout. Other files cover the rest:
 
-- [`cheap-agents.md`](cheap-agents.md): delegating mechanical tasks to Command Code (DeepSeek / Qwen / GLM / Kimi / MiMo) as T3 `delegate_task` subagents.
+- [`cheap-agents.md`](cheap-agents.md): delegating mechanical tasks to Command Code (DeepSeek V4.1 Flash / MiMo V2.6 Pro only) as T3 `delegate_task` subagents.
 - [`research-swarm.md`](research-swarm.md): the strategy-factory lane, plus what we took (and rejected) from the 2026 "AI hedge fund" agent-swarm posts.
 - [`prompts/`](prompts/): brief templates for Command Code tasks ([`prompts/cmd-task.md`](prompts/cmd-task.md)) and the bus protocol block.
 - Agent definitions: [`.claude/agents/*.md`](../../.claude/agents/). Each file's body is the agent's system prompt.
@@ -33,7 +33,7 @@ How one **orchestrator** (a Claude Code session running the [`orchestrate`](../.
 | `backtest-operator` | research | sonnet | DB rows via API/CLI only | runs screening / discovery / validation, reports raw numbers | `overfit-auditor` |
 | `overfit-auditor` | research | opus | nothing | skeptic: PASS / REJECT against the repo's gates | `risk-officer` |
 | `risk-officer` | research | opus | nothing | veto before any paper/live step, no negotiation | user |
-| Command Code worker (`cmd`) | both | DeepSeek / Qwen / GLM / Kimi / MiMo (T3 instance `commandcode_command`) | scoped files, in a worktree | mechanical bulk work, well-specified implementation | `verifier` or a deterministic check |
+| Command Code worker (`cmd`) | both | DeepSeek V4.1 Flash / MiMo V2.6 Pro only (T3 instance `commandcode_command`) | scoped files, in a worktree | mechanical bulk work, well-specified implementation | `verifier` or a deterministic check |
 
 Model choice follows maker-checker: DeepSeek writes, Sonnet checks (a different model family, so fewer shared blind spots); when Sonnet fixes, a fresh reviewer checks the fix. Opus does design and money verdicts. Override per dispatch with the Agent tool's `model` parameter when a task is harder or easier than usual.
 
