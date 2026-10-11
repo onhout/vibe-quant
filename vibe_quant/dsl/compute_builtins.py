@@ -643,10 +643,17 @@ def compute_bbands(df: pd.DataFrame, params: dict[str, object]) -> dict[str, pd.
     [0, 0.2]) and ``percent_b`` is 0.5 on zero-width bands. pandas-ta's own
     BBB (percent, x100) and BBP columns add an epsilon that breaks both on a flat
     window, so they are not used. Warm-up rows (bands NaN) stay NaN.
+
+    The bands are built on the typical price ``(high + low + close) / 3`` — what
+    NT's ``BollingerBands.update_raw(high, low, close)`` averages — so both paths
+    read the same bands (feeding ``close`` put the upper band ~0.1% off on real
+    bars). ``percent_b`` still compares the bar close with those bands, as
+    ``derived.compute_percent_b`` does.
     """
     period = int_param(params, "period", 20)
     std_dev = float_param(params, "std_dev", 2.0)
-    result = _ta().bbands(df["close"], length=period, std=std_dev)
+    typical = (df["high"] + df["low"] + df["close"]) / 3.0
+    result = _ta().bbands(typical, length=period, std=std_dev)
     if result is None:
         empty = nan_like(df)
         return {

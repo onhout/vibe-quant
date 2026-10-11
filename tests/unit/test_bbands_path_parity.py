@@ -4,11 +4,10 @@ The NT path derives ``percent_b`` / ``bandwidth`` with ``derived.py`` from a liv
 ``BollingerBands``; the compute_fn path returns them straight from
 ``compute_bbands``. A DSL threshold such as ``bb.bandwidth > 0.05`` (the GA samples
 [0, 0.2]) must mean the same on both. pandas-ta's raw BBB is percent (x100), so
-``compute_bbands`` converts it to a fraction.
-
-Bars have high == low == close: NT's BollingerBands averages the typical price
-(H+L+C)/3 whereas pandas-ta uses close, a separate band-level difference this test
-deliberately keeps out of the unit check.
+``compute_bbands`` converts it to a fraction. NT's BollingerBands averages the
+typical price (H+L+C)/3, so ``compute_bbands`` feeds pandas-ta the same series.
+The first tests use bars with high == low == close (typical price == close); the last
+one uses real high-low ranges.
 """
 
 from __future__ import annotations
@@ -113,3 +112,47 @@ def test_non_positive_middle_matches_nt_guard_exactly(low: float, high: float) -
     # Warm-up rows (bands undefined) stay NaN.
     assert got["bandwidth"].iloc[: period - 1].isna().all()
     assert got["percent_b"].iloc[: period - 1].isna().all()
+
+
+def _ohlc_bars(n: int = 200) -> pd.DataFrame:
+    rng = np.random.default_rng(3)
+    close = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, n)))
+    high = close * (1.0 + rng.uniform(0.0005, 0.01, n))
+    low = close * (1.0 - rng.uniform(0.0005, 0.01, n))
+    return pd.DataFrame({"open": close, "high": high, "low": low, "close": close, "volume": 1.0})
+
+
+@pytest.mark.parametrize(("period", "std_dev"), [(20, 2.0), (10, 1.5), (30, 3.0)])
+def test_bbands_match_nt_typical_price_on_real_ohlc_bars(period: int, std_dev: float) -> None:
+    """NT's BollingerBands averages the typical price (H+L+C)/3, not the close.
+
+    On bars with a real high-low range the bands from a close-only pandas-ta call
+    sit ~0.1% off NT's; ``percent_b`` still compares the close with those bands.
+    """
+    df = _ohlc_bars()
+    nt = BollingerBands(period, std_dev)
+    rows = []
+    for h, low, c in zip(df["high"], df["low"], df["close"], strict=True):
+        nt.update_raw(h, low, c)
+        rows.append(
+            {
+                "upper": nt.upper,
+                "middle": nt.middle,
+                "lower": nt.lower,
+                "percent_b": derived.compute_percent_b(nt, c),
+                "bandwidth": derived.compute_bandwidth(nt, c),
+            }
+        )
+    nt_df = pd.DataFrame(rows)
+
+    got = compute_bbands(df, {"period": period, "std_dev": std_dev})
+
+    warm = slice(period + 5, None)
+    for name in ("upper", "middle", "lower", "percent_b", "bandwidth"):
+        np.testing.assert_allclose(
+            got[name].iloc[warm].to_numpy(),
+            nt_df[name].iloc[warm].to_numpy(),
+            rtol=0.0,
+            atol=1e-9,
+            err_msg=name,
+        )
