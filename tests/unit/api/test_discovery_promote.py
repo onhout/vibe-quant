@@ -115,6 +115,26 @@ async def test_promote_creates_strategy_and_launches_screening(client: tuple[Asy
     assert bt_run["strategy_id"] == data["strategy_id"]
 
 
+async def test_promote_persists_description_and_strategy_type(
+    client: tuple[AsyncClient, StateManager],
+) -> None:
+    """The promoted row keeps GA provenance and the genome's strategy_type."""
+    ac, state = client
+    run_id = _create_discovery_run_with_results(state)
+
+    r = await ac.post(f"/api/discovery/results/{run_id}/promote/0")
+    assert r.status_code == 201
+    row = state.conn.execute(
+        "SELECT description, strategy_type FROM strategies WHERE id = ?",
+        (r.json()["strategy_id"],),
+    ).fetchone()
+    assert row is not None
+    description, strategy_type = row[0], row[1]
+    assert description is not None
+    assert description.startswith(f"Discovered via GA run {run_id} #0")
+    assert strategy_type == "momentum"
+
+
 async def test_promote_with_validation_mode(client: tuple[AsyncClient, StateManager]) -> None:
     ac, state = client
     # Create a separate discovery run to avoid job conflicts
