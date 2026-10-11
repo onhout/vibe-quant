@@ -4,6 +4,22 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: Pre-registered follow-ups — SOL 15m lead + first context-feature discoveries (runs 894–896, 0 champions)
+
+**Falsifier stated before launch (all three):** reject the family if the best pooled ann Sharpe < 1.0 or no candidate reaches DSR p < 0.5. Gates unchanged; bootstrap floors kept (vibe-quant-fen0o closed won't-do: floors are deliberate per vibe-quant-gds1c).
+
+| Run | Hypothesis / config | Pop×Gen | Wall | Best score | Outcome |
+|---|---|---|---|---|---|
+| 894 | 892 lead holds on a longer window: SOL 15m, ROC/CCI/RSI/NATR, **2022-06**..2026-09, ew 2, seed 20261051 | 20×6 | 1452 s (242 s/gen) | 0.4252 | **REJECT.** Best a2154558afe2 (both, ROC+RSI, SL 7.1% TP 7.0%): pooled ann SR 0.563, DSR p 0.9611 (N 691), bootstrap lower −0.72. 892's ann SR 1.129 did not survive 1.6× more data → window luck |
+| 895 | First discovery with context features: ETH+SOL 1h portfolio, FUNDING_Z/BTC_TREND/ROC/DONCHIAN/CCI, 2022-06..2026-09, seed 20261052 | 18×6 | 587 s | 0.3345 | **REJECT.** Only non-zero genome acea14b253ef (long, BTC_TREND entry, CCI exit, 424 trades): pooled ann SR 0.592, DSR p 0.9841 (N 2246), bootstrap lower 0.05. Population drifted to shorts (14/18) — all zero in the 2022-26 uptrend |
+| 896 | Same idea forced long: ETH+SOL 1h, BTC_TREND/OWN_TREND/FUNDING_Z/ROC/DONCHIAN, `direction=long`, seed 20261053 | 20×6 | killed at gen 3 (harness backend time-limit took the job down; reaped `failed`) | 0 | zero_score 20/20 for 3 gens, 0 of 53 distinct genomes scored; best raw 0.15 zeroed by the overtrade penalty (4209 trades). Inconclusive by the letter, no signal |
+
+**Findings:** (1) The only lead of the day (SOL 15m, 892) was window luck. (2) Context features (funding z-score, BTC/own daily trend) run in discovery without errors but gave nothing better than price-only families (ann SR ≈0.6 ceiling again). Note: regime/funding strategies are screening/validation-only (paper/live refuse them). (3) Context-indicator backtests are slow: ETH+SOL 1h 4.3 y up to 130 s each, ~8 min/gen at pop 20. (4) 894's top-5 had two behaviourally identical genomes (bead vibe-quant-pqon2). (5) `convergence_generations` is capped at max_generations // 2 (deliberate, bd-izqy).
+
+**Next:** five families × three timeframes today all plateau at ann Sharpe ≈0.6 under honest gates. More GA budget is not the lever; candidates need a new hypothesis with a stated mechanism (e.g. funding/OI event studies on fresh data) before discovery.
+
+---
+
 ## 2026-10-11: 15m probe — least-mined timeframe (runs 891–893, 0 champions, best candidate of the day)
 
 User asked for params that avoid rejections. Gates were NOT loosened (every forced champion collapsed in validation, Batch 41/43); instead the search moved to 15m, the least-mined timeframe (~340 prior trials vs 22k on 4h) where more trades tighten CIs. 2 runs in parallel, eval_windows 2, cross-window [1,2] + WFA 120 d, 2024-01-01..2026-09-30.
