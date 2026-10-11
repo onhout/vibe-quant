@@ -13,30 +13,39 @@ export default defineConfig({
     },
   },
   build: {
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        manualChunks(id: string) {
-          if (id.includes("node_modules/react-dom/") || id.includes("node_modules/react/")) {
-            return "vendor-react";
-          }
-          if (id.includes("node_modules/recharts/") || id.includes("node_modules/d3-")) {
-            return "vendor-recharts";
-          }
-          if (id.includes("node_modules/radix-ui/")) {
-            return "vendor-radix";
-          }
-          if (
-            id.includes("node_modules/@tanstack/react-router/") ||
-            id.includes("node_modules/@tanstack/react-query/")
-          ) {
-            return "vendor-tanstack";
-          }
-          if (
-            id.includes("node_modules/plotly.js-dist-min/") ||
-            id.includes("node_modules/react-plotly.js/")
-          ) {
-            return "vendor-plotly";
-          }
+        codeSplitting: {
+          groups: [
+            {
+              name(id: string) {
+                if (id.includes("node_modules/react-dom/") || id.includes("node_modules/react/")) {
+                  return "vendor-react";
+                }
+                if (id.includes("node_modules/recharts/") || id.includes("node_modules/d3-")) {
+                  return "vendor-recharts";
+                }
+                // radix-ui is a re-export shim that Rolldown tree-shakes to nothing, so the
+                // chunk has to match the @radix-ui/* packages that hold the code.
+                if (id.includes("node_modules/radix-ui/") || id.includes("node_modules/@radix-ui/")) {
+                  return "vendor-radix";
+                }
+                if (
+                  id.includes("node_modules/@tanstack/react-router/") ||
+                  id.includes("node_modules/@tanstack/react-query/")
+                ) {
+                  return "vendor-tanstack";
+                }
+                if (
+                  id.includes("node_modules/plotly.js-dist-min/") ||
+                  id.includes("node_modules/react-plotly.js/")
+                ) {
+                  return "vendor-plotly";
+                }
+                return null;
+              },
+            },
+          ],
         },
       },
     },

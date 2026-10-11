@@ -91,7 +91,7 @@
 
 - Python 3.13+
 - [`uv`](https://docs.astral.sh/uv/) package manager
-- Node.js 20+ and `pnpm` (for frontend)
+- Node.js 22.12+ and `pnpm` (for frontend; Vite 8 and Vitest 5 need it)
 
 ### Install
 
