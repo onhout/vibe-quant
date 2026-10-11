@@ -9,7 +9,7 @@ Autonomous loop: pick bead, validate, implement, test, commit, push. Repeat.
 
 ## Rules
 
-1. **No subagents** — do everything in the main session
+1. **Solo by default** — do everything in the main session. When the user runs it under `/orchestrate` (chief), treat this loop as a high-level instruction set and dispatch beads to subagents per the orchestrate skill (user 2026-10-11)
 2. **No human interaction** — make decisions autonomously
 3. **Scope discipline** — if you discover tech debt, unrelated bugs, or scope creep while working, DO NOT fix it. Instead: `bd create --title="..." --type=bug --priority=3` and move on
 4. **Follow codebase style** — match existing patterns, imports, naming. Read files before modifying.
@@ -39,7 +39,7 @@ Autonomous loop: pick bead, validate, implement, test, commit, push. Repeat.
    - Do NOT skip this step
 8. COMMIT & PUSH:
    - git add <specific_files>
-   - git commit -m "<type>: <longer description about the changes> (bd-<short_id>)"
+   - git commit -F <msgfile>   # verbose format, see Commit Message Format
    - bd close <id>
    - git push
 9. goto 1
@@ -79,13 +79,7 @@ Before closing any bead:
 
 ## Commit Message Format
 
-```
-<type>: <longer description about the changes and why> (bd-<short_id>)
-```
-
-Types: `fix`, `feat`, `refactor`, `chore`, `test`, `docs`
-
-Example: `fix: handle None in sharpe formatting (bd-k4ya)`
+Use the repo's verbose format in [`docs/orchestration/prompts/commit-message.md`](../../../docs/orchestration/prompts/commit-message.md): subject `<type>(<area>): <what> (<bead-id>)`, then Why / What / How / Decisions / Verification (CLAUDE.md § Commit messages overrides any short one-liner format).
 
 ## Summary
 
@@ -119,3 +113,7 @@ After the loop ends, output a markdown summary:
 - New issues: N
 - Commits pushed: N
 ```
+
+## Changelog
+
+- 2026-10-11: subagents allowed when run under /orchestrate; commit format now points at commit-message.md (CLAUDE.md verbose per-task commits) — user: "the grind skill is just high-level stuff ... you can still use sub-agents" (job 20261011-testspeed).
