@@ -7,6 +7,7 @@ import pandas as pd
 import pandas_ta_classic  # noqa: F401 — registers .ta accessor
 
 from vibe_quant.data.indicator_compute import compute_indicators
+from vibe_quant.dsl.compute_builtins import compute_bbands
 
 
 def _ohlcv(n: int = 120) -> pd.DataFrame:
@@ -55,3 +56,15 @@ def test_donchian_channel_overlay_returns_lower_middle_upper_bands() -> None:
     ref = df.ta.donchian(high=df["high"], low=df["low"], lower_length=20, upper_length=20)
     for name, col in {"lower": "DCL_20_20", "middle": "DCM_20_20", "upper": "DCU_20_20"}.items():
         np.testing.assert_array_equal(_values(by_name[name]), ref[col].to_numpy(), err_msg=name)
+
+
+def test_bbands_overlay_bands_match_engine_on_typical_price() -> None:
+    df = _ohlcv()
+    out = compute_indicators(df, [{"type": "BBANDS", "period": 20, "std_dev": 2.0}])
+
+    by_name = {s.output_name: s for s in out}
+    assert set(by_name) == {"lower", "middle", "upper"}
+
+    ref = compute_bbands(df, {"period": 20, "std_dev": 2.0})
+    for name in ("lower", "middle", "upper"):
+        np.testing.assert_array_equal(_values(by_name[name]), ref[name].to_numpy(), err_msg=name)

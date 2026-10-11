@@ -149,7 +149,8 @@ def _compute_single(
     if upper == "BBANDS":
         period = params.get("period", 20)
         std_dev = params.get("std_dev", 2.0)
-        result = df.ta.bbands(close=close, length=period, std=std_dev)
+        typical = (high + low + close) / 3.0
+        result = df.ta.bbands(close=typical, length=period, std=std_dev)
         if result is None:
             return []
         cols = result.columns.tolist()
