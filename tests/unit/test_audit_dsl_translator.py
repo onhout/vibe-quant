@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from vibe_quant.dsl.compiler import StrategyCompiler
 from vibe_quant.dsl.parser import validate_strategy_dict
 from vibe_quant.dsl.translator import translate_dsl_config
 
@@ -96,3 +97,74 @@ def test_stoch_k_d_periods_mapped() -> None:
     out = translate_dsl_config(_cfg(indicators=inds, conditions=conds), strategy_name="t_stoch")
     cfg = next(iter(out["indicators"].values()))
     assert (cfg["period"], cfg["d_period"]) == (9, 5)
+
+
+# --- ATR stop / take-profit need an `indicator` reference (vibe-quant-yj57u) ---------------
+
+
+@pytest.mark.parametrize("sl_type", ["atr_fixed", "atr_trailing"])
+def test_atr_stop_reuses_ui_atr_indicator(sl_type: str) -> None:
+    inds = [
+        {"type": "RSI", "params": {"period": 14}},
+        {"type": "ATR", "params": {"period": 20}},
+    ]
+    risk = _cfg()["risk"] | {"stop_loss": {"type": sl_type, "value": 2.5}}
+    out = translate_dsl_config(_cfg(indicators=inds, risk=risk), strategy_name="t_atr_reuse")
+    assert out["stop_loss"] == {"type": sl_type, "atr_multiplier": 2.5, "indicator": "atr_20"}
+    assert list(out["indicators"]) == ["rsi_14", "atr_20"]  # nothing added
+    dsl = validate_strategy_dict(out)
+    assert dsl.stop_loss.indicator == "atr_20"
+    StrategyCompiler().compile_to_module(dsl)
+
+
+@pytest.mark.parametrize("sl_type", ["atr_fixed", "atr_trailing"])
+def test_atr_stop_without_ui_atr_adds_default_indicator(sl_type: str) -> None:
+    risk = _cfg()["risk"] | {"stop_loss": {"type": sl_type, "value": 1.5}}
+    out = translate_dsl_config(_cfg(risk=risk), strategy_name="t_atr_add")
+    assert out["indicators"]["atr_14"] == {"type": "ATR", "period": 14}
+    assert out["stop_loss"] == {"type": sl_type, "atr_multiplier": 1.5, "indicator": "atr_14"}
+    dsl = validate_strategy_dict(out)
+    assert dsl.indicators["atr_14"].type == "ATR"
+    StrategyCompiler().compile_to_module(dsl)
+
+
+def test_atr_take_profit_gets_indicator_and_shares_it_with_stop() -> None:
+    risk = _cfg()["risk"] | {
+        "stop_loss": {"type": "atr_trailing", "value": 2},
+        "take_profit": {"type": "atr_fixed", "value": 3},
+    }
+    out = translate_dsl_config(_cfg(risk=risk), strategy_name="t_atr_tp")
+    assert [n for n, c in out["indicators"].items() if c["type"] == "ATR"] == ["atr_14"]
+    assert out["take_profit"]["indicator"] == "atr_14"
+    StrategyCompiler().compile_to_module(validate_strategy_dict(out))
+
+
+def test_fixed_pct_stop_adds_no_atr_indicator() -> None:
+    out = translate_dsl_config(_cfg(), strategy_name="t_nofix")
+    assert list(out["indicators"]) == ["rsi_14"]
+    assert "indicator" not in out["stop_loss"]
+
+
+def test_two_atr_indicators_stop_and_take_profit_bind_to_the_first() -> None:
+    # ATR(20) on 1d comes first, ATR(7) second: SL and TP must both use atr_20, not the last ATR
+    inds = [
+        {"type": "RSI", "params": {"period": 14}},
+        {"type": "ATR", "params": {"period": 20}, "timeframe_override": "1d"},
+        {"type": "ATR", "params": {"period": 7}},
+    ]
+    risk = _cfg()["risk"] | {
+        "stop_loss": {"type": "atr_trailing", "value": 2},
+        "take_profit": {"type": "atr_fixed", "value": 3},
+    }
+    out = translate_dsl_config(
+        _cfg(indicators=inds, risk=risk, general={"timeframe": "4h", "symbols": ["BTCUSDT"]}),
+        strategy_name="t_two_atr",
+    )
+    assert out["stop_loss"]["indicator"] == "atr_20"
+    assert out["take_profit"]["indicator"] == "atr_20"
+    assert out["indicators"]["atr_20"] == {"type": "ATR", "period": 20, "timeframe": "1d"}
+    assert out["indicators"]["atr_7"] == {"type": "ATR", "period": 7}
+    assert list(out["indicators"]) == ["rsi_14", "atr_20", "atr_7"]  # nothing added
+    assert out["additional_timeframes"] == ["1d"]
+    dsl = validate_strategy_dict(out)
+    assert dsl.stop_loss.indicator == dsl.take_profit.indicator == "atr_20"

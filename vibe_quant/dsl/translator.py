@@ -200,6 +200,25 @@ def _translate_take_profit(tp_raw: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _ensure_atr_reference(
+    indicators: dict[str, dict[str, Any]], *risk_configs: dict[str, Any]
+) -> None:
+    """Point every ATR stop / take-profit at an ATR indicator (StrategyDSL requires one).
+
+    The editor's risk model has no indicator field, so reuse the strategy's first ATR
+    indicator or add a default ATR(14) when it has none.
+    """
+    atr_users = [c for c in risk_configs if str(c.get("type", "")).startswith("atr")]
+    if not atr_users:
+        return
+    ref = next((n for n, cfg in indicators.items() if cfg.get("type") == "ATR"), None)
+    if ref is None:
+        ref = _generate_indicator_name("ATR", {"period": 14}, set(indicators))
+        indicators[ref] = {"type": "ATR", "period": 14}
+    for cfg in atr_users:
+        cfg["indicator"] = ref
+
+
 def translate_dsl_config(raw: dict[str, Any], strategy_name: str = "strategy") -> dict[str, Any]:
     """Translate frontend DslConfig dict to canonical StrategyDSL dict.
 
@@ -246,6 +265,8 @@ def translate_dsl_config(raw: dict[str, Any], strategy_name: str = "strategy") -
     tp_raw = risk.get("take_profit", {}) or {}
     stop_loss = _translate_stop_loss(sl_raw)
     take_profit = _translate_take_profit(tp_raw)
+    if isinstance(indicators, dict):
+        _ensure_atr_reference(indicators, stop_loss, take_profit)
     if risk.get("trailing_stop_pct"):
         msg = (
             "risk.trailing_stop_pct is not supported by the backtest engine (only ATR "

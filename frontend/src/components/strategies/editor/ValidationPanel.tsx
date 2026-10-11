@@ -4,6 +4,8 @@ import type { DslConfig } from "./types";
 
 interface ValidationPanelProps {
   config: DslConfig;
+  /** Canonical StrategyDSL strategy: symbols are chosen when launching a backtest. */
+  canonical?: boolean;
 }
 
 interface CheckItem {
@@ -15,19 +17,32 @@ interface Warning {
   message: string;
 }
 
-function computeChecks(config: DslConfig): CheckItem[] {
+/** Condition counts across the generic and the long/short lists (canonical uses long/short). */
+function conditionCounts(config: DslConfig): { entry: number; exit: number } {
+  const c = config.conditions;
+  return {
+    entry: c.entry.length + (c.long_entry?.length ?? 0) + (c.short_entry?.length ?? 0),
+    exit: c.exit.length + (c.long_exit?.length ?? 0) + (c.short_exit?.length ?? 0),
+  };
+}
+
+function computeChecks(config: DslConfig, canonical: boolean): CheckItem[] {
+  const counts = conditionCounts(config);
   return [
-    { label: "Has entry conditions", passed: config.conditions.entry.length > 0 },
-    { label: "Has exit conditions", passed: config.conditions.exit.length > 0 },
+    { label: "Has entry conditions", passed: counts.entry > 0 },
+    { label: "Has exit conditions", passed: counts.exit > 0 },
     { label: "Has stop loss", passed: config.risk.stop_loss.value > 0 },
     { label: "Has at least 2 indicators", passed: config.indicators.length >= 2 },
-    { label: "Has symbols configured", passed: config.general.symbols.length > 0 },
+    canonical
+      ? { label: "Symbols chosen at launch", passed: true }
+      : { label: "Has symbols configured", passed: config.general.symbols.length > 0 },
   ];
 }
 
-function computeWarnings(config: DslConfig): Warning[] {
+function computeWarnings(config: DslConfig, canonical: boolean): Warning[] {
   const warnings: Warning[] = [];
-  if (config.conditions.exit.length === 0) {
+  const counts = conditionCounts(config);
+  if (counts.exit === 0) {
     warnings.push({ message: "No exit conditions defined" });
   }
   if (config.indicators.length === 0) {
@@ -38,10 +53,10 @@ function computeWarnings(config: DslConfig): Warning[] {
   if (config.risk.stop_loss.value === 0) {
     warnings.push({ message: "No stop loss configured" });
   }
-  if (config.conditions.entry.length === 0) {
+  if (counts.entry === 0) {
     warnings.push({ message: "No entry conditions defined" });
   }
-  if (config.general.symbols.length === 0) {
+  if (!canonical && config.general.symbols.length === 0) {
     warnings.push({ message: "No symbols configured" });
   }
   if (
@@ -54,13 +69,16 @@ function computeWarnings(config: DslConfig): Warning[] {
 }
 
 function computeComplexity(config: DslConfig): number {
-  return config.indicators.length + config.conditions.entry.length + config.conditions.exit.length;
+  const counts = conditionCounts(config);
+  return config.indicators.length + counts.entry + counts.exit;
 }
 
-export function ValidationPanel({ config }: ValidationPanelProps) {
-  const checks = computeChecks(config);
-  const warnings = computeWarnings(config);
+export function ValidationPanel({ config, canonical = false }: ValidationPanelProps) {
+  const checks = computeChecks(config, canonical);
+  const warnings = computeWarnings(config, canonical);
   const complexity = computeComplexity(config);
+  const counts = conditionCounts(config);
+  const conditionCount = counts.entry + counts.exit;
   const passedCount = checks.filter((c) => c.passed).length;
 
   let complexityLabel = "Low";
@@ -86,8 +104,7 @@ export function ValidationPanel({ config }: ValidationPanelProps) {
             <Badge className={complexityColor}>{complexityLabel}</Badge>
           </div>
           <p className="mt-1 text-[10px] text-muted-foreground">
-            {config.indicators.length} indicators +{" "}
-            {config.conditions.entry.length + config.conditions.exit.length} conditions
+            {config.indicators.length} indicators + {conditionCount} conditions
           </p>
         </CardContent>
       </Card>

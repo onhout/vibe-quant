@@ -413,7 +413,7 @@ export function StrategyEditor({ strategy }: StrategyEditorProps) {
       {/* Validation summary panel */}
       {showValidationPanel && (
         <div className="mt-6">
-          <ValidationPanel config={config} />
+          <ValidationPanel config={config} canonical={canonicalBase !== null} />
         </div>
       )}
 
