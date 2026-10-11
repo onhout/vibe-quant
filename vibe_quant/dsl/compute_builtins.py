@@ -198,21 +198,33 @@ def _rma_step(state: Any, inputs: Any, i: int) -> tuple[float, Any]:
     return weighted, (weighted, old_wt, alpha, factor)
 
 
+def _first_valid(x: Any) -> int:
+    """Position of the first non-NaN value (``len(x)`` when there is none)."""
+    import numpy as np
+
+    valid = ~np.isnan(x)
+    return int(valid.argmax()) if valid.any() else len(x)
+
+
 def _rma_full(inputs: Any, length: int) -> tuple[Any, Any]:
     import numpy as np
 
     x = inputs[0]
     n = len(x)
-    seed_win = x[:length]
+    alpha, factor = _rma_consts(length)
+    fv = _first_valid(x)
+    if fv + length > n:  # no SMA seed window: undefined everywhere (never extended)
+        return np.full(n, np.nan), (float("nan"), 1.0, alpha, factor)
+    lead = fv + length - 1  # seed position; everything before it is NaN
+    seed_win = x[fv : fv + length]
     nan_mask = np.isnan(seed_win)
     count = length - int(nan_mask.sum())
-    seed = float(np.where(nan_mask, 0.0, seed_win).sum() / count) if count else float("nan")
+    seed = float(np.where(nan_mask, 0.0, seed_win).sum() / count)
     vals = x.tolist()
-    for i in range(length - 1):
+    for i in range(lead):
         vals[i] = float("nan")
-    vals[length - 1] = seed
-    alpha, factor = _rma_consts(length)
-    if seed == seed and not np.isnan(x[length:]).any():
+    vals[lead] = seed
+    if seed == seed and not np.isnan(x[lead + 1 :]).any():
         # Fast path (no NaN after the seed): every step is an observation with
         # old_wt == factor, so _rma_step reduces to this recurrence (same
         # arithmetic; state after an observation has old_wt == 1.0).
@@ -220,10 +232,10 @@ def _rma_full(inputs: Any, length: int) -> tuple[Any, Any]:
 
         denom = factor + alpha
         w = seed
-        fast = [float("nan")] * (length - 1)
+        fast = [float("nan")] * lead
         fast.append(w)
         append = fast.append
-        for c in vals[length:]:
+        for c in vals[lead + 1 :]:
             if w != c:
                 w = fma(factor, w, alpha * c) / denom
             append(w)
@@ -238,12 +250,14 @@ def _rma_full(inputs: Any, length: int) -> tuple[Any, Any]:
 
 
 def _rma_np(x: Any, length: int) -> Any:
-    """Port of ``pandas_ta_classic.rma`` (SMA-seeded Wilder smoothing).
+    """Port of ``pandas_ta_classic.rma`` (SMA-seeded Wilder smoothing, 0.8).
 
-    Operation-for-operation with pandas: NaN-skipping seed mean (sum of
-    NaN->0 slots / non-NaN count), then ``ewm(alpha, adjust=False)`` with
-    ``ignore_na=False`` as in pandas' cython ``ewm`` (alpha re-derived via
-    com, interior NaN decays the old weight). Requires ``len(x) >= length``.
+    Operation-for-operation with the library: the seed is the NaN-skipping mean
+    (sum of NaN->0 slots / non-NaN count) of the ``length`` values starting at
+    the FIRST non-NaN value (chained input such as dx has a NaN prefix), then
+    ``ewm(alpha, adjust=False)`` with ``ignore_na=False`` as in pandas' cython
+    ``ewm`` (alpha re-derived via com, interior NaN decays the old weight).
+    Undefined (all NaN) when no full seed window exists.
 
     The per-bar rebuild is memoized on the actual input array: when ``x`` is a
     previously seen input plus one appended bar, only one :func:`_rma_step` runs
@@ -259,9 +273,75 @@ def _rma_np(x: Any, length: int) -> Any:
     def full(inputs: Any) -> tuple[Any, Any]:
         return _rma_full(inputs, length)
 
-    if len(x) <= length:  # seed window not complete before the appended element
+    if len(x) - 1 < _first_valid(x) + length:  # seed not placed before the appended element
         return full((x,))[0]
     return memo_run(("rma", length), (x,), full, _rma_step)
+
+
+def _wilder_start(x: Any) -> int:
+    """First raw position summed into the Wilder seed (index 0 is always skipped)."""
+    import numpy as np
+
+    finite = np.flatnonzero(np.isfinite(x))
+    return max(int(finite[0]), 1) if finite.size else len(x)
+
+
+def _wilder_step(state: Any, inputs: Any, i: int) -> tuple[float, Any]:
+    """One Wilder step (``value - value / length + raw``, NaN input carries forward).
+
+    Plain Python floats: the library's loop never contracts to FMA either
+    (and the self-check ``_adx_port_ok`` flags a numba-compiled platform that does).
+    """
+    value, length = state
+    raw = float(inputs[0][i])
+    if raw == raw:
+        value = value - value / length + raw
+    return value, (value, length)
+
+
+def _wilder_full(inputs: Any, length: int) -> tuple[Any, Any]:
+    import numpy as np
+
+    x = inputs[0]
+    n = len(x)
+    start = _wilder_start(x)
+    if start + length - 1 > n:  # no seed window: all NaN (never extended)
+        return np.full(n, np.nan), (float("nan"), length)
+    seed = float(np.nansum(x[start : start + length - 1]))
+    res = [float("nan")] * n
+    res[start + length - 2] = seed
+    value = seed
+    vals = x.tolist()
+    for i in range(start + length - 1, n):
+        raw = vals[i]
+        if raw == raw:
+            value = value - value / length + raw
+        res[i] = value
+    return np.array(res, dtype=np.float64), (value, length)
+
+
+def _wilder_np(x: Any, length: int) -> Any:
+    """Port of ``pandas_ta_classic.utils._wilder.wilder_smooth`` (TA-Lib seeding).
+
+    Seed = ``np.nansum`` of the ``length - 1`` raw values after the first finite
+    one (never position 0), placed at ``start + length - 2``; then
+    ``value - value / length + raw`` with NaN raw carrying the value forward.
+    Memoized like :func:`_rma_np` (extension needs the seed inside the prefix).
+    """
+    import numpy as np
+
+    from vibe_quant.dsl.prefix_memo import memo_run
+
+    x = np.asarray(x, dtype=np.float64)
+    start = _wilder_start(x)
+
+    def full(inputs: Any) -> tuple[Any, Any]:
+        return _wilder_full(inputs, length)
+
+    n = len(x)
+    if n - 1 < start + length - 1:  # seed not in the prefix
+        return full((x,))[0]
+    return memo_run(("wilder", length), (x,), full, _wilder_step)
 
 
 def _adx_pandas(df: pd.DataFrame, length: int) -> pd.Series:
@@ -276,10 +356,12 @@ def _adx_pandas(df: pd.DataFrame, length: int) -> pd.Series:
 def _adx_port_ok() -> bool:
     """One-shot runtime check that the numpy port is bit-identical here.
 
-    The port relies on pandas' compiled ``ewm`` contracting the blend into an
-    FMA (true on pandas 3.0.3 arm64 wheels). Other platforms or pandas versions
-    may differ by ~1 ulp per step, so verify once per process and fall back to
-    the pandas path (with a warning) on any mismatch.
+    The rma blend relies on pandas' compiled ``ewm`` contracting it into an FMA
+    (true on pandas 3.0.3 arm64 wheels), and the Wilder recurrence on the
+    library loop not being FMA-contracted (it is plain Python unless numba is
+    installed). Other platforms or versions may differ by ~1 ulp per step, so
+    verify once per process and fall back to the pandas path (with a warning)
+    on any mismatch.
     """
     import logging
 
@@ -306,19 +388,25 @@ def _adx_port_ok() -> bool:
 def compute_adx(df: pd.DataFrame, params: dict[str, object]) -> pd.Series:
     """ADX — bit-identical numpy port of ``pandas_ta_classic.adx`` (ADX column).
 
-    Falls back to pandas-ta for non-float64 input or if the one-shot
-    self-check (``_adx_port_ok``) fails on this platform.
+    Falls back to pandas-ta for non-float64 input, a non-unique index (the
+    library blanks the DI seed bar by label) or if the one-shot self-check
+    (``_adx_port_ok``) fails on this platform.
     """
     length = int_param(params, "period", 14)
-    if any(df[c].dtype != "float64" for c in ("high", "low", "close")) or not _adx_port_ok():
+    if (
+        any(df[c].dtype != "float64" for c in ("high", "low", "close"))
+        or not df.index.is_unique
+        or not _adx_port_ok()
+    ):
         return _adx_pandas(df, length)
     return _adx_port(df, length if length > 0 else 14)
 
 
 def _adx_port(df: pd.DataFrame, length: int) -> pd.Series:
-    """Numpy port: true_range -> rma ATR, +DM/-DM via rma, dx, rma(dx); see
-    ``tests/unit/test_plugins/test_adx_exactness.py``. Any arithmetic change
-    must keep that test (zero tolerance) green.
+    """Numpy port of ``ta.adx`` (rma mode, drift 1): true_range -> Wilder-smoothed
+    TR / +DM / -DM -> DI -> dx -> rma(dx); see
+    ``tests/unit/test_plugins/test_adx_exactness.py``. Any arithmetic change must
+    keep that test (zero tolerance) green.
     """
     import numpy as np
     import pandas as pd
@@ -333,13 +421,15 @@ def _adx_port(df: pd.DataFrame, length: int) -> pd.Series:
     close = df["close"].to_numpy(dtype=np.float64)
     nan = np.full(1, np.nan)
     with np.errstate(all="ignore"):
+        # true_range: pointwise non_zero_range, skipna max, rows up to the first
+        # all-finite bar (plus the drift) blanked.
         hl = high - low
-        if (hl == 0).any():
-            hl = hl + eps
+        hl = np.where(hl != 0, hl, eps)
         prev_close = np.concatenate((nan, close[:-1]))
         tr = np.fmax(np.fmax(np.abs(hl), np.abs(high - prev_close)), np.abs(prev_close - low))
-        tr[0] = np.nan
-        atr = _rma_np(tr, length)
+        finite = ~(np.isnan(high) | np.isnan(low) | np.isnan(close))
+        tr[: (int(finite.argmax()) if finite.any() else n) + 1] = np.nan
+        tr_s = _wilder_np(tr, length)
 
         prev_high = np.concatenate((nan, high[:-1]))
         prev_low = np.concatenate((nan, low[:-1]))
@@ -350,9 +440,12 @@ def _adx_port(df: pd.DataFrame, length: int) -> pd.Series:
         pos = np.where(np.abs(pos) < eps, 0.0, pos)
         neg = np.where(np.abs(neg) < eps, 0.0, neg)
 
-        k = 100.0 / atr
-        dmp = k * _rma_np(pos, length)
-        dmn = k * _rma_np(neg, length)
+        dmp = 100.0 * _wilder_np(pos, length) / tr_s
+        dmn = 100.0 * _wilder_np(neg, length) / tr_s
+        seeded = np.flatnonzero(~np.isnan(tr_s))
+        if seeded.size:  # wilder_di: the seed bar itself is not reported
+            dmp[seeded[0]] = np.nan
+            dmn[seeded[0]] = np.nan
         dx = 100.0 * np.abs(dmp - dmn) / (dmp + dmn)
         adx = _rma_np(dx, length)
     return pd.Series(adx, index=df.index, name=name)
@@ -580,11 +673,10 @@ def compute_kc(df: pd.DataFrame, params: dict[str, object]) -> dict[str, pd.Seri
     """Keltner Channel — ``{"lower", "middle", "upper"}`` keyed series."""
     period = int_param(params, "period", 20)
     scalar = float_param(params, "atr_multiplier", 2.0)
-    # True range loses the first bar, so the first valid bar is ``period + 1``;
-    # at ``n <= period`` pandas-ta returns None or raises IndexError (ema seed
-    # past the end). Same NaN result, no call. pandas-ta: length<=0 -> 20;
-    # length 1 is exempt (it already returns the 1-bar basis at n == 1).
-    if 1 < (period if period > 0 else 20) >= len(df):
+    # pandas-ta returns None (after logging "Series has N rows") below ``period``
+    # rows; at ``n == period`` it returns the EMA basis with NaN bands. Same NaN
+    # result, no call. pandas-ta: length<=0 -> 20.
+    if len(df) < (period if period > 0 else 20):
         empty = nan_like(df)
         return {"lower": empty, "middle": empty, "upper": empty}
     result = _ta().kc(df["high"], df["low"], df["close"], length=period, scalar=scalar)
@@ -646,8 +738,8 @@ def compute_donchian(df: pd.DataFrame, params: dict[str, object]) -> dict[str, p
 def compute_ichimoku(df: pd.DataFrame, params: dict[str, object]) -> dict[str, pd.Series]:
     """Ichimoku Cloud — ``{"conversion", "base", "span_a", "span_b"}``.
 
-    pandas-ta-classic's ``ta.ichimoku`` returns ``(core_df, projected_df)``;
-    ``core_df`` columns are ``ISA_t, ISB_k, ITS_t, IKS_k, ICS_k``. Outputs map
+    pandas-ta-classic's ``ta.ichimoku(as_dataframe=True)`` returns the visible
+    period frame (the legacy tuple's ``core_df``); its columns are ``ISA_t, ISB_k, ITS_t, IKS_k, ICS_k``. Outputs map
     BY NAME: conversion = Tenkan-sen (ITS), base = Kijun-sen (IKS), span_a /
     span_b = Senkou spans as plotted AT the current bar (ISA/ISB, i.e. the
     cloud price trades against, computed ``kijun`` bars ago). The projected
@@ -659,11 +751,18 @@ def compute_ichimoku(df: pd.DataFrame, params: dict[str, object]) -> dict[str, p
     tenkan = int_param(params, "tenkan", 9)
     kijun = int_param(params, "kijun", 26)
     senkou = int_param(params, "senkou", 52)
-    ichi = _ta().ichimoku(
-        df["high"], df["low"], df["close"], tenkan=tenkan, kijun=kijun, senkou=senkou
+    # as_dataframe=True: the visible-period frame only (None below max(tenkan,
+    # kijun, senkou) rows); the default tuple return is deprecated.
+    core = _ta().ichimoku(
+        df["high"],
+        df["low"],
+        df["close"],
+        tenkan=tenkan,
+        kijun=kijun,
+        senkou=senkou,
+        as_dataframe=True,
     )
     empty = nan_like(df)
-    core = ichi[0] if isinstance(ichi, tuple) and len(ichi) >= 1 else None
     if core is None:
         return {"conversion": empty, "base": empty, "span_a": empty, "span_b": empty}
 

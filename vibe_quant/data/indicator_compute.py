@@ -249,11 +249,8 @@ def _compute_single(
         tenkan = params.get("tenkan", 9)
         kijun = params.get("kijun", 26)
         senkou = params.get("senkou", 52)
-        result_tuple = df.ta.ichimoku(tenkan=tenkan, kijun=kijun, senkou=senkou)
-        if result_tuple is None:
-            return []
-        # ichimoku returns (span_df, ...) — first element is the main DataFrame
-        result = result_tuple[0] if isinstance(result_tuple, tuple) else result_tuple
+        # the accessor returns the visible-period DataFrame (pandas-ta-classic >= 0.8)
+        result = df.ta.ichimoku(tenkan=tenkan, kijun=kijun, senkou=senkou)
         if result is None:
             return []
         cols = result.columns.tolist()

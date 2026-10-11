@@ -7,17 +7,16 @@ smoothing tightens; in chop, ER approaches 0 and smoothing widens.
 
 Reference: Perry Kaufman, *Trading Systems and Methods*, 5th ed. (2013).
 
-Bit-identical numpy port of ``pandas_ta_classic.kama``: the pandas prep
-(shift/diff/epsilon guard/efficiency ratio/smoothing constant) runs on numpy
-arrays and the O(n) recurrence on float64 scalars, instead of the library's
-``.iloc``-per-element Python loop and per-call Series churn. One op stays on
-pandas by design: ``peer_diff.rolling(period).sum()`` — pandas computes it
-with a compensated running sum whose rounding order is not reproducible by
-numpy reductions (or by a Python replica that would be slower than pandas'
-compiled loop). Exactness is enforced by
-``tests/unit/test_plugins/test_kama_exactness.py`` plus a one-shot runtime
-self-check (``_kama_port_ok``) that falls back to ``_kama_pandas`` with a
-warning if the port ever disagrees here.
+Bit-identical numpy port of ``pandas_ta_classic.kama`` (0.8): the pandas prep
+(leading-NaN trim, shift/diff/epsilon guard/efficiency ratio/smoothing
+constant) runs on numpy arrays and the O(n) recurrence on float64 scalars,
+instead of the library's per-call Series churn. One op stays on pandas by
+design: ``peer_diff.rolling(period).sum()`` -- pandas computes it with a
+compensated running sum whose rounding order is not reproducible by numpy
+reductions (or by a Python replica that would be slower than pandas' compiled
+loop). Exactness is enforced by ``tests/unit/test_plugins/test_kama_exactness.py``
+plus a one-shot runtime self-check (``_kama_port_ok``) that falls back to
+``ta.kama`` with a warning if the port ever disagrees here.
 
 Usage::
 
@@ -42,7 +41,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
 
-_EPS = 2.220446049250313e-16  # np.finfo(np.float64).eps == pandas_ta sflt.epsilon
+_EPS = 2.220446049250313e-16  # np.finfo(np.float64).eps == sys.float_info.epsilon
 
 # Kaufman's canonical fast/slow periods (pandas_ta_classic.kama defaults).
 _FAST, _SLOW = 2, 30
@@ -52,55 +51,34 @@ def compute_kama(df: pd.DataFrame, params: dict[str, object]) -> pd.Series:
     """KAMA over ``close`` at the given period. Fast/slow periods follow
     Kaufman's canonical 2/30 defaults (as in pandas-ta-classic).
 
-    Falls back to the pandas path for non-float64 input, periods < 1, or if
+    Falls back to the pandas path for non-float64 input, periods < 1, a
+    non-unique index (the library pads the trimmed result back by label) or if
     the one-shot self-check (``_kama_port_ok``) fails on this platform.
     """
     period = int_param(params, "period", 10)
-    if period < 1 or df["close"].dtype != "float64" or not _kama_port_ok():
+    if (
+        period < 1
+        or df["close"].dtype != "float64"
+        or not df.index.is_unique
+        or not _kama_port_ok()
+    ):
         return _kama_pandas(df, period)
     return _kama_port(df, period)
 
 
 def _kama_pandas(df: pd.DataFrame, period: int) -> pd.Series:
-    """Reference path: the pre-port ``compute_kama`` body, kept verbatim as
-    the runtime fallback and the zero-tolerance test reference."""
-    import numpy as np
-    import pandas as pd
-    from pandas_ta_classic.utils import non_zero_range, verify_series
+    """Reference path: ``ta.kama`` itself (None below max(fast, slow, period)
+    rows -> NaN, never 0). The runtime fallback and the zero-tolerance test reference."""
+    import pandas_ta_classic as ta
 
-    fast, slow, drift = _FAST, _SLOW, 1
-
-    close = verify_series(df["close"], max(fast, slow, period))
-    if close is None:
+    result = ta.kama(df["close"], length=period, fast=_FAST, slow=_SLOW)
+    if result is None:
         return nan_like(df)  # insufficient data: not ready (NaN), never 0
-
-    # Smoothing constant — identical pandas ops to pandas_ta_classic.kama.
-    fr = 2 / (fast + 1)
-    sr = 2 / (slow + 1)
-    abs_diff = non_zero_range(close, close.shift(period)).abs()
-    peer_diff = non_zero_range(close, close.shift(drift)).abs()
-    er = abs_diff / peer_diff.rolling(period).sum()
-    x = er * (fr - sr) + sr
-    sc = (x * x).to_numpy(dtype=np.float64)
-
-    # Recurrence on float64 scalars — same operation order as the library's
-    # `sc.iloc[i] * close.iloc[i] + (1 - sc.iloc[i]) * result[i - 1]`.
-    c = close.to_numpy(dtype=np.float64)
-    m = c.size
-    result = np.full(m, np.nan, dtype=np.float64)
-    prev = c[period - 1]
-    result[period - 1] = prev
-    for i in range(period, m):
-        prev = sc[i] * c[i] + (1 - sc[i]) * prev
-        result[i] = prev
-
-    out = pd.Series(result, index=close.index)
-    out.name = f"KAMA_{period}_{fast}_{slow}"
-    return out
+    return result  # type: ignore[no-any-return]
 
 
 def _kama_port(df: pd.DataFrame, period: int) -> pd.Series:
-    """Numpy port of ``_kama_pandas``; see
+    """Numpy port of ``ta.kama``; see
     ``tests/unit/test_plugins/test_kama_exactness.py``. Any arithmetic change
     must keep that test (zero tolerance) green.
     """
@@ -112,31 +90,34 @@ def _kama_port(df: pd.DataFrame, period: int) -> pd.Series:
     fast, slow = _FAST, _SLOW
 
     close = df["close"]
-    if close.size < max(fast, slow, period):
+    full_c = close.to_numpy(dtype=np.float64)
+    # skip_leading_nan: the library computes on the rows after a leading
+    # non-finite run (when there is one and it is not the whole series), then pads back.
+    hits = np.flatnonzero(np.isfinite(full_c))
+    lead = int(hits[0]) if hits.size else full_c.size
+    if not 0 < lead < full_c.size:
+        lead = 0
+    c = full_c[lead:]
+    m = c.size
+    if m < max(fast, slow, period):
         return nan_like(df)
 
-    c = close.to_numpy(dtype=np.float64)
-    m = c.size
     eps = _EPS
     fr = 2 / (fast + 1)
     sr = 2 / (slow + 1)
     with np.errstate(all="ignore"):
-        # non_zero_range(close, close.shift(period)).abs() on arrays:
-        # epsilon added to every diff iff any diff is exactly zero (pre-abs).
+        # non_zero_range(close, close.shift(period)).abs() on arrays: pointwise
+        # (diff != 0 keeps NaN) epsilon for exact zeros.
         abs_diff = np.empty(m, dtype=np.float64)
         abs_diff[:period] = np.nan
         np.subtract(c[period:], c[:-period], out=abs_diff[period:])
-        if (abs_diff == 0).any():
-            abs_diff += eps
-        np.abs(abs_diff, out=abs_diff)
+        abs_diff = np.abs(np.where(abs_diff != 0, abs_diff, eps))
 
         # non_zero_range(close, close.shift(drift)).abs() on arrays.
         peer = np.empty(m, dtype=np.float64)
         peer[0] = np.nan
         peer[1:] = c[1:] - c[:-1]
-        if (peer == 0).any():
-            peer += eps
-        np.abs(peer, out=peer)
+        peer = np.abs(np.where(peer != 0, peer, eps))
 
         # Kept on pandas: its compensated running sum is not reproducible
         # bit-exactly by any numpy reduction order.
@@ -149,8 +130,8 @@ def _kama_port(df: pd.DataFrame, period: int) -> pd.Series:
         np.multiply(sc, sc, out=sc)
 
     # The recurrence is pure in (sc, c), so it is memoized on those arrays
-    # (computed AFTER the eps guards and the rolling sum above: those are
-    # window-wide and NOT prefix-stable, so nothing upstream of sc may be keyed).
+    # (computed AFTER the guards and the rolling sum above, so nothing upstream
+    # of sc is keyed: a trimmed buffer changes the running sum and simply misses).
     from vibe_quant.dsl.prefix_memo import memo_run
 
     def full(inputs: Any) -> tuple[Any, float]:
@@ -172,6 +153,8 @@ def _kama_port(df: pd.DataFrame, period: int) -> pd.Series:
         if m <= period
         else memo_run(("kama", period), (sc, c), full, _kama_step)
     )
+    if lead:
+        res = np.concatenate((np.full(lead, np.nan), res))
 
     return pd.Series(
         res,
@@ -193,11 +176,10 @@ def _kama_step(prev: float, inputs: Any, i: int) -> tuple[float, float]:
 def _kama_port_ok() -> bool:
     """One-shot runtime check that the numpy port is bit-identical here.
 
-    The port reproduces pandas' operation order on numpy/Python float64
-    scalars; FMA contraction in a compiled layer or a pandas version change
-    could shift results by ~1 ulp per step (as pandas' ewm does for ADX).
-    Verify once per process and fall back to the pandas path (with a
-    warning) on any mismatch.
+    The port reproduces the library's operation order on numpy/Python float64
+    scalars; FMA contraction in a compiled layer (numba) or a pandas version
+    change could shift results by ~1 ulp per step. Verify once per process and
+    fall back to the pandas path (with a warning) on any mismatch.
     """
     import logging
 

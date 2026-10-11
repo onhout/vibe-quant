@@ -78,12 +78,23 @@ def _walk_with_zero_diff(seed: int, n: int) -> pd.DataFrame:
     return df
 
 
+def _lead_nan_df(seed: int, n: int, lead: int = 12) -> pd.DataFrame:
+    """Random walk behind a leading NaN run (chained input): the library trims
+    it, computes on the rest and pads back (``skip_leading_nan``)."""
+    df = _df(seed, n)
+    close = df["close"].to_numpy(copy=True)
+    close[: min(lead, n)] = np.nan
+    df["close"] = pd.Series(close)
+    return df
+
+
 def _shapes(seed: int, n: int) -> list[tuple[str, pd.DataFrame]]:
     return [
         ("walk", _df(seed, n)),
         ("zerodiff", _walk_with_zero_diff(seed, n)),
         ("flat", _flat_df(n)),
         ("gaps", _gap_df(seed, n)),
+        ("leadnan", _lead_nan_df(seed, n)),
     ]
 
 
@@ -145,7 +156,9 @@ def test_new_equals_old_all_periods_and_shapes(period: int) -> None:
     range at buffer sizes {15, 40, 400, period-1, period+1, 2*period} over
     random walks, flat bars, and NaN gaps. Both the raw port and the public
     entry point must equal the pre-port pandas implementation exactly."""
-    sizes = sorted({15, 40, 400, period - 1, period + 1, 2 * period})
+    # 41/42/43 straddle the 30-row minimum of the trimmed series behind the
+    # 12-row leading NaN run of the "leadnan" shape.
+    sizes = sorted({15, 40, 41, 42, 43, 400, period - 1, period + 1, 2 * period})
     for n in sizes:
         for shape, df in _shapes(period * 31 + n, n):
             expected = kama_mod._kama_pandas(df, period)
@@ -209,9 +222,9 @@ def _bits(a: np.ndarray) -> np.ndarray:
 
 
 def _stress_closes(n: int, period: int) -> np.ndarray:
-    """Walk with the hostile appends: an equal close (diff==0 flips the whole
-    window's eps guard, so prior outputs change), a close equal to the one
-    `period` bars back (abs_diff zero, lag period), and a NaN gap."""
+    """Walk with the hostile appends: an equal close (diff==0 -> eps at that
+    bar only), a close equal to the one `period` bars back (abs_diff zero, lag
+    period), and a NaN gap."""
     rng = np.random.RandomState(5)
     c = 100.0 + np.cumsum(rng.randn(n) * 0.5)
     for i in (150, 301, 470):
@@ -254,9 +267,10 @@ def test_kama_memo_stream_bitwise() -> None:
     assert MEMO.hits > 400
 
 
-def test_kama_flip_append_changes_prefix_but_matches_reference() -> None:
-    """An appended equal close rewrites 290/400 prior outputs; the memo must
-    not extend its stale prefix."""
+def test_kama_equal_close_append_extends_memo_and_matches_reference() -> None:
+    """The zero-diff epsilon is pointwise (pandas-ta-classic >= 0.8): an appended
+    equal close leaves every prior output untouched, so the memo extends the
+    prefix by one step and must still equal the library bit for bit."""
     rng = np.random.RandomState(7)
     c = 100.0 + np.cumsum(rng.randn(400) * 0.5)
     with memo_env(True):
@@ -264,9 +278,9 @@ def test_kama_flip_append_changes_prefix_but_matches_reference() -> None:
         c2 = np.append(c, c[-1])
         b = compute_kama(pd.DataFrame({"close": c2}), {"period": 10}).to_numpy()
         ref = kama_mod._kama_pandas(pd.DataFrame({"close": c2}), 10).to_numpy()
-        assert (a != b[:-1]).sum() > 100  # the flip really rewrote history
+        assert np.array_equal(_bits(a), _bits(b[:-1]))  # history untouched (incl. NaN warmup)
         assert np.array_equal(_bits(b), _bits(ref))
-        assert MEMO.hits == 0  # sc prefix changed -> bitwise check rejected it
+        assert MEMO.hits == 1  # sc/close prefix unchanged -> extended by one step
 
 
 def test_kama_random_walk_stream_hits_every_bar() -> None:
@@ -279,6 +293,39 @@ def test_kama_random_walk_stream_hits_every_bar() -> None:
 
 
 def test_eps_constant_matches_pandas_ta() -> None:
-    from pandas_ta_classic.utils import sflt
+    import sys
 
-    assert kama_mod._EPS == float(np.finfo(np.float64).eps) == sflt.epsilon
+    # pandas-ta-classic's non_zero_range substitutes sys.float_info.epsilon
+    assert kama_mod._EPS == float(np.finfo(np.float64).eps) == sys.float_info.epsilon
+
+
+def _dup_label_frame(*, dup_in_trimmed: bool) -> pd.DataFrame:
+    """Leading NaN run whose index labels repeat later labels (the library pads
+    the trimmed result back BY LABEL; a positional pad would differ)."""
+    close = 100.0 + np.arange(80, dtype=np.float64)
+    close[:5] = np.nan
+    labels = np.arange(80)
+    labels[:5] = np.arange(25, 30)  # duplicates of labels 25..29 further down
+    if dup_in_trimmed:
+        labels[60] = labels[61]  # duplicate inside the computed part
+    return pd.DataFrame({"close": close}, index=labels)
+
+
+def test_non_unique_index_leading_nan_matches_library() -> None:
+    """Non-unique index + leading NaN run: the port must defer to ta.kama (label
+    padding), so the output is bit-equal to the library, not positionally padded."""
+    df = _dup_label_frame(dup_in_trimmed=False)
+    expected = ta.kama(df["close"], length=10)
+    assert expected is not None
+    actual = compute_kama(df, {"period": 10})
+    np.testing.assert_array_equal(actual.to_numpy(), expected.to_numpy())
+    assert actual.index.equals(expected.index)
+    assert np.isfinite(actual.to_numpy()).any()
+
+
+def test_non_unique_index_inside_trimmed_part_raises_like_library() -> None:
+    df = _dup_label_frame(dup_in_trimmed=True)
+    with pytest.raises(ValueError):
+        ta.kama(df["close"], length=10)
+    with pytest.raises(ValueError):
+        compute_kama(df, {"period": 10})

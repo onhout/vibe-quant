@@ -28,7 +28,12 @@ from pta_stream_harness import (  # noqa: E402
 )
 
 from vibe_quant.dsl import prefix_memo  # noqa: E402
-from vibe_quant.dsl.compute_builtins import _adx_pandas, _rma_np, compute_adx  # noqa: E402
+from vibe_quant.dsl.compute_builtins import (  # noqa: E402
+    _adx_pandas,
+    _rma_np,
+    _wilder_np,
+    compute_adx,
+)
 from vibe_quant.dsl.prefix_memo import MEMO, RecurrenceMemo, memo_run  # noqa: E402
 
 
@@ -79,6 +84,14 @@ def test_eps_flip_mid_segment() -> None:
     df = _ohlc(700)
     for i in (500, 650):
         df.loc[i, ["high", "low"]] = df.loc[i, "close"]
+    _assert_stream_matches_pandas(df, 12, 400)
+
+
+def test_leading_nan_buffer_stream() -> None:
+    """A buffer whose first rows are NaN (chained input): the TR blanking, the
+    Wilder seed and the dx-seeded rma all shift with the first valid bar."""
+    df = _ohlc(700)
+    df.loc[:5, ["high", "low", "close"]] = np.nan
     _assert_stream_matches_pandas(df, 12, 400)
 
 
@@ -179,6 +192,45 @@ def test_rma_matches_pandas_rma_directly() -> None:
             got = _rma_np(x[:n], 12)
             ref = ta.rma(pd.Series(x[:n]), length=12).to_numpy()
             assert np.array_equal(_bits(got), _bits(ref)), n
+
+
+def test_rma_seeds_at_first_valid_value() -> None:
+    """Chained input (a NaN prefix): the SMA seed window starts at the first
+    non-NaN value, every append is bit-identical to ``ta.rma``, and the memo hits."""
+    import pandas_ta_classic as ta
+
+    rng = np.random.RandomState(9)
+    x = rng.randn(200)
+    x[:7] = np.nan
+    x[90] = np.nan
+    with memo_env(True):
+        for n in range(8, 200):  # incl. n < first_valid + length (undefined, all NaN)
+            got = _rma_np(x[:n], 12)
+            ref = ta.rma(pd.Series(x[:n]), length=12)
+            ref_arr = np.full(n, np.nan) if ref is None else ref.to_numpy()
+            assert np.array_equal(_bits(got), _bits(ref_arr)), n
+        assert MEMO.hits > 150
+
+
+@pytest.mark.parametrize("length", [1, 2, 14])
+def test_wilder_matches_library_wilder_smooth(length: int) -> None:
+    """``_wilder_np`` (memoized) vs the library's TA-Lib-seeded smoother, bit for
+    bit, over growing prefixes with a NaN prefix (index 0 is always skipped), an
+    interior NaN (carried forward) and a zero stretch."""
+    from pandas_ta_classic.utils._wilder import wilder_smooth
+
+    rng = np.random.RandomState(10)
+    for lead in (1, 6):
+        x = np.abs(rng.randn(160))
+        x[:lead] = np.nan
+        x[70] = np.nan
+        x[100:110] = 0.0
+        with memo_env(True):
+            for n in range(1, 160):
+                got = _wilder_np(x[:n], length)
+                ref = wilder_smooth(pd.Series(x[:n]), length).to_numpy()
+                assert np.array_equal(_bits(got), _bits(ref)), (lead, n)
+            assert MEMO.hits > 100
 
 
 def test_two_timeframe_adx_value_stream_identical_memo_on_off() -> None:

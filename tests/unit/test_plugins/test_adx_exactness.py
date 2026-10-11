@@ -1,7 +1,8 @@
 """compute_adx must be bit-identical to ``pandas_ta_classic.adx`` (ADX column).
 
-The compute_fn is an operation-for-operation numpy/float port of the library
-path (true_range -> rma -> dx -> rma, incl. pandas' ``ewm(adjust=False)`` loop
+The compute_fn is an operation-for-operation numpy/float port of the 0.8 library
+path (true_range -> Wilder-smoothed TR/+DM/-DM (TA-Lib seeding) -> DI -> dx ->
+rma(dx) seeded at the first valid dx, incl. pandas' ``ewm(adjust=False)`` loop
 with NaN handling). Equality is exact (no tolerance); NaN positions must match.
 """
 
@@ -49,6 +50,20 @@ def _nan_gaps(seed: int, n: int) -> pd.DataFrame:
     return df
 
 
+def _lead_nan(seed: int, n: int) -> pd.DataFrame:
+    """Chained input: all three columns NaN for the first rows."""
+    df = _walk(seed, n)
+    df.loc[: min(4, n - 1), ["high", "low", "close"]] = np.nan
+    return df
+
+
+def _lead_nan_close_only(seed: int, n: int) -> pd.DataFrame:
+    """Only close is NaN at first: true range blanks up to the first all-finite bar."""
+    df = _walk(seed, n)
+    df.loc[: min(2, n - 1), "close"] = np.nan
+    return df
+
+
 def _int_prices(seed: int, n: int) -> pd.DataFrame:
     rng = np.random.RandomState(seed)
     close = np.round(100.0 + np.cumsum(rng.randn(n)))
@@ -70,6 +85,8 @@ def _frames(n: int) -> list[pd.DataFrame]:
         _flat_stretch(3, n),
         _nan_gaps(4, n),
         _int_prices(5, n),
+        _lead_nan(6, n),
+        _lead_nan_close_only(7, n),
     ]
 
 
@@ -154,3 +171,19 @@ def test_non_float64_uses_pandas_path() -> None:
     res = ta.adx(df["high"], df["low"], df["close"], length=14)
     assert res is not None
     assert np.array_equal(out.to_numpy(), res.iloc[:, 0].to_numpy(), equal_nan=True)
+
+
+def test_adx_duplicate_seed_label_falls_back_to_library() -> None:
+    """The library blanks the DI seed bar BY LABEL; with a repeated label the
+    positional port would blank the wrong bar, so a non-unique index must take
+    the library path (exact, NaN-aware equality)."""
+    rng = np.random.RandomState(11)
+    close = 100.0 + np.cumsum(rng.randn(80) * 0.5)
+    df = pd.DataFrame({"high": close + 0.4, "low": close - 0.4, "close": close})
+    labels = np.arange(80)
+    labels[50] = 13  # repeats the seed bar's label (period 14 -> seed position 13)
+    df.index = pd.Index(labels)
+    assert not df.index.is_unique
+    expected = _reference(df, 14)
+    actual = compute_adx(df, {"period": 14})
+    assert np.array_equal(actual.to_numpy(), expected, equal_nan=True)

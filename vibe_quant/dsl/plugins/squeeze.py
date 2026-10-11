@@ -23,8 +23,9 @@ Formula notes (matching ``pandas_ta_classic``):
 - ``sd`` is the **population** rolling standard deviation (``ddof=0``) —
   the default of ``pandas_ta_classic.bbands`` (``ddof: int = 0``).
 - ``ATR`` is ``pandas_ta_classic.atr``: Wilder's RMA of true range,
-  ``alpha = 1 / length``, ``adjust=False``, SMA-seeded at bar
-  ``length - 1`` (seed = mean of the first ``length`` true ranges).
+  ``alpha = 1 / length``, ``adjust=False``, SMA-seeded at bar ``length``
+  (seed = mean of the first ``length`` true ranges; true range has none at
+  bar 0, so the seed window starts at bar 1 -- pandas-ta-classic >= 0.8).
   KC midline (EMA) cancels in the width ratio and is not computed.
 - ``SQUEEZE_MOM`` uses ``pandas_ta_classic.linreg``'s default output —
   the fitted value at the end of each window (``m * (length - 1) + b``).

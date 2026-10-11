@@ -51,8 +51,8 @@ def _hand_atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int) ->
     tr = ranges.abs().max(axis=1)
     tr.iloc[0] = np.nan  # true_range zeroes the first `drift` bars
     atr = tr.copy()
-    atr.iloc[: length - 1] = np.nan
-    atr.iloc[length - 1] = tr.iloc[0:length].mean()  # rma's SMA seed (skips NaN)
+    atr.iloc[:length] = np.nan  # rma seeds on the `length` values after the NaN bar 0
+    atr.iloc[length] = tr.iloc[1 : length + 1].mean()
     return atr.ewm(alpha=1.0 / length, adjust=False).mean()
 
 
