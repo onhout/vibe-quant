@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { parseServerTimestamp } from "@/lib/time";
 
 type StatusFilter = "all" | "completed" | "failed" | "running" | "pending";
 
@@ -20,7 +21,9 @@ interface RunSelectorProps {
 }
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString("en-US", {
+  const ms = parseServerTimestamp(dateStr);
+  if (ms === undefined) return "-";
+  return new Date(ms).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -56,7 +59,10 @@ export function RunSelector({ selectedRunId, onSelectRun }: RunSelectorProps) {
 
   const sortedRuns = useMemo(
     () =>
-      [...runs].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+      [...runs].sort(
+        (a, b) =>
+          (parseServerTimestamp(b.created_at) ?? 0) - (parseServerTimestamp(a.created_at) ?? 0),
+      ),
     [runs],
   );
 

@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { RunSummaryItem } from "@/api/generated/models";
 import { RunsTable } from "./results";
 
@@ -51,6 +51,15 @@ function rowOrder(sorting: { id: string; desc: boolean }[], runs = RUNS): string
 }
 
 describe("results RunsTable sorting", () => {
+  // A non-UTC zone makes a dropped "Z" on zone-less SQLite text observable here,
+  // independent of the machine's TZ (CI runs UTC).
+  beforeAll(() => {
+    vi.stubEnv("TZ", "Europe/Berlin");
+  });
+  afterAll(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("sorts by sharpe descending and ascending", () => {
     expect(rowOrder([{ id: "sharpe_ratio", desc: true }])).toEqual([
       "strat-b",
@@ -167,6 +176,8 @@ describe("results RunsTable sorting", () => {
     });
 
     it("reads SQLite datetime('now') text as UTC", () => {
+      // Guard: a non-UTC zone is what makes a missing "Z" change this order.
+      expect(new Date(2026, 0, 1).getTimezoneOffset()).toBe(-60);
       // No zone in the text means UTC: 23:00 is later than 22:30Z
       const dates = ["2026-01-01 23:00:00", "2026-01-01T22:30:00Z"];
       expect(dateOrder(dates, false)).toEqual(["strat-b", "strat-a"]);

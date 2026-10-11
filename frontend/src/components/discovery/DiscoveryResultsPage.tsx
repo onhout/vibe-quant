@@ -42,21 +42,33 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { parseServerTimestamp } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { DiscoveryResults } from "./DiscoveryResults";
 
 const ALL = "__all__";
 
 function formatDuration(start: string | null | undefined, end: string | null | undefined, status: string): string {
-  if (!start) return "-";
-  const s = new Date(start).getTime();
-  const e = status === "running" ? Date.now() : end ? new Date(end).getTime() : Date.now();
+  const s = parseServerTimestamp(start);
+  if (s === undefined) return "-";
+  const e = status === "running" ? Date.now() : (parseServerTimestamp(end) ?? Date.now());
   const secs = Math.max(0, Math.round((e - s) / 1000));
   if (secs < 60) return `${secs}s`;
   if (secs < 3600) return `${Math.round(secs / 60)}m`;
   const h = Math.floor(secs / 3600);
   const m = Math.round((secs % 3600) / 60);
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function formatStartedAt(start: string | null | undefined): string {
+  const ms = parseServerTimestamp(start);
+  if (ms === undefined) return "-";
+  return new Date(ms).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function bestFitnessFromProgress(job: DiscoveryJobResponse): string {
@@ -105,8 +117,8 @@ const features = tableFeatures({
 const startedAtSort: SortFn<typeof features, DiscoveryJobResponse> = (rowA, rowB, columnId) => {
   const a = rowA.getValue<string | null>(columnId);
   const b = rowB.getValue<string | null>(columnId);
-  const at = a ? Date.parse(a) : Number.POSITIVE_INFINITY;
-  const bt = b ? Date.parse(b) : Number.POSITIVE_INFINITY;
+  const at = parseServerTimestamp(a) ?? Number.POSITIVE_INFINITY;
+  const bt = parseServerTimestamp(b) ?? Number.POSITIVE_INFINITY;
   return at === bt ? 0 : at < bt ? -1 : 1;
 };
 
@@ -229,14 +241,7 @@ const columns: ColumnDef<typeof features, DiscoveryJobResponse>[] = [
     header: ({ column }) => <SortHeader column={column}>Started</SortHeader>,
     cell: ({ row }) => (
       <span className="text-xs text-muted-foreground">
-        {row.original.started_at
-          ? new Date(row.original.started_at).toLocaleDateString("en-US", {
-              month: "short",
-              day: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          : "-"}
+        {formatStartedAt(row.original.started_at)}
       </span>
     ),
   },

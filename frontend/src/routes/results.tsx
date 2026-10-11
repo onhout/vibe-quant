@@ -35,6 +35,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { parseServerTimestamp } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 const ALL = "__all__";
@@ -51,24 +52,14 @@ function formatNum(v: number | null | undefined, decimals = 2): string {
 }
 
 function formatDate(d: string | null | undefined): string {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("en-US", {
+  const ms = parseServerTimestamp(d);
+  if (ms === undefined) return "-";
+  return new Date(ms).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-/**
- * Epoch ms of a run timestamp. SQLite datetime('now') text has no zone and is UTC, but
- * Date.parse reads a zone-less string as local time, so the zone is added here.
- */
-const ZONELESS_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
-function runInstant(value: string | null | undefined): number | undefined {
-  if (!value) return undefined;
-  const ms = Date.parse(ZONELESS_DATETIME.test(value) ? `${value.replace(" ", "T")}Z` : value);
-  return Number.isNaN(ms) ? undefined : ms;
 }
 
 function statusVariant(status: string): "default" | "destructive" | "secondary" | "outline" {
@@ -285,7 +276,7 @@ const columns: ColumnDef<typeof features, RunSummaryItem>[] = [
     id: "created_at",
     // Sorts by instant, not text: text order breaks on mixed UTC offsets and fractional digits.
     // Missing or unparseable dates map to undefined so sortUndefined keeps them last.
-    accessorFn: (row) => runInstant(row.created_at),
+    accessorFn: (row) => parseServerTimestamp(row.created_at),
     sortFn: "basic",
     sortUndefined: "last",
     header: ({ column }) => <SortHeader column={column}>Date</SortHeader>,

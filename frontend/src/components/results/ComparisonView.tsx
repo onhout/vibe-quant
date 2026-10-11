@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { parseServerTimestamp } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 const MAX_COMPARE = 5;
@@ -76,7 +77,9 @@ const METRICS: MetricDef[] = [
 ];
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString("en-US", {
+  const ms = parseServerTimestamp(dateStr);
+  if (ms === undefined) return "-";
+  return new Date(ms).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -85,8 +88,9 @@ function formatDate(dateStr: string): string {
 }
 
 function formatChartDate(ts: string): string {
-  const d = new Date(ts);
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const ms = parseServerTimestamp(ts);
+  if (ms === undefined) return "-";
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function formatCurrency(value: number): string {
@@ -110,7 +114,10 @@ function RunPicker({
 
   const sorted = useMemo(
     () =>
-      [...runs].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+      [...runs].sort(
+        (a, b) =>
+          (parseServerTimestamp(b.created_at) ?? 0) - (parseServerTimestamp(a.created_at) ?? 0),
+      ),
     [runs],
   );
 

@@ -3,14 +3,16 @@ import { useGetRunMetaApiResultsRunsRunIdMetaGet } from "@/api/generated/results
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { parseServerTimestamp } from "@/lib/time";
 
 interface RunDetailsExpanderProps {
   runId: number;
 }
 
 function formatDate(dateStr: string | null): string {
-  if (!dateStr) return "N/A";
-  return new Date(dateStr).toLocaleString(undefined, {
+  const ms = parseServerTimestamp(dateStr);
+  if (ms === undefined) return "N/A";
+  return new Date(ms).toLocaleString(undefined, {
     year: "numeric",
     month: "short",
     day: "numeric",

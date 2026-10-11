@@ -4,10 +4,12 @@ import { useListDiscoveryJobsApiDiscoveryJobsGet } from "@/api/generated/discove
 import type { DiscoveryJobResponse } from "@/api/generated/models";
 import { DiscoveryConfig } from "@/components/discovery/DiscoveryConfig";
 import { Badge } from "@/components/ui/badge";
+import { parseServerTimestamp } from "@/lib/time";
 
 function formatDuration(start: string | null | undefined): string {
-  if (!start) return "-";
-  const secs = Math.max(0, Math.round((Date.now() - new Date(start).getTime()) / 1000));
+  const s = parseServerTimestamp(start);
+  if (s === undefined) return "-";
+  const secs = Math.max(0, Math.round((Date.now() - s) / 1000));
   if (secs < 60) return `${secs}s`;
   if (secs < 3600) return `${Math.round(secs / 60)}m`;
   const h = Math.floor(secs / 3600);
