@@ -15,7 +15,7 @@ GOAL: <one sentence: the exact change or extraction>
 FILES YOU MAY EDIT OR CREATE (inside the worktree): <exact paths>. Leave every other file unchanged.
 FILES TO READ FIRST: <exact paths + line ranges, the fewest that suffice — read them all in ONE turn>
 
-SPEED RULES (measured: one model turn costs 4–10 s; the full test suite costs ~3 min):
+SPEED RULES (measured: one model turn costs 4–10 s; the full test suite costs ~3 min serial, ~1 min under `-n auto --dist worksteal`):
 - Batch independent reads/greps/commands into ONE turn (parallel tool calls). Read whole functions or the line ranges given below, not 70-line slices. No todo lists.
 - While iterating, run only the targeted test files. The full suite runs ONCE, inside swarm-check at the end — do not also run `pytest tests/unit` separately.
 - The gate is main's `scripts/agents/swarm-check.sh <worktree>`. Only when your task changes the gate itself (`scripts/agents/swarm_check.py`), prove it with the worktree's copy: `<worktree>/scripts/agents/swarm-check.sh <worktree>`.

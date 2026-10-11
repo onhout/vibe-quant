@@ -28,6 +28,7 @@ dev = [
     "pytest>=9.1.0",
     "pytest-cov>=7.1.0",
     "pytest-asyncio>=1.4.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.15.20",
     "mypy>=2.2.0",
     "hypothesis>=6.156.0",
@@ -91,6 +92,9 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
+markers = [
+    "timing: asserts relative wall-clock speed; run serially (-m timing), never in the parallel pass",
+]
 
 [tool.coverage.run]
 source = ["vibe_quant"]

@@ -97,6 +97,14 @@ STUB_VARS = ("SWARM_CHECK_RUFF", "SWARM_CHECK_MYPY", "SWARM_CHECK_PYTEST")
 TEST_TIMEOUT = 1800  # seconds: pytest, exactness
 TOOL_TIMEOUT = 600  # seconds: everything else
 PYTEST_NO_TESTS_RC = 5
+# Big pytest selections (full suite, -k group) run under xdist: the wall time drops
+# ~3x (183s -> ~60s on 10 cores, job 20261011-speed). `worksteal` beat the default
+# `load` scheduler (56s vs 66s) once relative-speed tests were pulled out. A handful
+# of targeted files stays serial: worker startup costs more than it saves there.
+# Tests marked `timing` assert relative wall-clock speed and flake under worker
+# contention, so they are deselected from the parallel pass and run serially after.
+PYTEST_PARALLEL_ARGS = ("-n", "auto", "--dist", "worksteal")
+TIMING_MARK = "timing"
 CACHE_DIR = "swarm-check"
 CACHE_VERSION = 2
 CHECK_STATUSES = ("PASS", "FAIL", "SKIP", "WARN")
@@ -491,22 +499,35 @@ def _run_tests(
         return Check("tests", "SKIP", "no python changed")
     targets = [p for p in changed_test_files(state.changed) if (cfg.worktree / p).exists()]
     expr = k_expr(state.changed)
-    groups: list[tuple[list[str], bool]] = []  # (args, is_k_group)
+    # (args, rc5_is_skip, rc5_note)
+    commands: list[tuple[list[str], bool, str]] = []
+    # A handful of targeted files runs serially (worker startup costs more than it
+    # saves); timing-marked tests in them therefore run uncontended.
     if targets:
-        groups.append((targets, False))
-    if needs_full_suite(state.changed):
-        groups.append((["tests/unit"], False))
-    elif expr:
-        groups.append((["tests/unit", "-k", expr], True))
-    if not groups:
+        commands.append((targets, False, ""))
+    # A big selection (full suite, -k group) runs under xdist with the timing-marked
+    # relative-speed tests deselected, then those run serially (they flake under load).
+    full = needs_full_suite(state.changed)
+    group = ["tests/unit"] if full else (["tests/unit", "-k", expr] if expr else [])
+    if group:
+        # rc5 on a full-suite run is a real failure; on a -k group it means "no match".
+        commands.append(
+            (group + list(PYTEST_PARALLEL_ARGS) + ["-m", f"not {TIMING_MARK}"], not full,
+             f"no tests matched -k {expr}" if expr else "")
+        )
+        commands.append(
+            (group + ["-m", TIMING_MARK], True,
+             f"no timing tests matched -k {expr}" if expr else "no timing tests matched")
+        )
+    if not commands:
         return Check("tests", "SKIP", "nothing to run for changed python")
     summaries: list[str] = []
     failed = False
     passed = 0
-    for group, is_k in groups:
-        rc, out = run(tools["pytest"] + group, cfg.worktree, wt_env, TEST_TIMEOUT)
-        if rc == PYTEST_NO_TESTS_RC and is_k:
-            summaries.append(f"no tests matched -k {group[-1]}")
+    for args, rc5_skip, rc5_note in commands:
+        rc, out = run(tools["pytest"] + args, cfg.worktree, wt_env, TEST_TIMEOUT)
+        if rc == PYTEST_NO_TESTS_RC and rc5_skip:
+            summaries.append(rc5_note)
             continue
         summaries.append(pytest_summary(out))
         if rc != 0:

@@ -231,6 +231,7 @@ def test_negative_zero_prefix_misses() -> None:
     assert np.array_equal(_bits(got), _bits(_rma_np_reference(b[:31], 12)))
 
 
+@pytest.mark.timing
 def test_thrash_more_series_than_slots_is_exact_and_not_slower() -> None:
     """More interleaved same-length series than slots: exact results, miss path ~ unmemoized."""
     import time
@@ -265,6 +266,7 @@ def test_thrash_more_series_than_slots_is_exact_and_not_slower() -> None:
     assert best_on < best_off * 1.5
 
 
+@pytest.mark.timing
 def test_rma_full_no_nan_uses_inline_fast_path() -> None:
     """B1: the miss path must stay near main's inline loop, not a per-element helper call."""
     import time

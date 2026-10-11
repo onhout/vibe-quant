@@ -664,7 +664,37 @@ class TestFailClosed:
         tests = {c.name: c for c in swarm_check.run_checks(cfg, runner)}["tests"]
         assert tests.status == "PASS"
         pytest_cmds = [c for c in runner.calls if any("pytest" in Path(a).name for a in c)]
-        assert [c[c.index("pytest") + 1:] if "pytest" in c else c[-1:] for c in pytest_cmds] == [["tests/unit"]]
+        # A big selection runs under xdist with the relative-speed tests deselected,
+        # then those `timing` tests run serially (they flake under worker contention).
+        assert [c[c.index("pytest") + 1:] for c in pytest_cmds] == [
+            ["tests/unit", "-n", "auto", "--dist", "worksteal", "-m", "not timing"],
+            ["tests/unit", "-m", "timing"],
+        ]
+
+    def test_k_group_runs_parallel_then_timing_serially(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 9\n")
+        runner = FakeRunner()
+        runner.responses = {"pytest": (0, "1 passed")}
+        cfg = _cfg(tmp_path, repo, base="HEAD", exactness="never", frontend="never")
+        tests = {c.name: c for c in swarm_check.run_checks(cfg, runner)}["tests"]
+        assert tests.status == "PASS"
+        pytest_cmds = [c for c in runner.calls if any("pytest" in Path(a).name for a in c)]
+        assert [c[c.index("pytest") + 1:] for c in pytest_cmds] == [
+            ["tests/unit", "-k", "foo", "-n", "auto", "--dist", "worksteal", "-m", "not timing"],
+            ["tests/unit", "-k", "foo", "-m", "timing"],
+        ]
+
+    def test_targeted_files_run_serially_without_xdist(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        (repo / "tests" / "unit" / "test_bar.py").write_text("def test_bar() -> None:\n    pass\n")
+        runner = FakeRunner()
+        runner.responses = {"pytest": (0, "1 passed")}
+        cfg = _cfg(tmp_path, repo, base="HEAD", exactness="never", frontend="never")
+        swarm_check.run_checks(cfg, runner)
+        pytest_cmds = [c for c in runner.calls if any("pytest" in Path(a).name for a in c)]
+        # A handful of files: xdist startup costs more than it saves, so no -n/-m.
+        assert [c[c.index("pytest") + 1:] for c in pytest_cmds] == [["tests/unit/test_bar.py"]]
 
     def test_internal_crash_is_fail(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _init_repo(tmp_path)
@@ -781,7 +811,10 @@ class TestPassCache:
         assert not _called_with(second, "mypy")
         data = json.loads(out_json.read_text())
         assert data["gate"] == "PASS" and data["cached"] is True
-        assert data["tests"] == {"status": "PASS", "detail": "1 passed in 0.01s"}
+        assert data["tests"] == {
+            "status": "PASS",
+            "detail": "1 passed in 0.01s | 1 passed in 0.01s",
+        }
 
     def test_new_head_no_reuse(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         repo = self._pass_repo(tmp_path)
@@ -901,10 +934,14 @@ class TestPassCache:
     ) -> None:
         """B1: a commit made while pytest runs must not be stamped (GATE PASS is for old HEAD)."""
         repo = self._pass_repo(tmp_path)
+        committed = False
 
         def commit_mid_run(cmd: Sequence[str], cwd: Path) -> tuple[int, str]:
-            (repo / "vibe_quant" / "foo.py").write_text("def foo(:\n")  # broken, never gated
-            _git(repo, "commit", "-qam", "broken mid-run")
+            nonlocal committed
+            if not committed:  # the gate runs pytest twice (parallel + timing)
+                committed = True
+                (repo / "vibe_quant" / "foo.py").write_text("def foo(:\n")  # broken, never gated
+                _git(repo, "commit", "-qam", "broken mid-run")
             return 0, "1 passed in 0.01s"
 
         first = self._runner()
@@ -923,10 +960,14 @@ class TestPassCache:
         """B1: untracked at start (WARN) + committed during the run -> end state is clean."""
         repo = self._pass_repo(tmp_path)
         (repo / "stray.py").write_text("X = 1\n")
+        committed = False
 
         def commit_mid_run(cmd: Sequence[str], cwd: Path) -> tuple[int, str]:
-            _git(repo, "add", "-A")
-            _git(repo, "commit", "-qm", "stray")
+            nonlocal committed
+            if not committed:  # the gate runs pytest twice (parallel + timing)
+                committed = True
+                _git(repo, "add", "-A")
+                _git(repo, "commit", "-qm", "stray")
             return 0, "1 passed in 0.01s"
 
         first = self._runner()
