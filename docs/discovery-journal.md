@@ -4,6 +4,28 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: RESULT H-10 — REJECTED as registered (Sharpe 0.81 < 1.0) but the first signal to survive 2022-26; PRE-REGISTRATION H-10b out-of-universe replication
+
+**H-10 result** (spec 784a0e7, `h10_taker_flow.py`, run once; identical machinery to H-9, only the ranking signal differs):
+
+| Window | Net Sharpe | Net return | Max DD | Beta |
+|---|---|---|---|---|
+| FULL 2020-10..2026-09 | 0.806649751856154 | 0.8942218876484014 | 0.12899382835212703 | -0.03487561003574028 |
+| A 2020-10..2022-05 | 1.0199585246098173 | 0.3503088757753048 | 0.12899382835212703 | -0.0371658705313575 |
+| B 2022-06..2026-09 | 0.7101487025512201 | 0.40280636647729673 | 0.10525994745193201 | -0.0328540725750308 |
+
+(1) FULL ≥ 1.0 FAIL; (2) both halves > 0.5 PASS; (3) |beta| < 0.3 PASS → **REJECT**. Unlike momentum (H-8 B 0.09, H-9 B −0.32), taker-flow continuation stays positive after mid-2022 with max DD 10–13%. Annual turnover 49×; costs ≈0.17 Sharpe. No variants will be run on the H-10 universe.
+
+**H-10b pre-registration** (committed before the symbol listing or any download): does the identical H-10 signal replicate on coins it has never seen?
+
+- **Universe rule:** every USDT-M perpetual in Binance Vision `data/futures/um/monthly/klines/` whose first 1d monthly file is between 2020-11 and 2023-12 inclusive, excluding the 66 H-10 coins, excluding delivery contracts (symbols containing "_") and non-USDT quotes; delisted symbols included until their data ends.
+- **Spec:** H-10 unchanged (7d taker-buy share − 0.5, weekly Monday ranking, top/bottom third, dollar-neutral, 7-day hold, 0.05% per unit notional) plus ONE realism filter fixed now: a coin is rankable only if its prior-7-day average quote volume ≥ 10,000,000 USDT (newer coins are thin; 0.05% understates their costs otherwise).
+- **Window:** 2022-06-01..2026-09-30 (the post-momentum regime; ≈4.3 y).
+- **PASS only if all:** net Sharpe ≥ 1.0 (≈ t ≥ 2 over 4.3 y); |beta| to the equal-weight buy-and-hold of the same universe < 0.3; ≥ 30 rankable coins on average. Otherwise REJECT and taker-flow is shelved; no variants.
+- PASS → propose to the user: taker-flow context indicator + portfolio-level strategy in the engine, then a full-fidelity validation before any paper step.
+
+---
+
 ## 2026-10-11: PRE-REGISTRATION H-10 — cross-sectional taker-flow imbalance (new information, off-engine)
 
 Committed before the script exists. First test of order-flow information (no strategy in this project has used taker buy volume). Data already on disk: Binance Vision 1d klines for the H-9 universe (66 coins, `data/swarm/20261011-h9-raw`, column 10 = taker buy base volume).
