@@ -4,6 +4,39 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: RESULT H-2b — REJECTED as pre-registered (beats nothing but drawdown)
+
+Pre-registration: previous entry (commit 5e4393e, written before the data existed). Data: Binance perps 2020-01..2021-12 ingested (SOL from 2020-09, BNB from 2020-02; 3,781,979 new 1m bars, 7,881 funding rates); exactness_239 screening + validation-multi IDENTICAL after the catalog rebuild. Strategy id 242.
+
+**Primary (4-coin portfolio, 2020-10-01..2022-05-31, never-seen data):**
+
+| | Sharpe | Return | Max DD | PF | Trades |
+|---|---|---|---|---|---|
+| Validation 898 | 1.7812863400120953 | 2.367068566371017 | 0.2551374353964591 | 1.440217323139211 | 273 |
+| Screening 897 | 1.8118284862706677 | 2.417995750313997 | 0.24724461453156604 | 1.4522054520033578 | 273 |
+| EW buy-and-hold (benchmark) | 1.9961200786744349 | 9.664370209061442 | 0.6639245233778042 | — | — |
+
+(a) Sharpe ≥ 0.7: PASS. (b) Sharpe > buy-and-hold: **FAIL** (1.781 < 1.996). (c) consistency: PASS (screening 1.81 → validation 1.78, 273 = 273 trades). **Verdict: REJECT.** Note: the strategy's first ~42 days are TREND_ENSEMBLE warmup while buy-and-hold is invested from day 1 (as registered; not used to excuse the result).
+
+**Secondary (reported, not decision criteria):**
+
+| Run | Scope | Strategy Sharpe | Return | Max DD | Buy-and-hold Sharpe (same scope) |
+|---|---|---|---|---|---|
+| 899 | 4 coins 2022-06..2026-09 | 0.507895027935854 | 0.9464108510397411 | 0.34432502575222407 | 0.7357185048671342 (DD 0.616) |
+| 900 | 4 coins 2020-10..2026-09 | 0.8272883089915029 | 5.528799664687042 | 0.38360769465091904 | 1.1618708287163733 (DD 0.810) |
+| 901 | BTC OOS | 0.8259720917778994 | 0.27123194441777454 | 0.10520307635057684 | 1.2519637831922743 |
+| 902 | ETH OOS | 0.5317212619608659 | 0.15391537494748997 | 0.12065463960647187 | 1.5395267997178654 |
+| 903 | SOL OOS | 1.5980270579376659 | 0.6311441071597916 | 0.08648344321985374 | 1.7876506640466863 |
+| 904 | BNB OOS | 1.037838857534219 | 0.4189396607056719 | 0.12828034597255866 | 1.7674201309242465 |
+
+**Reading:** the trend signal is real on fresh data (Sharpe 1.78, positive on every coin, screening = validation), but in every window and on every coin it has a lower Sharpe than simply holding — it is de-risked beta (≈½ the drawdown, far less return), not an edge beyond the market. The promotion bar (DSR at N=10) was not evaluated because the primary test failed.
+
+**Bug found and fixed on the way:** the validation consistency check compared 899/901/902 against screening 897 of a different window/symbol set and flagged false "validation-collapse"; fixed (vibe-quant-fnvu4) — references now require the same window and symbols.
+
+**Lessons:** (1) 2020-2021 makes any long-only crypto test look good in absolute terms; buy-and-hold is the right bar and it is hard. (2) Long-only trend on 4 large caps gives drawdown control, not alpha — useful as a risk overlay, not as a standalone strategy under our gates. (3) An edge beyond beta needs a market-neutral construction (relative strength / cross-sectional, option 2) so buy-and-hold is no longer the competitor.
+
+---
+
 ## 2026-10-11: PRE-REGISTRATION H-2b — long-only TREND_ENSEMBLE on never-seen 2020-10..2022-05 data
 
 Written and committed BEFORE the 2020–2021 data was in the catalog (ingest started 22:22). Results go in a separate entry; this text is not edited afterwards.
