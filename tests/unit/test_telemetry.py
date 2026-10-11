@@ -861,7 +861,7 @@ def test_attempt_counts_count_every_attempt_per_group() -> None:
 
 
 def test_identical_stalled_retries_count_as_separate_attempts() -> None:
-    """Two byte-identical stalled records for one model (a relaunch that stalls the same way)
+    """Two stalled records identical apart from their ts (a relaunch that stalls the same way)
     are two attempts and two stalls: only a review copy may collapse onto its source."""
     recs = [
         _rec(ts="2026-10-09T10:00:00", task="t", model="mimo/m", round=1, outcome="stalled"),
@@ -871,6 +871,18 @@ def test_identical_stalled_retries_count_as_separate_attempts() -> None:
     row = _row(tel.report_rows(recs, by="model"), "mimo/m")
     assert row is not None
     assert row["stalls_errors"] == 2
+
+
+def test_review_copy_collapses_onto_its_source_not_the_latest_attempt() -> None:
+    """A review copy replaces the earlier attempt it matches, not whatever came last: a
+    round-1 review arriving after a round-2 record still collapses onto round 1."""
+    recs = [
+        _rec(task="t", model="mimo/m", round=1, outcome="done"),
+        _rec(task="t", model="deepseek/d", round=2, outcome="done"),
+        _rec(ts="2026-10-09T11:00:00", task="t", model="mimo/m", round=1, outcome="done",
+             review="BLOCK"),
+    ]
+    assert tel.attempt_counts(recs, "model") == {"mimo/m": 1, "deepseek/d": 1}
 
 
 def test_attempt_counts_respect_since_window() -> None:

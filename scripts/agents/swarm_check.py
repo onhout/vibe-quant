@@ -19,15 +19,22 @@ diff or to the checks invalidates it. A later run whose tree is clean and whose 
 matches prints the stored check lines as `(cached) ...`, then
 `PASS cache: reused stamp from <ts> for <head[:12]>` and `GATE PASS` (and posts
 "GATE PASS (cached <head12>)" to the bus), without running any tool.
-The stamp is written only when the key computed BEFORE the run is non-empty (clean start)
+The stamp is written only when the key computed BEFORE the run is non-empty (clean start),
 AND equals the key recomputed after it (nothing moved while the tools ran: a commit made
-mid-run would otherwise stamp a HEAD that was never gated). Writes are atomic (temp file +
-os.replace). FAILs, WARNs, dirty trees and stubs are never cached; load_stamp accepts only
-PASS/SKIP lines, and any problem reading a stamp falls back to the full gate (fail
-closed: never a false PASS). `--no-cache` disables both reuse and writing.
+mid-run would otherwise stamp a HEAD that was never gated), AND the HEAD reflog length is
+unchanged (`git rev-list --walk-reflogs --count HEAD`). The reflog guard catches a
+commit + `reset --hard` made mid-run: it leaves the key identical but adds reflog entries.
+Writes are atomic (temp file + os.replace). FAILs, WARNs, dirty trees and stubs are never
+cached; load_stamp accepts only PASS/SKIP lines, and any problem reading a stamp falls back
+to the full gate (fail closed: never a false PASS). `--no-cache` disables both reuse and
+writing.
+Known limit (accepted): the reflog guard cannot see an edit + revert of the working tree
+with no commit - the tree and HEAD return to their start state and no reflog entry is added,
+so such a run is still stamped.
 NOT in the key (known gaps; --no-cache to force): the main checkout's .venv (tool
 versions), data/catalog (exactness inputs), the frontend lint baseline in main's
-working tree and any uncommitted edit in main other than the keyed files.
+working tree and any uncommitted edit in main other than the keyed files; and any
+.gitignore'd input, which is part of neither the clean check nor the key.
 
 The gate FAILS CLOSED: a bad --base, any git error, a timed-out or missing tool is a
 FAIL, never a PASS. Exactness always runs the MAIN checkout's exactness_239.py (the
@@ -386,6 +393,12 @@ def git_dir(wt: Path, run: RunFn) -> Path | None:
 def stamp_path(wt: Path, run: RunFn, key: str) -> Path | None:
     gd = git_dir(wt, run)
     return gd / CACHE_DIR / f"pass-{key[:16]}.json" if gd is not None else None
+
+
+def head_reflog_count(wt: Path, run: RunFn) -> int | None:
+    """HEAD reflog length, or None when git cannot report it (the caller fails closed)."""
+    out = _git_out(wt, run, "rev-list", "--walk-reflogs", "--count", "HEAD")
+    return int(out) if out.isdigit() else None
 
 
 def _cache_probe(cfg: Config, run: RunFn) -> tuple[str, GitState | None]:
@@ -757,6 +770,10 @@ def main(argv: Sequence[str] | None = None, run: RunFn | None = None) -> int:
         bus_post(cfg, stamp.checks, cached_head=stamp.head)
         return 0
 
+    # A commit+reset --hard made while the tools run puts HEAD and the tree back where they
+    # started, so the pre/post key compare cannot see it; the reflog length can (see N1 doc).
+    reflog_before = head_reflog_count(wt, runner) if key else None
+
     try:
         checks = run_checks(cfg) if run is None else run_checks(cfg, runner)
     except Exception as exc:  # fail closed: a crashed gate is a failed gate
@@ -775,7 +792,8 @@ def main(argv: Sequence[str] | None = None, run: RunFn | None = None) -> int:
         # key is the PRE-run key (non-empty = clean start). Stamp only if nothing moved while
         # the tools ran; otherwise the verdict is for a HEAD/tree that was never gated.
         post_key, _ = _cache_probe(cfg, runner)
-        if post_key == key:
+        reflog_after = head_reflog_count(wt, runner)
+        if post_key == key and reflog_before is not None and reflog_after == reflog_before:
             with contextlib.suppress(Exception):
                 write_stamp(wt, runner, cfg, key, checks)
 

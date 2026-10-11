@@ -8,11 +8,14 @@ with SWARM_CHECK_RUFF/SWARM_CHECK_MYPY/SWARM_CHECK_PYTEST stubs instead.
 
 from __future__ import annotations
 
+import atexit
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,29 +31,125 @@ swarm_check = importlib.util.module_from_spec(_spec)
 sys.modules["swarm_check"] = swarm_check
 _spec.loader.exec_module(swarm_check)
 
+# Hermetic, non-interactive git: no user/system config (so gpgsign/hooks/aliases cannot
+# change behaviour) and an identity supplied via the environment, so a repo needs no
+# `git config` calls at all. Every git call in this file is one subprocess, the most
+# expensive thing these tests do, so the template below exists to spawn as few as possible.
+_GIT_ENV_OVERRIDES = {
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_AUTHOR_NAME": "gate",
+    "GIT_AUTHOR_EMAIL": "gate@test",
+    "GIT_COMMITTER_NAME": "gate",
+    "GIT_COMMITTER_EMAIL": "gate@test",
+}
+
+
+def _git_env() -> dict[str, str]:
+    drop = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"}
+    env = {k: v for k, v in os.environ.items() if k not in drop}
+    env.update(_GIT_ENV_OVERRIDES)
+    return env
+
 
 def _git(repo: Path, *args: str) -> str:
     out = subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=_git_env(),
     )
     return out.stdout
 
 
-def _init_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "wt"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-    _git(repo, "config", "user.email", "gate@test")
-    _git(repo, "config", "user.name", "gate")
-    _git(repo, "config", "commit.gpgsign", "false")
+_TEMPLATE: Path | None = None
+
+
+def _template_repo() -> Path:
+    """One read-only repo template per test process: `git init` + commit are 3 of the ~25
+    git spawns a cache test used to pay for its throwaway repo, and every test paid them.
+    A `copytree` of a committed repo is a valid independent clone (see _init_repo)."""
+    global _TEMPLATE
+    if _TEMPLATE is None or not _TEMPLATE.exists():
+        root = Path(tempfile.mkdtemp(prefix="swarm-check-template-"))
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+        repo = root / "wt"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, env=_git_env())
+        _populate_repo(repo)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "init")
+        _TEMPLATE = repo
+    return _TEMPLATE
+
+
+def _populate_repo(repo: Path) -> None:
     (repo / "vibe_quant").mkdir()
     (repo / "vibe_quant" / "keep.py").write_text("X = 1\n")
     (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 1\n")
     tests = repo / "tests" / "unit"
     tests.mkdir(parents=True)
     (tests / "test_foo.py").write_text("def test_foo() -> None:\n    assert True\n")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-qm", "init")
+
+
+def _init_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "wt"
+    shutil.copytree(_template_repo(), repo, symlinks=True)
+    return repo
+
+
+# Tests in TestPassCache that only assert a stamp is NOT reused otherwise spend a full gate
+# run writing the stamp they then invalidate. The template below is the same repo state
+# (_pass_repo) with a valid PASS stamp already present, produced by the production writer
+# (cache_key + write_stamp), so those tests start from "would be reused" and pay for one run.
+_PASS_CHECKS = (
+    swarm_check.Check("scope", "SKIP", "no --scope given"),
+    swarm_check.Check("clean", "PASS", "no untracked files"),
+    swarm_check.Check("ruff", "PASS", "All checks passed!"),
+    swarm_check.Check("mypy", "PASS", "Success"),
+    swarm_check.Check("tests", "PASS", "1 passed in 0.01s | 1 passed in 0.01s"),
+    swarm_check.Check("exactness", "SKIP", "disabled"),
+    swarm_check.Check("frontend", "SKIP", "disabled"),
+)
+_PASS_SCOPES = ((), ("vibe_quant/*",))  # the two scopes TestPassCache gates under
+
+_STAMPED_TEMPLATE: Path | None = None
+
+
+def _stamped_template() -> Path:
+    """_pass_repo's state (feature branch, foo changed) with a valid PASS stamp for every
+    scope TestPassCache uses, written by swarm_check.write_stamp and checked by load_stamp."""
+    global _STAMPED_TEMPLATE
+    if _STAMPED_TEMPLATE is None or not _STAMPED_TEMPLATE.exists():
+        root = Path(tempfile.mkdtemp(prefix="swarm-check-stamped-"))
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+        repo = root / "wt"
+        shutil.copytree(_template_repo(), repo, symlinks=True)
+        _git(repo, "checkout", "-qb", "feature")
+        (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 2\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "change foo")
+        runner = FakeRunner()
+        head = _git(repo, "rev-parse", "HEAD").strip()
+        base_sha = _git(repo, "rev-parse", "main^{commit}").strip()
+        for scope in _PASS_SCOPES:
+            cfg = swarm_check.Config(
+                worktree=repo, main_root=root, base="main",
+                scope=scope, exactness="never", frontend="never",
+            )
+            key = swarm_check.cache_key(head, base_sha, cfg, swarm_check.tool_hash())
+            swarm_check.write_stamp(repo, runner, cfg, key, _PASS_CHECKS)
+            assert swarm_check.load_stamp(repo, runner, key) is not None
+        _STAMPED_TEMPLATE = repo
+    return _STAMPED_TEMPLATE
+
+
+def _init_pass_repo(tmp_path: Path) -> Path:
+    """A copy of _stamped_template: a clean feature-branch repo whose current tree already
+    has a valid PASS stamp, so a gate run would reuse it unless something changed."""
+    repo = tmp_path / "wt"
+    shutil.copytree(_stamped_template(), repo, symlinks=True)
     return repo
 
 
@@ -81,7 +180,9 @@ class FakeRunner:
         self.timeouts.append(timeout)
         self.envs.append(env)
         if c[0] == "git":
-            proc = subprocess.run(c, cwd=str(cwd), capture_output=True, text=True)
+            proc = subprocess.run(
+                c, cwd=str(cwd), capture_output=True, text=True, env=_git_env()
+            )
             return proc.returncode, proc.stdout + proc.stderr
         for needle, resp in self.responses.items():
             if any(needle in Path(arg).name for arg in c):
@@ -671,6 +772,27 @@ class TestFailClosed:
             ["tests/unit", "-m", "timing"],
         ]
 
+    def test_conftest_full_suite_rc5_is_fail_not_skip(self, tmp_path: Path) -> None:
+        """rc 5 means "nothing matched" only for a -k group, where a smaller selection is
+        legitimate. On the FULL suite (a conftest/__init__ change) it means the suite did
+        not run: FAIL, never SKIP."""
+        repo = _init_repo(tmp_path)
+        (repo / "tests" / "conftest.py").write_text("X = 1\n")
+        runner = FakeRunner()
+
+        def pytest_by_parallel(cmd: Sequence[str], cwd: Path) -> tuple[int, str]:
+            if "-n" in cmd:  # the xdist full-suite pass
+                return 5, "no tests ran in 0.01s"
+            return 0, "1 passed in 0.01s"
+
+        runner.responses = {"pytest": pytest_by_parallel}
+        cfg = _cfg(tmp_path, repo, base="HEAD", exactness="never", frontend="never")
+        checks = swarm_check.run_checks(cfg, runner)
+        by = {c.name: c for c in checks}
+        assert by["tests"].status == "FAIL"
+        assert "no tests ran" in by["tests"].detail
+        assert swarm_check.gate_summary(checks)[0].startswith("GATE FAIL")
+
     def test_k_group_runs_parallel_then_timing_serially(self, tmp_path: Path) -> None:
         repo = _init_repo(tmp_path)
         (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 9\n")
@@ -761,12 +883,20 @@ class TestCacheKey:
 
 
 class TestPassCache:
-    def _pass_repo(self, tmp_path: Path) -> Path:
+    def _unstamped_pass_repo(self, tmp_path: Path) -> Path:
+        """A clean feature-branch repo with NO stamp yet, so a run must really write one."""
         repo = _init_repo(tmp_path)
         _git(repo, "checkout", "-qb", "feature")
         (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 2\n")
         _git(repo, "add", "-A")
         _git(repo, "commit", "-qm", "change foo")
+        return repo
+
+    def _pass_repo(self, tmp_path: Path) -> Path:
+        """The same repo state with its valid PASS stamp already present (see _stamped_template),
+        so tests that only assert reuse is refused pay for one gate run instead of two."""
+        repo = _init_pass_repo(tmp_path)
+        assert len(self._stamps(repo)) == len(_PASS_SCOPES)  # else the test passes for free
         return repo
 
     def _runner(self) -> FakeRunner:
@@ -791,7 +921,7 @@ class TestPassCache:
     def test_pass_writes_stamp_then_reuses(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repo = self._pass_repo(tmp_path)
+        repo = self._unstamped_pass_repo(tmp_path)
         first = self._runner()
         assert self._main(repo, first) == 0
         assert "GATE PASS" in capsys.readouterr().out
@@ -817,9 +947,7 @@ class TestPassCache:
         }
 
     def test_new_head_no_reuse(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        repo = self._pass_repo(tmp_path)
-        assert self._main(repo, self._runner()) == 0
-        capsys.readouterr()
+        repo = self._pass_repo(tmp_path)  # already stamped at the feature HEAD
         (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 3\n")
         _git(repo, "commit", "-qam", "bump")
         runner = self._runner()
@@ -828,9 +956,7 @@ class TestPassCache:
         assert "PASS cache:" not in capsys.readouterr().out
 
     def test_base_moved_no_reuse(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        repo = self._pass_repo(tmp_path)
-        assert self._main(repo, self._runner()) == 0
-        capsys.readouterr()
+        repo = self._pass_repo(tmp_path)  # already stamped at the feature HEAD
         _git(repo, "checkout", "-q", "main")
         (repo / "vibe_quant" / "keep.py").write_text("X = 9\n")
         _git(repo, "commit", "-qam", "advance main")
@@ -843,9 +969,7 @@ class TestPassCache:
     def test_different_scope_no_reuse(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repo = self._pass_repo(tmp_path)
-        assert self._main(repo, self._runner(), "--scope", "vibe_quant/*") == 0
-        capsys.readouterr()
+        repo = self._pass_repo(tmp_path)  # stamped for scope "vibe_quant/*"
         runner = self._runner()
         assert self._main(repo, runner, "--scope", "vibe_quant/*,tests/*") == 0
         assert _called_with(runner, "pytest")
@@ -854,7 +978,7 @@ class TestPassCache:
     def test_untracked_file_blocks_stamp(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repo = self._pass_repo(tmp_path)
+        repo = self._unstamped_pass_repo(tmp_path)
         (repo / "stray.txt").write_text("x\n")
         assert self._main(repo, self._runner()) == 0
         assert not self._stamps(repo)
@@ -865,13 +989,13 @@ class TestPassCache:
     def test_uncommitted_change_blocks_stamp(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repo = self._pass_repo(tmp_path)
+        repo = self._unstamped_pass_repo(tmp_path)
         (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 7\n")
         assert self._main(repo, self._runner()) == 0
         assert not self._stamps(repo)
 
     def test_fail_writes_no_stamp(self, tmp_path: Path) -> None:
-        repo = self._pass_repo(tmp_path)
+        repo = self._unstamped_pass_repo(tmp_path)
         runner = self._runner()
         runner.responses["ruff"] = (1, "E501 boom")
         assert self._main(repo, runner) == 1
@@ -880,9 +1004,7 @@ class TestPassCache:
     def test_no_cache_flag_forces_full_run(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repo = self._pass_repo(tmp_path)
-        assert self._main(repo, self._runner()) == 0
-        capsys.readouterr()
+        repo = self._pass_repo(tmp_path)  # already stamped: without --no-cache it would be reused
         runner = self._runner()
         assert self._main(repo, runner, "--no-cache") == 0
         assert _called_with(runner, "pytest")
@@ -892,21 +1014,20 @@ class TestPassCache:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         repo = self._pass_repo(tmp_path)
-        assert self._main(repo, self._runner()) == 0
-        capsys.readouterr()
         for stamp in self._stamps(repo):
             stamp.write_text("{not json")
         runner = self._runner()
         assert self._main(repo, runner) == 0
         assert _called_with(runner, "pytest")
-        assert len(self._stamps(repo)) == 1  # rewritten by the full run
+        stamps = self._stamps(repo)
+        assert len(stamps) == len(_PASS_SCOPES)
+        # the full run rewrote its own stamp; the other corrupt one was never served
+        assert len([p for p in stamps if "not json" not in p.read_text()]) == 1
 
     def test_stamp_with_fail_line_not_reused(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         repo = self._pass_repo(tmp_path)
-        assert self._main(repo, self._runner()) == 0
-        capsys.readouterr()
         for stamp in self._stamps(repo):
             data = json.loads(stamp.read_text())
             data["checks"] = ["FAIL ruff: injected"] + data["checks"]
@@ -920,20 +1041,17 @@ class TestPassCache:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         repo = self._pass_repo(tmp_path)
-        assert self._main(repo, self._runner()) == 0
-        capsys.readouterr()
         monkeypatch.setattr(swarm_check, "tool_hash", lambda: "0" * 64)
         runner = self._runner()
         assert self._main(repo, runner) == 0
         assert _called_with(runner, "pytest")
         assert "PASS cache:" not in capsys.readouterr().out
 
-
     def test_commit_during_run_not_stamped(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """B1: a commit made while pytest runs must not be stamped (GATE PASS is for old HEAD)."""
-        repo = self._pass_repo(tmp_path)
+        repo = self._unstamped_pass_repo(tmp_path)
         committed = False
 
         def commit_mid_run(cmd: Sequence[str], cwd: Path) -> tuple[int, str]:
@@ -958,7 +1076,7 @@ class TestPassCache:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """B1: untracked at start (WARN) + committed during the run -> end state is clean."""
-        repo = self._pass_repo(tmp_path)
+        repo = self._unstamped_pass_repo(tmp_path)
         (repo / "stray.py").write_text("X = 1\n")
         committed = False
 
@@ -978,15 +1096,94 @@ class TestPassCache:
         assert self._main(repo, second) == 0
         assert _called_with(second, "pytest")
 
+    def test_commit_and_reset_mid_run_not_stamped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """N1: commit + `reset --hard` puts HEAD and the tree back where they started, so the
+        pre/post key compare matches; the HEAD reflog still moved, so no stamp is written."""
+        repo = self._unstamped_pass_repo(tmp_path)
+        done = False
+
+        def commit_then_reset(cmd: Sequence[str], cwd: Path) -> tuple[int, str]:
+            nonlocal done
+            if not done:
+                done = True
+                (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 5\n")
+                _git(repo, "commit", "-qam", "temp")
+                _git(repo, "reset", "-q", "--hard", "HEAD~1")
+            return 0, "1 passed in 0.01s"
+
+        first = self._runner()
+        first.responses["pytest"] = commit_then_reset
+        assert self._main(repo, first) == 0
+        assert "GATE PASS" in capsys.readouterr().out
+        assert not self._stamps(repo)
+        second = self._runner()
+        assert self._main(repo, second) == 0
+        assert _called_with(second, "pytest")  # re-gated, never served from cache
+
+    def test_unreadable_reflog_not_stamped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """N1 fail closed: when git cannot report the HEAD reflog length the verdict is still
+        printed, but no stamp is written (the mid-run guard could not run)."""
+
+        class NoReflog(FakeRunner):
+            def __call__(
+                self,
+                cmd: Sequence[str],
+                cwd: Path,
+                env: Mapping[str, str] | None = None,
+                timeout: int = 600,
+            ) -> tuple[int, str]:
+                if "--walk-reflogs" in [str(x) for x in cmd]:
+                    return 128, "fatal: reflog unavailable"
+                return super().__call__(cmd, cwd, env, timeout)
+
+        repo = self._unstamped_pass_repo(tmp_path)
+        first = NoReflog()
+        first.responses = self._runner().responses
+        assert self._main(repo, first) == 0
+        assert "GATE PASS" in capsys.readouterr().out
+        assert not self._stamps(repo)
+        assert swarm_check.head_reflog_count(repo, first) is None
+
     def test_stamp_with_warn_line_not_reused(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         repo = self._pass_repo(tmp_path)
-        assert self._main(repo, self._runner()) == 0
-        capsys.readouterr()
         for stamp in self._stamps(repo):
             data = json.loads(stamp.read_text())
             data["checks"] = ["WARN clean: 1 untracked: x"] + data["checks"]
+            stamp.write_text(json.dumps(data))
+        runner = self._runner()
+        assert self._main(repo, runner) == 0
+        assert _called_with(runner, "pytest")
+        assert "PASS cache:" not in capsys.readouterr().out
+
+    def test_wrong_version_stamp_not_reused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A stamp written by another CACHE_VERSION is ignored, never served."""
+        repo = self._pass_repo(tmp_path)
+        for stamp in self._stamps(repo):
+            data = json.loads(stamp.read_text())
+            data["version"] = swarm_check.CACHE_VERSION + 1
+            stamp.write_text(json.dumps(data))
+        runner = self._runner()
+        assert self._main(repo, runner) == 0
+        assert _called_with(runner, "pytest")
+        assert "PASS cache:" not in capsys.readouterr().out
+
+    def test_stored_fail_gate_not_reused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A stamp whose stored gate is FAIL is never replayed as a PASS, even with a
+        matching key and only PASS/SKIP check lines."""
+        repo = self._pass_repo(tmp_path)
+        for stamp in self._stamps(repo):
+            data = json.loads(stamp.read_text())
+            data["gate"] = "FAIL"
             stamp.write_text(json.dumps(data))
         runner = self._runner()
         assert self._main(repo, runner) == 0
@@ -997,7 +1194,7 @@ class TestPassCache:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """S1: stubs honoured (ALLOW_STUBS=1) -> the PASS came from fakes -> no stamp."""
-        repo = self._pass_repo(tmp_path)
+        repo = self._unstamped_pass_repo(tmp_path)
         monkeypatch.setenv("SWARM_CHECK_ALLOW_STUBS", "1")
         monkeypatch.setenv("SWARM_CHECK_RUFF", "ruff-stub")
         assert self._main(repo, self._runner()) == 0
@@ -1008,7 +1205,7 @@ class TestPassCache:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """N2: the stamp appears only via os.replace of a temp file; no leftovers on failure."""
-        repo = self._pass_repo(tmp_path)
+        repo = self._unstamped_pass_repo(tmp_path)
 
         def boom(src: object, dst: object) -> None:
             raise OSError("replace failed")
@@ -1027,7 +1224,7 @@ class TestPassCache:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """N3: a cached PASS is announced to the chief like a normal run."""
-        repo = self._pass_repo(tmp_path)
+        repo = self._unstamped_pass_repo(tmp_path)
         bus = tmp_path / "bus"
         monkeypatch.setenv("SWARM_BUS", str(bus))
         assert self._main(repo, self._runner()) == 0

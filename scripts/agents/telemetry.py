@@ -61,8 +61,9 @@ count of round-records with outcome stalled/error. Tasks, stalls/errors, tokens,
 rate and rounds-to-done follow the LATEST attempt per (job, task, round).
 Known limitation (accepted): `ingest-cmd-log` is the legacy cmd-task.sh path. A log idle >= 120 s
 with no result event is recorded as stalled; ingesting the same log again after it finished records
-a second attempt (done), so that task counts one extra attempt and one stall. Stdlib only; runs
-with any python3.
+a second attempt (done), so that task counts one extra attempt and one stall. Re-ingesting a log
+that finished twice (done -> done, a manual re-ingest only) records two attempts, so tokens and
+wall are double-counted. Stdlib only; runs with any python3.
 """
 
 from __future__ import annotations
@@ -385,7 +386,8 @@ def latest_attempts(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Every plain record (review null) is its own attempt — even a byte-identical relaunch, e.g.
     a model stalling twice the same way. Only a review copy (review set) collapses: it replaces
     the latest earlier attempt with the same payload (_attempt_signature); with no such source
-    it is kept as an attempt of its own.
+    it is kept as an attempt of its own. A manual `record --review X` whose payload matches an
+    earlier record therefore collapses onto that earlier attempt, not onto the newest one.
     """
     attempts: list[dict[str, Any]] = []
     for rec in records:
