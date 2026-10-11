@@ -1,258 +1,189 @@
 # CLAUDE.md
 
-Algorithmic trading engine for crypto perpetual futures using NautilusTrader (Rust core) with two-tier backtesting (screening + validation), strategy DSL, overfitting prevention, and paper/live execution.
+Algorithmic trading engine for crypto perpetual futures (Binance USDT-M; Ethereal DEX later) on NautilusTrader (Rust core): strategy DSL → two-tier backtesting (screening + validation) → overfitting gates → paper → live. FastAPI backend (`vibe_quant/`) + React SPA (`frontend/`). [`SPEC.md`](SPEC.md) is the authoritative spec; when another doc disagrees, SPEC.md wins.
+
+## Goal and priorities
+
+**Goal:** find crypto-perp strategies with a real, repeatable edge and trade them safely — paper first, live only with the user's explicit approval. The product is trustworthy evidence: a strategy that looks great is a bug until the gates, validation and paper agree.
+
+**State (2026-10-11):** SPEC phases 1–8 are built (data layer, DSL, screening/validation, overfitting gates, React dashboard replacing the Streamlit plan, paper trading with alerts, Ethereal client, GA discovery) plus a Reddit research pipeline. Under current semantics recent discovery runs end with 0 champions (runs 877/878); older champion numbers (e.g. Batch 13) predate comparability breaks. Current work: engine fidelity, research-loop speed, honest gates.
+
+**When goals conflict, earlier wins:**
+1. **Honest numbers** — no look-ahead; screening, validation and paper fill the same way; gates fail closed; exactness proofs stay bit-identical unless a comparability break is declared.
+2. **Money safety** — paper/live changes need a risk check and the user's explicit approval.
+3. **Research-loop speed** — faster backtests, discovery and agent rounds compound.
+4. Features and UI polish.
+
+**Operator:** one person (the user); agents write most of the code. The user values fast iteration, bit-identical proofs, honest failure reports and a git history that explains decisions.
+
+## Vocabulary
+
+- **screening** — fast NT backtest with simplified fills; discovery uses the same code path.
+- **validation** — full-fidelity NT backtest on 1m detail bars; the reference for fills.
+- **discovery** — GA search over DSL genomes; a **champion** is a genome that passes every **gate** (bootstrap CI, DSR, cross-window, WFA, **holdout**).
+- **eval windows** — discovery scores the worst of N sub-windows.
+- **exactness proof** — `exactness_239.py` must reproduce the pinned strategy-239 metrics bit for bit.
+- **comparability break** — a dated change after which older metrics can't be compared with newer ones.
+- **fill tick / outbox** — orders queue per instrument and release on that instrument's next price update.
+- **archive → catalog** — raw downloads in SQLite, rebuilt into the Parquet catalog the engine reads.
+- **plugin** — a drop-in indicator file in `vibe_quant/dsl/plugins/`.
+- **chief / maker / checker** — orchestrator / coding agent / reviewer; **bead** — an issue in `bd`.
 
 ## This file
 
-The rule of this file is to describe common mistakes and confusion points that agents might encounter as they work in this project. If you ever encounter something in this project that surprises you, or you failed to do after multiple attempts, please alert the developer working with you and describe it in this file to help prevent future agents from having the same issue. (AGENTS.md is a pointer to this file for non-Claude tools — never duplicate content there.)
+Always-loaded rules, commands and gotchas for every agent here. When something surprises you, or you fail at it twice, tell the developer and add one line (with the check that catches it) — here if every task needs it, otherwise in the matching `docs/claude/` file. `AGENTS.md` only points here.
 
-## Quick Reference
+## Read before you touch
 
-- **Package manager:** `uv` (not pip/poetry)
-- **Python:** 3.13
-- **Install:** `uv pip install -e .`
-- **Tests:** `pytest` (target 80% coverage on core modules)
-- **Lint:** `ruff check` — **baseline is ZERO** (since 2026-07-09). Any error you see is from current work; fix it, don't assume pre-existing.
-- **Type check:** `mypy` — also zero-baseline. Same rule.
-- **Backend:** `.venv/bin/uvicorn "vibe_quant.api.app:create_app" --factory --port 8000`
-- **Frontend:** `cd frontend && pnpm dev` (Vite on port 5173 — **but see Dev Server Gotchas below: 5173 may belong to a different project**)
-- **Frontend build:** `cd frontend && pnpm build`
-- **Extraction worker:** `.venv/bin/vibe-quant extraction-worker` (drains `/api/research/items/{id}/extract` queue; run alongside backend so manual re-extractions actually progress)
+| Before you… | Read |
+|---|---|
+| write or change code that builds/runs a NautilusTrader engine or node (runners, paper node, fill/latency models, data configs, generated strategies) | [`docs/claude/nautilus-gotchas.md`](docs/claude/nautilus-gotchas.md) |
+| run discovery, interpret or compare its results, or change discovery, fitness or gates | [`docs/claude/discovery.md`](docs/claude/discovery.md) |
+| start servers, check UI, or run the Playwright spec | [`docs/claude/ui-testing.md`](docs/claude/ui-testing.md) |
+| add an indicator | [`vibe_quant/dsl/plugins/README.md`](vibe_quant/dsl/plugins/README.md) |
+| run a multi-agent job | `orchestrate` skill + [`docs/orchestration/README.md`](docs/orchestration/README.md) |
+| investigate slow runs or indicators | `perf-profiling` skill |
+| use beads beyond the basics below | [`docs/claude/beads.md`](docs/claude/beads.md) |
 
-## Dev Server Gotchas (stepped into repeatedly — read before starting servers)
+## Working principles
 
-1. **Port 5173 may be a DIFFERENT project.** The user runs other Vite apps; vibe-quant's
-   frontend can land on 5174/5175 when 5173 is taken. **Always screenshot or check the
-   page title before UI testing** — one session spent time driving a Minecraft clone.
-2. **Never `lsof -ti :8000 | xargs kill`.** Vite holds proxy connections to :8000, so
-   this kills the frontend too. Use `pgrep -f "uvicorn vibe_quant" | xargs kill`.
-3. **The backend caches code at startup.** Plugin registrations and endpoint changes
-   only show in API responses after a backend restart. But discovery/validation/
-   screening run as **subprocesses** — they pick up new code from disk without a
-   restart. Know which one you're testing.
-4. **agent-browser clicks silently no-op on elements inside scrolled-out overflow
-   containers.** `scrollIntoView({block:'center'})` via `eval` first, then click;
-   re-snapshot after every DOM change (refs go stale).
-5. Long test suites / servers: use `run_in_background`, never `sleep`-polling.
-6. **UI testing:** to check a worktree/branch next to the user's servers, `scripts/agents/ui-check.sh up|down <worktree>` (backend :8001 + Vite :5188 on a DB copy; Vite reads `VQ_API_PORT`). Use the `agent-browser` skill — **always with `dangerouslyDisableSandbox: true`**
-   (it needs the `~/.agent-browser` socket dir). Sidebar pages: Strategy Management, Discovery,
-   Backtest Launch, Results Analysis, Paper Trading, Data Management, Settings. E2E flow:
-   Data Management (download) → Strategy Management (create) → Backtest Launch (screen) →
-   Results Analysis (verify).
-7. **Git worktrees import the MAIN repo's code.** The editable install (`.pth`) points at
-   `/Users/verebelyin/projects/vibe-quant`, so `python script.py` inside a worktree runs main's
-   `vibe_quant`. Use `PYTHONPATH=$PWD .venv/bin/python -m ...` from the worktree.
-   Bare `git worktree add` also lacks `data/catalog` (8 research tests fail); create worktrees with
-   `scripts/agents/worktree.sh <slug> [base]`, which links the market data and prints the run line.
+Bias toward caution over speed on money paths; use judgment on trivial tasks.
 
-## Shell Preferences
+1. **Think before coding.** State assumptions; when uncertain, ask. When a request has several readings, present them instead of picking one silently; when a simpler approach exists, say so and push back when warranted.
+2. **Simplicity first.** Write the minimum code that solves the asked problem, following existing patterns (plugins, `StateManager`, runner seams). No speculative options, no single-use abstractions, no handling for impossible cases. Test: would a senior engineer call this overcomplicated?
+3. **Surgical changes.** Every changed line traces to the request. Match the surrounding style; remove what your change orphaned; mention (don't delete) pre-existing dead code.
+4. **Goal-driven execution.** Turn the task into a check that goes red first: a failing test, an exactness drift, a reproduced bug. For multi-step work, write a short plan with a check per step, and persist intermediate results (bead notes, `data/swarm/<job>/` ledger, files) so an interrupted session can resume.
+5. **Verify the kill-zone hardest.** Mistakes that stay invisible for weeks get an independent check: fill timing and look-ahead, metric math (Sharpe/PF/drawdown/fitness), overfitting gates (they fail closed), DSL codegen, DB writes, anything that places orders.
+6. **Mark uncertainty inline.** State verified claims plainly; prefix the rest with `Likely:` (+ evidence) or `Assuming:` (+ what breaks if wrong). A guess never reads as fact.
+7. **Verify library claims at the source.** For NautilusTrader, pandas-ta-classic, FastAPI or frontend library behaviour, versions and best practices, check the installed source (`.venv/lib/python3.13/site-packages/...`, `node_modules/`) or official docs/web search before asserting — NT changes between minors.
+8. **Label performance and money numbers.** Perf claims are MEASURED (command + output) or EYEBALLED; predict the expected number before measuring. Metrics are copied verbatim from tool output, never rounded or recalled.
 
-- **Always use `rg` (ripgrep) instead of `grep`** — faster, simpler regex syntax (no escaping `|`), better defaults. Use `rg` in Bash tool calls, skills, and scripts. This applies to ALL search operations in the terminal.
-- **`status` is read-only in zsh** — never use it as a variable name in shell scripts. Use `st`, `stat`, or `run_status` instead.
-- **Don't use `sleep N` in Bash tool calls for polling** — make separate tool calls when ready instead. `sleep` blocks the tool and wastes time.
-- **Check ports before starting servers**: `lsof -i :8000` before launching uvicorn. Avoids "address already in use" errors.
+## Implementation guardrails
 
-## SQLite Queries (state DB)
+- **Documentation:** create `.md` files for a task only when asked. Gotchas go into this file or the matching `docs/claude/` file; research results into `docs/discovery-journal.md`; project facts into `bd remember`.
+- **Env & secrets:** a new env var goes into `.env.example` in the same change; secrets only from env (Binance, Ethereal, Telegram).
+- **Tests prove outcomes:** assert the product result (a trade filled at the right price, a run ending `completed`, a gate rejecting), not just a status code or "no exception". Name tests and test files by feature; dates, bead ids and review-finding ids belong in commit messages.
+- **Flake or regression:** rerun the failing test alone (`pytest path::test_id`, then its file) before calling it flaky; a failure that reproduces alone is a regression.
 
-DB path: `data/state/vibe_quant.db` (override with `VIBE_QUANT_DB` at backend start — inherited by every job subprocess; there is no runtime DB switch). Always use WAL mode.
+## Finishing a task
 
-**Opening the DB runs schema migrations.** `tests/conftest.py` pins `VIBE_QUANT_DB` to a temp file so a test that forgets its tmp DB can't migrate the real one — keep that guard; scratch scripts against the real DB should use `?mode=ro` URIs.
+1. Targeted tests for the changed modules plus every module that imports a changed symbol (`rg` the import).
+2. `ruff check && mypy` → 0 errors.
+3. Changed anything under `vibe_quant/` that can move numbers (screening, validation, discovery, dsl, overfitting, data) → `exactness_239.py` IDENTICAL (see Verification rules).
+4. UI or UI-visible API change → check it on screen ([`docs/claude/ui-testing.md`](docs/claude/ui-testing.md)) and regenerate the orval client if the OpenAPI schema changed.
+5. Full suite once, at the end (`swarm-check.sh` runs it).
+6. Commit per [Commit messages](#commit-messages); push as part of [Session completion](#issue-tracking-beads).
 
-`backtest_results` has ONE row per run (re-runs replace result + trades). `notes` is machine JSON (discovery payload, data_window, funding, consistency); user text lives in `user_notes`.
+Coverage axes — check which ones the change crosses and verify each side:
+- **Engine tier:** screening vs validation (different fill paths; discovery = screening code path).
+- **Symbols:** single vs multi-symbol (fill release is per instrument).
+- **Timeframe:** 4h/1d vs 1m (different defaults, data volume, bootstrap floors).
+- **Discovery windows:** `eval_windows` 1 vs >1 (worst-of-N metrics).
+- **Frontend ↔ API:** generated client in `frontend/src/api/generated/` matches the backend schema.
 
-**Common mistakes to avoid:**
-1. **Don't use `.format()` or f-strings with values** — use `?` placeholders for ALL query values
-2. **Values can be `None`/`str`/numeric** — always handle `None` before formatting with `:.2f`
-3. **No `discovery_runs` table** — discovery runs are in `backtest_runs` with `run_mode='discovery'`
-4. **`row_factory = sqlite3.Row`** enables dict-style access
-5. **Always `conn.commit()` after INSERT/UPDATE** — SQLite doesn't auto-commit
+## Commands
 
-**Canonical pattern (query + mutate):**
-```python
-python3 -c "
-import sqlite3
-conn = sqlite3.connect('data/state/vibe_quant.db')
-conn.row_factory = sqlite3.Row
-for r in conn.execute('SELECT * FROM backtest_runs WHERE run_mode=? ORDER BY id DESC LIMIT 5', ('discovery',)):
-    print(dict(r))
-conn.execute('UPDATE backtest_runs SET status=? WHERE id=?', ('failed', 999))
-conn.commit()  # DON'T FORGET
-"
-```
+`uv` + Python 3.13 (`uv pip install -e .`); `pnpm` for the frontend. Lint and types are at a **zero baseline** (since 2026-07-09): any `ruff`/`mypy` error you see comes from current work.
 
-**Key tables:** `backtest_runs` (all run modes), `strategies`, `backtest_results` (validation metrics + discovery notes JSON), `sweep_results` (screening/replay metrics), `background_jobs`, `trades`, `research_extractions`
+| Task | Command |
+|---|---|
+| Tests (targeted / full ≈ 3 min) | `.venv/bin/python -m pytest tests/unit/test_x.py -q` / `... tests/unit -q` |
+| Lint / types | `.venv/bin/ruff check` / `.venv/bin/mypy` |
+| Exactness proof (≈ 6 s) | `.venv/bin/python scripts/agents/exactness_239.py [--validation-multi]` |
+| Pre-review gate (PASS cached per HEAD) | `scripts/agents/swarm-check.sh <worktree> --scope <globs> [--no-cache]` |
+| Backend | `.venv/bin/uvicorn "vibe_quant.api.app:create_app" --factory --port 8000` |
+| Frontend dev / build / unit | `cd frontend && pnpm dev` / `pnpm build` / `pnpm vitest run` |
+| E2E (against ui-check stack) | `cd frontend && E2E_BASE_URL=http://localhost:5188 pnpm exec playwright test e2e/discovery-flow.spec.ts` |
+| Extraction worker | `.venv/bin/vibe-quant extraction-worker` (run beside the backend so re-extractions progress) |
+| Throwaway UI stack | `scripts/agents/ui-check.sh up\|down <worktree>` (backend :8001 + Vite :5188 on a DB copy) |
+| Worktree for a task | `scripts/agents/worktree.sh <slug> [base] [--private-node-modules]` |
+| Rebuild catalog | `.venv/bin/python -m vibe_quant.data rebuild --from-archive` |
+
+**Worktrees import the main checkout's code** (the editable install points at it): run worktree code as `PYTHONPATH=$PWD .venv/bin/python -m ...`. Create worktrees with `scripts/agents/worktree.sh` — it links `data/catalog` + `data/archive` (a bare `git worktree add` lacks them and 8 research tests fail). `pnpm install` in a worktree writes through the shared `node_modules` symlink; pass `--private-node-modules` when deps change.
+
+## Agent speed rules
+
+Measured costs: full `tests/unit` ≈ 3 min (slower with parallel workers) · `swarm-check.sh` ≈ 3 min when it runs the full suite, seconds on a cached PASS · `exactness_239.py` ≈ 6 s · Playwright spec ≈ 1.5 min + `ui-check.sh` up/down · one model turn ≈ 4–10 s.
+- **Full suite once per round**, via `swarm-check.sh` at the end. While iterating, run the targeted test files plus the files that import changed symbols.
+- **Fewer, fatter turns:** batch independent reads/greps into one turn, read whole functions, chain shell checks with `&&`, track work in beads instead of todo lists. DeepSeek spent 58% of its time on single-tool turns.
+- **Mutation checks are capped:** ≤ 5 mutants (~3 min) per review, ≤ 3 per maker self-check, only on changed logic, each against the targeted test file in a `git archive` scratch copy (`cp -r` shares the worktree's git index). Stress loops ≤ 10 runs unless flakiness is the finding. A surviving mutant outside money code (screening/validation/discovery/overfitting/dsl/risk/paper/data, fills, metrics, DB writes, concurrency) becomes a follow-up bead, not a fix round.
+- **Gate cache:** `swarm-check.sh` caches a PASS per HEAD + base + scope + tool hash (clean tree only); re-running it on an unchanged worktree is instant, `--no-cache` forces a full run.
+- **E2E:** iterate with `-g <scenario>`, run the full spec once at the end.
+- **Async launches:** a test of anything that returns 201 and then runs in a subprocess polls the run's final status.
+- **Keep proofs short:** never put long discovery/backtest reruns in a task brief; use unit tests, mutants and `exactness_239.py`, and tiny live settings (pop 4–6, 1–2 gens, 2–3 month window) when a live check is unavoidable.
+
+## Shell
+
+- Search with `rg` (ripgrep); `rg -g '*.tsx'` (there is no `--type tsx`).
+- Quote globs and paren paths (`--include="*.ts"`, `'frontend/src/routes/(app)/…'`) — unquoted, zsh aborts with "no matches found".
+- Keep exit codes visible: `cmd >/tmp/log 2>&1; echo "EXIT=$?"` (zsh uses lowercase `$pipestatus`). Trust the `ruff`/`mypy`/`pytest` exit code over editor diagnostics mid-refactor.
+- zsh: `status` is read-only (use `st`/`run_status`); unquoted variables don't word-split (`$CMD args` fails — use `bash -c` or a function for loops over `set -- $row`).
+- Wait on conditions (Monitor, `run_in_background`, `until` loops), not fixed `sleep`.
+
+## SQLite (state DB)
+
+`data/state/vibe_quant.db`; override with `VIBE_QUANT_DB` at backend start (every job subprocess inherits it; there is no runtime DB switch). Every connection sets `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;` (`StateManager` does this).
+
+- **Opening the DB runs schema migrations.** `tests/conftest.py` pins `VIBE_QUANT_DB` to a temp file; keep that guard. Scratch scripts against the real DB use `sqlite3.connect('file:data/state/vibe_quant.db?mode=ro', uri=True)`.
+- Use `?` placeholders for every value; handle `None` before formatting; `conn.commit()` after writes; `row_factory = sqlite3.Row` for dict access.
+- Discovery runs live in `backtest_runs` with `run_mode='discovery'` (there is no `discovery_runs` table). `backtest_results` has ONE row per run (re-runs replace result + trades); its `notes` column is machine JSON (discovery payload, `data_window`, funding, consistency, `dsr_trials`) and user text lives in `user_notes`.
+- Key tables: `backtest_runs` (all run modes), `strategies`, `backtest_results`, `sweep_results` (screening/replay metrics), `background_jobs`, `trades`, `research_extraction_jobs`, `download_sessions` (status `completed|partial|failed`).
+- `StateManager` shares one connection across threads: reads used from worker/API threads take `_write_lock` (an unlocked read caused `sqlite3.InterfaceError`; bead `vibe-quant-jfxsr` covers the rest).
 
 ## Architecture
 
 ```
-Strategy DSL (YAML) → Screening (NT simplified, parallel) → Overfitting Filters → Validation (NT full fidelity) → Paper → Live
+Strategy DSL (YAML) → Screening (NT simplified, parallel) → Overfitting gates → Validation (NT full fidelity) → Paper → Live
 ```
 
-Single engine (NautilusTrader) with two modes:
+One engine (NautilusTrader), two modes:
+- **Screening** (also used by discovery): simplified fills, multiprocessing; models leverage + funding (archive; holes charged a flagged fallback rate), not liquidation. Each strategy queues orders in a per-instrument outbox released on its own two synthetic 1m fill ticks per bar; open positions are marked at run end; drawdown is marked on strategy-timeframe bars.
+- **Validation**: custom FillModel; orders release on the instrument's own next 1m detail bar (the latency preset only selects the fill model on bar data); full cost modeling. Clamps the window to 1m coverage (`notes.data_window`) and fails without 1m data.
 
-- **Screening mode**: simplified fills, no latency, multiprocessing parallelism -- models leverage + funding (from the archive; holes charged a flagged fallback rate), NOT liquidation. Fills land at the close of the first 1m bar after the signal (the strategy's own fill tick), the same as validation; drawdown is still marked on strategy-timeframe bars.
-- **Validation mode**: custom FillModel, own-1m-detail-bar order release (latency presets apply to tick data only), full cost modeling
-
-## Key Specifications
-
-| Detail                   | Reference                                                                                                        |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| Full implementation spec | [`SPEC.md`](SPEC.md) -- **the authoritative source** for architecture, DSL, pipelines, data, schemas, and phases |
-| Sections 1-5             | Architecture, tech stack, decisions, data layout, strategy DSL                                                   |
-| Sections 6-7             | Screening pipeline, validation backtesting                                                                       |
-| Sections 8-13            | Overfitting, risk, dashboard, paper trading, observability, testing                                              |
-| Phases 1-8               | Implementation roadmap with deliverables and acceptance criteria                                                 |
+Key paths: DB schema `vibe_quant/db/schema.py` · DSL types `vibe_quant/dsl/schema.py` (frontend mirror `frontend/src/components/strategies/editor/types.ts`) · theme `frontend/src/index.css` · runtime data `data/{archive,catalog,state}` (gitignored) · per-run logs `logs/{discovery|validation|screening}_<run_id>_*.log`.
 
 ## Conventions
 
-See [docs/claude/conventions.md](docs/claude/conventions.md) for full details. Critical rules:
+- **License:** MIT project. NautilusTrader (LGPL-3.0) is an unmodified library dependency — never modify, vendor or copy NT source; keep custom code in `vibe_quant/`. Avoid AGPL dependencies. NT is pinned to one minor (`pyproject.toml`); test before bumping.
+- **Indicators:** prefer NautilusTrader built-ins (Rust); fall back to `pandas-ta-classic` — never the original `pandas-ta` (compromised maintainership). Custom indicators are plugins in `vibe_quant/dsl/plugins/`.
+- **Data:** raw downloads are archived to SQLite (`data/archive/`, append-only) before processing into the ParquetDataCatalog; the catalog is rebuildable from the archive.
+- **Frontend API hooks are generated by orval** (`frontend/src/api/generated/`): regenerate by dumping `openapi.json` + `pnpm generate-api`, never hand-edit.
 
-- **License:** MIT project. NautilusTrader (LGPL-3.0) used as unmodified library dependency -- this is acceptable. Never modify NT source. Avoid AGPL dependencies.
-- **Secrets:** API keys in env vars only, never in code.
-- **SQLite:** Always enable WAL mode (`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`) on every connection.
-- **Indicators:** Prefer NautilusTrader built-in (Rust) indicators. Fall back to `pandas-ta-classic` for exotic ones. Never use the original `pandas-ta` (compromised maintainership). Custom indicators: drop a `.py` file in `vibe_quant/dsl/plugins/` — see [`plugins/README.md`](vibe_quant/dsl/plugins/README.md) for the full extension API.
-- **Data:** Raw downloaded data archived in SQLite before processing to ParquetDataCatalog. Catalog is rebuildable from archive.
-
-## Issue Tracking (Beads)
-
-**IMPORTANT: Use `bd` (beads) for ALL task/issue tracking. NEVER use TodoWrite, TaskCreate, or markdown files for tasks.** Full reference (install, Dolt architecture, memory taxonomy, performance): [docs/claude/beads.md](docs/claude/beads.md).
-
-```bash
-bd ready                          # Find available work
-bd show <id>                      # View issue details
-bd update <id> --claim            # Claim work
-bd close <id>                     # Complete work (multiple ids OK)
-bd create --title="..." --description="..." --type=bug --priority=2   # priority 0-4
-bd remember "fact" --key category:specific-item   # Persistent project memory
-bd recall <key> / bd memories <keyword>           # Read memories
-```
-
-- **Workflow:** `bd ready` → `bd update <id> --claim` → implement → `bd close <id>` → `git push`.
-- **NEVER use `bd edit`** — it opens `$EDITOR` which blocks agents.
-- `bd prime` (auto-run by hooks) injects all memories each session. When you learn a surprising non-obvious project fact, `bd remember` it (key taxonomy in [docs/claude/beads.md](docs/claude/beads.md)). If CLAUDE.md contradicts a memory, CLAUDE.md wins — update or `bd forget` the memory.
-
-### Session Completion
-
-**YOU MUST push before calling work done.** File beads for follow-ups → run quality gates → close/update beads → `git pull --rebase && git push` → `git status` must show "up to date with origin". Optional: `bd dolt push` backs memories up off-machine.
-
-## Directory Structure
-
-```
-vibe_quant/          # Backend Python package
-  api/               # FastAPI: app.py factory, routers/, schemas/, sse/, ws/
-  data/              # Downloader, SQLite archive, ParquetDataCatalog
-  db/                # SQLite connection (WAL), schema.py, state_manager
-  discovery/         # GA: genome, operators, fitness, pipeline, guardrails
-  dsl/               # Strategy DSL: parser, compiler, schema, indicators; plugins/ (drop-in indicators)
-  overfitting/       # WFA, purged k-fold, DSR, bootstrap CI
-  paper/             # Paper trading: NT TradingNode, persistence, CLI
-  screening/         # nt_runner.py (shared by discovery/screening/WFA), grid sweep
-  validation/        # runner.py, venue/fill/latency models, extraction, consistency.py
-  nt_compat.py       # NT compatibility helpers (log-guard retention)
-frontend/src/        # React SPA (Vite + Tailwind 4 + shadcn + TanStack Router)
-  api/generated/     # orval-generated hooks/models — DO NOT EDIT; regenerate: dump openapi.json + pnpm generate-api
-  components/        # by domain: backtest/ charts/ data/ discovery/ paper/ results/ settings/ strategies/ ui/
-  routes/            # file-based routes (strategies, backtest, discovery, results, paper-trading, data, settings)
-tests/               # pytest; fixtures/known_results = golden metrics
-data/                # Runtime (gitignored): archive/, catalog/, state/vibe_quant.db
-logs/                # Per-run logs: {discovery|validation|screening}_<run_id>_*.log + events/*.jsonl
-docs/                # claude/conventions.md (coding rules), claude/beads.md, discovery-journal.md, plans/
-SPEC.md              # Authoritative implementation spec
-```
-
-**Key paths:** DB schema `vibe_quant/db/schema.py` · DSL types `vibe_quant/dsl/schema.py` (frontend mirror `frontend/src/components/strategies/editor/types.ts`) · theme `frontend/src/index.css`
-
-## Discovery Pipeline Notes
-
-- **Semantics break 2026-10-10 (job 20261010-edge-engine):** screening fills on own-instrument fill ticks via the outbox (no more one-bar delay), open positions marked at end, Binance instrument specs (BTC min notional 50), multi-symbol validation no longer fills at the signal close. Screening/discovery scores and multi-symbol validation results before this are NOT comparable; single-symbol validation is unchanged.
-
-- **Audit 2026-10-02 (`docs/reviews/2026-10-02-deep-audit.md`, epic `vibe-quant-e70tl`) — critical/high fixed 2026-10-03 = SEMANTICS BREAK.** Screening/validation metrics changed (trade-based PF capped at 100, mark-to-market max DD, funding in screening, adaptive same-bar ordering, TP/SL fills at limit/trigger, sizing rounds down), discovery changed (worst-of-N eval windows, default 20% holdout used once as final gate, every gate fails closed → 0 champions + `guardrail_rejections`). Champions/journal scores before this are NOT comparable. Medium/low leftovers: bead `vibe-quant-e70tl.23`.
-
-- **Research diary:** `docs/discovery-journal.md` — experiment log with GA configs, metrics, and findings
-- Discovery and screening use **identical** code path (`NTScreeningRunner` → `StrategyCompiler`). Results match exactly *within one run* (champion → replay).
-- Validation uses custom fill model + own-1m-detail-bar order release + 1m detail (the latency preset only selects the fill model on bar data). It clamps the run window to 1m coverage (recorded in `notes.data_window`) and FAILS without 1m data. Its consistency check flags screening→validation collapse/trade divergence against the same window (holdout-validated champions use the champion's holdout metrics).
-- **Bug fix `2944ad3`:** `pos.entry→pos.side` enum mismatch caused 155:1 trade ratio. All runs before this fix are invalid.
-- **Semantics break `11c5f00` (2026-07-09):** screening now feeds ONLY the strategy timeframe (an NT data-loading bug previously fed ALL timeframes incl. 1m, giving screening accidental intrabar fills). Discovery scores ≤ run 854 are not comparable with newer runs. **Validation is unchanged** — it loads 1m detail explicitly and reproduces historical results bit-for-bit.
-- **Compiler version hash:** stored in discovery notes for staleness detection. Changes when the indicator registry changes — check `bd recall discovery:compiler-hash` for the current value; recompute with `compiler_version_hash()`.
-- Champion rankings live in `bd recall discovery:champions` (journal has full history). Batch-13 STOCH+CCI headline numbers are historical only (pre-`11c5f00`).
-- **1m data is slow:** Rust-native indicators (SMA/EMA/CCI/STOCH/ATR) ~10x faster than pandas-path ones (ADX/MACD/BBANDS/KAMA). Budget accordingly.
-- **Fitness function:** 35% Sharpe + 25% (1-MaxDD) + 20% PF + 20% Return. Hard gate: 0 if <50 trades.
-- **`eval_windows` (default 3) stores WORST-of-N sub-window metrics** (min Sharpe/return/PF, max DD; each window needs ≥ max(1, min_trades // (2N)) trades) — a full-window replay legitimately shows different Sharpe/return (`ReplayResponse.metrics_note` explains this). Not a bug.
-- **Discovery seed:** `--seed N` (CLI only; auto-drawn when absent, always persisted in `notes.seed`) replays a run exactly — same seed + same config + same code. Runs without a recorded seed (pre-2026-10-08) can't be replayed. Still never compare discovery runs ACROSS code changes (any change shifts the RNG draw sequence).
-- **Discovery fails loudly:** an all-errored eval batch (before any success, or ≥ max(2, pop//4) after) raises `DiscoveryEvaluationError` → run `failed`, not "0 champions".
-- **Bootstrap-CI gate keeps being vindicated:** every champion forced past it with `no_bootstrap_ci=true` and then validated has collapsed (Batch 41: 5.40→−2.78; Batch 43 RAMS: 0.59→−0.36). The validation runner auto-flags collapses (`validation/consistency.py`); treat a flagged strategy as overfit, not as a validation bug.
-- 4h/1d discovery uses bootstrap floor 0.0 by default (1.0 is structurally unpassable at ~50-180 trades/yr); 1m uses 0.5.
-- **Cumulative DSR gate N (2026-10-10):** the gate's trial count is this run's evaluated strategies PLUS the evaluated counts of prior non-mock discovery runs with the same timeframe and an overlapping train window (`notes.dsr_trials.gate_n`/`prior_n`/`prior_run_ids`, `n_rule=cumulative_same_tf_overlapping_train`).
-
-## NautilusTrader Gotchas (each of these cost real debugging time)
-
-- **IMPORTANT: `BacktestDataConfig.data_cls` MUST be the CLASS object** (`from nautilus_trader.model.data import Bar`), never the import string. `config.query` compares `data_cls is Bar`; a string silently disables `bar_types`/`bar_spec` narrowing and loads the ENTIRE catalog (~300× data, and fills change because the venue processes stray finer-granularity bars). Upstream issue draft: `docs/nt-upstream-issue-data-cls.md`.
-- **IMPORTANT: creating a `BacktestEngine`/`BacktestNode` after disposing a previous one in the same process hard-aborts** (Rust logger can only init once; the process just dies with no Python traceback). YOU MUST call `vibe_quant.nt_compat.retain_log_guard(engine)` before dispose in any new engine-lifecycle code; both runners and `test_fill_timing.py` already do.
-- **NT 1.226+ config decoding rejects unknown fields** (fast-fail). Forward only params the generated `StrategyConfig` declares (`__struct_fields__` filter in both runners). Run-level knobs like `initial_balance`/`leverage` belong on the venue, not the strategy config.
-- **`node.build()` swallows engine-build exceptions** — `get_engine()` returns `None` and you see only "engine not found". Validation sets `BacktestRunConfig(raise_exception=True)`; keep it that way, and set it when writing new runner code.
-- **NT `BacktestResult.elapsed_time` is the simulated window in seconds**, not wall time. `Iterations` ≈ bars processed — if it's far above the expected bar count, you have a data-loading bug (see Performance Playbook).
-- **Invalid `TraderId` (e.g. `paper_1`, no `-`) aborts the whole process from Rust** — no Python exception. Validate with `paper/config.py`'s regex first.
-- **`TradingState.REDUCING` does NOT stop a flat account from opening a position** — paper uses its own `TradingGuard` order gate (`paper/guard.py`).
-- `BacktestEngine.run()` stops all strategies when it ends — assert mid-run strategy state from a scheduled actor, not after `run()`.
-- Generated strategy modules are content-addressed (`{name}_{hash}`) — always use `module.__name__`, never rebuild the path from `dsl.name`.
-- ADX stays on the pandas path deliberately (NT has no true ADX — `DirectionalMovement.value` is always 0). Don't "optimize" it to `nt_class` without checking values.
-- **NT's `LatencyModel` releases queued orders venue-wide.** Never use it for bar data; the generated strategy's `command_release` outbox does per-instrument release.
-- **A `BacktestDataConfig` for an instrument missing from the catalog only warns.** Synthetic feeds need an explicit coverage check (`fill_ticks` does).
-
-## Swarm board (every agent: read it, write to it)
-
-A persistent message board shared by every agent and session in this repo — main sessions, subagents, Command Code workers, future swarms. The SessionStart hook prints the latest posts; full view `docs/orchestration/board/BOARD.md`.
-- Catch up: `python3 scripts/agents/bus.py --as <you> board read --global --recent 30`
-- Record: `... board post --topic findings|gotchas|decisions|model-notes|thoughts --body "..."` — anything a future agent should know (persisted in git). Chat: `--topic chat`, `post --to <agent>`, `reply --ref <id>`.
-- Orchestrator: `... --as chief digest` on every loop pass (plus a Monitor on `tail --to chief`) reads everything new on the persistent board + every job bus and acts on interesting posts. Agents: post anything interesting — the chief will see it. Details: [docs/orchestration/README.md § Swarm bus](docs/orchestration/README.md).
-
-## Performance Profiling
-
-Use the `perf-profiling` skill (`.claude/skills/perf-profiling/SKILL.md`) when investigating
-slow runs or indicators — it documents how the 300× and 4.4× wins were found. Every perf
-change ships with an exactness proof (see Verification Rules).
-
-## Multi-Agent Orchestration
-
-Large jobs (many beads, research campaigns): `orchestrate` skill + [`docs/orchestration/`](docs/orchestration/README.md)
-(roster in `.claude/agents/`, handoff contract, research lane). **DeepSeek V4.1 Flash is the default coder (almost free); Sonnet reviews and fixes when the review finds too much.** Coding tasks go to Command Code
-(DeepSeek/Qwen/GLM/Kimi/MiMo) **only as T3 subagents via the `t3-code` MCP `delegate_task`** (instance with
-`driverKind: commandcode`, async, unique `clientRequestId`) — never the Agent tool, `cmd-task.sh` or `t3_thread_launch`.
-Read `docs/orchestration/cheap-agents.md` § Dispatch protocol first. Children have no cwd and start in the MAIN
-checkout with full access: every brief names the absolute worktree and requires `cd <worktree> &&` on each command.
-
-## Agent speed rules (measured 2026-10-11 on job 20261010-backlog)
-
-Costs: full `tests/unit` ≈ 3 min (worse with parallel workers) · `swarm-check.sh` ≈ 3 min when it runs the full suite · `exactness_239.py` ≈ 6 s · Playwright spec ≈ 1.5 min + `ui-check.sh` up/down · one model turn ≈ 4–10 s.
-- **Full suite once per round**, via `swarm-check.sh` at the end — not also as a separate step before it. While iterating, run the targeted test files plus the files that import changed symbols.
-- **Fewer, fatter turns:** batch independent reads/greps into one turn, read whole functions (not 70-line slices), no todo lists, chain shell checks with `&&`. DeepSeek spent 58% of its time on turns that each made one tool call.
-- **Mutation checks are budgeted:** at most 5 mutants per review, only on changed logic, run against the targeted test file in a `git archive` scratch copy. Stress loops: 10 runs at most unless flakiness is the finding.
-- **E2E:** iterate with `-g <scenario>`, then run the full spec once at the end.
-- **Async launches:** a test of anything that returns 201 and then runs in a subprocess must poll the final status.
-
-## Verification Rules (what counts as "results are the same")
+## Verification rules
 
 Valid proofs that a change preserved correctness:
-- **Fixed-strategy eval before/after** (`scripts/agents/exactness_239.py`): one `NTScreeningRunner` call on a saved strategy must
-  return bit-identical metrics (strategy 239, BTCUSDT 2024-01-01..2026-03-17: sharpe `0.7974716442710239`, 67 trades,
-  return `0.159784359286041`, profit factor `1.6359612484989312`, max drawdown `0.05716872229767501` since the 2026-10-10
-  fill-timing semantics break; was `1.3169239785208688`/68 before 2026-10-10). All five metrics are asserted.
-- **Validation repeatability**: the same validation run twice is bit-identical (strategy 239, BTCUSDT 2024-01-01..2026-03-17:
-  sharpe `0.780452281957465`, 67 trades — single-symbol validation is unchanged by the 2026-10-10 break; `0.7802305953007851`
-  after the 2026-10-03 audit fixes; runs 868 == 870 before). The two-symbol baseline (BTCUSDT+ETHUSDT, same window,
-  `exactness_239.py --validation-multi`) is sharpe `0.4956474374166028`, 164 trades, return `0.13753127107369148`,
-  profit factor `1.1990127778814956`, max drawdown `0.11707174708945581`, and is symbol-order-invariant. Any drift = regression.
-- **Within-run replay**: discovery champion → `/replay` matches exactly when the run used
-  `eval_windows=1`.
+- **Fixed-strategy eval** (`scripts/agents/exactness_239.py`): strategy 239, BTCUSDT 2024-01-01..2026-03-17, screening must return sharpe `0.7974716442710239`, 67 trades, return `0.159784359286041`, PF `1.6359612484989312`, max DD `0.05716872229767501` (all five asserted).
+- **Validation repeatability:** single-symbol 239 = sharpe `0.780452281957465`, 67 trades. Two-symbol (BTCUSDT+ETHUSDT, `--validation-multi`) = sharpe `0.4956474374166028`, 164 trades, return `0.13753127107369148`, PF `1.1990127778814956`, max DD `0.11707174708945581`, symbol-order-invariant. Any drift is a regression unless the change is a declared comparability break.
+- **Within-run replay:** discovery champion → `/replay` matches exactly when the run used `eval_windows=1`.
 - Zero-tolerance unit tests against the reference implementation for ported math.
 
-INVALID proofs (these wasted time):
-- Comparing two discovery runs — single-seed runs are unseeded and nondeterministic
-  unless both used the same `--seed`, and ANY code change shifts the RNG draw sequence.
-- Comparing an `eval_windows>1` champion's stored fitness to a full-window replay
-  (mean-of-N sub-windows vs full window — differs by design).
-- Comparing screening metrics across the `11c5f00` or 2026-10-03 audit-fix semantics breaks.
+Not proofs (they wasted time): comparing two discovery runs (nondeterministic unless seeded, and any code change shifts the RNG sequence); comparing an `eval_windows>1` champion's stored fitness to a full-window replay; comparing metrics across a comparability break (dated list in [`docs/claude/discovery.md`](docs/claude/discovery.md#comparability-breaks)).
 
-## Historical Documentation
+## Issue tracking (beads)
 
-`docs/opus-prd.md`, `docs/opus-spec.md`, `docs/opus-research.md`, `docs/gpt-research.md`, and `docs/crypto-trading-bot-specification.md` predate SPEC.md and describe **abandoned architectures** (FreqTrade, VectorBT, PostgreSQL, Redis). Never follow them; when any `docs/*.md` contradicts SPEC.md, **SPEC.md wins**.
+Use `bd` for all task tracking (not TodoWrite, TaskCreate or markdown task lists). Reference: [`docs/claude/beads.md`](docs/claude/beads.md).
+
+```bash
+bd ready                                    # available work
+bd show <id> / bd update <id> --claim / bd close <id> [<id>...]
+bd create --title="..." --description="..." --type=bug --priority=2   # priority 0-4
+bd remember "fact" --key category:item       # persistent project memory (bd recall / bd memories <kw>)
+```
+
+- `bd edit` opens `$EDITOR` and blocks agents; use `bd update` flags.
+- `bd prime` (auto-run by hooks) injects all memories each session. If a memory contradicts this file, this file wins — update or `bd forget` the memory.
+- **Session completion:** file beads for follow-ups → quality gates → close beads → `git pull --rebase && git push` → `git status` shows "up to date with origin". Work isn't done until the push succeeds.
+
+## Commit messages
+
+One commit per task (bead or tightly coupled pair), never one squash commit per job, with a verbose body — **Why / What / How / Decisions / Verification / Review** — in the format of [`docs/orchestration/prompts/commit-message.md`](docs/orchestration/prompts/commit-message.md). `git log` is the project history and a context source for future agents, so it records why and who decided, not just bead ids. This repo overrides any global "concise commit message" preference.
+
+## Multi-agent orchestration
+
+Large jobs use the `orchestrate` skill + [`docs/orchestration/`](docs/orchestration/README.md). DeepSeek V4.1 Flash is the default coder (almost free); Sonnet reviews and fixes when a review finds too much. Command Code workers (DeepSeek/Qwen/GLM/Kimi/MiMo) run only as T3 subagents via the `t3-code` MCP `delegate_task` (instance `driverKind: commandcode`, async, unique `clientRequestId`) — see `docs/orchestration/cheap-agents.md` § Dispatch protocol. Children start in the main checkout with no cwd: every brief names the absolute worktree and requires `cd <worktree> &&` on each command.
+
+**Swarm board** — shared memory and chat for every agent (`scripts/agents/bus.py`; human view `docs/orchestration/board/BOARD.md`): catch up with `python3 scripts/agents/bus.py --as <you> board read --global --recent 30`; record with `board post --topic findings|gotchas|decisions|model-notes|thoughts --body "..."`; ask the chief with `ask --to chief`, message peers with `post --to <agent>`, answer with `reply --ref <id>`.
+
+## Historical documentation
+
+`docs/opus-prd.md`, `docs/opus-spec.md`, `docs/opus-research.md`, `docs/gpt-research.md` and `docs/crypto-trading-bot-specification.md` predate SPEC.md and describe abandoned architectures (FreqTrade, VectorBT, PostgreSQL, Redis). Read them only for history; follow SPEC.md.
