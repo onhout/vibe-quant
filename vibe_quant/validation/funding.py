@@ -29,6 +29,10 @@ import logging
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +164,69 @@ class FundingCalculator:
         if missing:
             fallback = sign * self._default_rate * entry_notional
             payments.extend((ts, fallback) for ts in missing)
+            payments.sort(key=lambda p: p[0])
+            accrual.fallback_settlements = len(missing)
+            self._warn_missing(symbol, missing, has_archive=bool(times))
+
+        accrual.payments = payments
+        accrual.total = sum(amount for _, amount in payments)
+        return accrual
+
+    def accrue_book(
+        self,
+        instrument_id: str,
+        fills: Sequence[tuple[int, float]],
+        mark: Callable[[int], float],
+        end_ns: int,
+    ) -> FundingAccrual:
+        """Funding for one leg of a resized (NETTING) book, settlement by settlement.
+
+        Each settlement in ``(first fill, end_ns]`` is paid on the signed
+        quantity held strictly before it (fills at or after the settlement time
+        do not count) at ``mark(settlement_ns)``: ``qty x mark x rate``,
+        positive = paid. Uncovered 8h boundaries while the leg is non-flat use
+        the fallback rate and are counted, as in :meth:`accrue`.
+
+        Args:
+            instrument_id: e.g. "BTCUSDT-PERP.BINANCE".
+            fills: ``(ts_ns, signed quantity change)`` sorted by time.
+            mark: Mark price at a settlement timestamp (ns).
+            end_ns: Last instant funding is accrued for (inclusive).
+        """
+        accrual = FundingAccrual()
+        if not fills or end_ns <= fills[0][0]:
+            return accrual
+        fill_ts = [ts for ts, _ in fills]
+        held: list[float] = []
+        running = 0.0
+        for _, delta in fills:
+            running += delta
+            held.append(running)
+
+        def qty_before(ts: int) -> float:
+            i = bisect_left(fill_ts, ts)  # fills strictly before ts
+            return held[i - 1] if i else 0.0
+
+        symbol = self.symbol_from_instrument_id(instrument_id)
+        times, rates = self._load_rates(symbol)
+        start = fill_ts[0]
+        payments: list[tuple[int, float]] = []
+        for i in range(bisect_right(times, start), bisect_right(times, end_ns)):
+            qty = qty_before(times[i])
+            if qty:
+                payments.append((times[i], qty * mark(times[i]) * rates[i]))
+
+        missing: list[int] = []
+        boundary = (start // _FUNDING_PERIOD_NS + 1) * _FUNDING_PERIOD_NS
+        while boundary <= end_ns:
+            j = bisect_left(times, boundary - _SETTLEMENT_TOLERANCE_NS)
+            covered = j < len(times) and times[j] <= boundary + _SETTLEMENT_TOLERANCE_NS
+            qty = qty_before(boundary)
+            if not covered and qty:
+                missing.append(boundary)
+                payments.append((boundary, qty * mark(boundary) * self._default_rate))
+            boundary += _FUNDING_PERIOD_NS
+        if missing:
             payments.sort(key=lambda p: p[0])
             accrual.fallback_settlements = len(missing)
             self._warn_missing(symbol, missing, has_archive=bool(times))
