@@ -55,8 +55,9 @@ function CheckRow({ label, status, detail, threshold, description }: CheckInfo &
 // - DSR: deflated_sharpe is a z-score; significant when p = sf(z) < 0.05 (overfitting/dsr.py)
 // - Purged k-fold: mean OOS Sharpe > 0.5 (and std < 1.0, not exposed) (overfitting/purged_kfold.py)
 // - Walk-forward: discovery verdict wfa.passed (consistency >= 0.75); else WFA efficiency > 0.5
-// - Bootstrap CI: lower >= floor; floor = the run's bootstrap_min_sharpe, else the
-//   discovery timeframe default (discovery/__main__.py _BOOTSTRAP_FLOOR_BY_TIMEFRAME)
+// - Bootstrap CI: t-stat (mean/std*sqrt(n)) lower bound >= floor; floor = the run's
+//   bootstrap_min_sharpe (API field name kept), else the discovery timeframe default
+//   (discovery/__main__.py _BOOTSTRAP_FLOOR_BY_TIMEFRAME)
 // - Cross-window: discovery verdict cross_window.passed
 const DSR_Z_95 = 1.6448536269514722;
 const PKFOLD_MIN_MEAN_SHARPE = 0.5;
@@ -135,7 +136,7 @@ export function overfittingChecks(
           : undefined,
     },
     {
-      label: "Bootstrap CI (Sharpe lower)",
+      label: "Bootstrap CI (t-stat lower)",
       status: verdict(
         data.bootstrap_sharpe_lower != null ? data.bootstrap_sharpe_lower >= floor : null,
       ),

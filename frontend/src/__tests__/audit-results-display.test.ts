@@ -101,18 +101,18 @@ describe("OverfittingBadges thresholds match the backend", () => {
   });
 
   it("bootstrap floor: 4h/1d 0.0, 1m 0.5, run override wins", () => {
-    expect(status({ bootstrap_sharpe_lower: 0.2 }, "4h")["Bootstrap CI (Sharpe lower)"]).toBe(
+    expect(status({ bootstrap_sharpe_lower: 0.2 }, "4h")["Bootstrap CI (t-stat lower)"]).toBe(
       "pass",
     );
-    expect(status({ bootstrap_sharpe_lower: 0.2 }, "1m")["Bootstrap CI (Sharpe lower)"]).toBe(
+    expect(status({ bootstrap_sharpe_lower: 0.2 }, "1m")["Bootstrap CI (t-stat lower)"]).toBe(
       "fail",
     );
-    expect(status({ bootstrap_sharpe_lower: 0.7 }, "1h")["Bootstrap CI (Sharpe lower)"]).toBe(
+    expect(status({ bootstrap_sharpe_lower: 0.7 }, "1h")["Bootstrap CI (t-stat lower)"]).toBe(
       "fail",
     );
     expect(
       status({ bootstrap_sharpe_lower: 0.2, bootstrap_min_sharpe: 0.3 }, "4h")[
-        "Bootstrap CI (Sharpe lower)"
+        "Bootstrap CI (t-stat lower)"
       ],
     ).toBe("fail");
   });

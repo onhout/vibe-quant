@@ -148,7 +148,7 @@ test.describe("Results overfitting badges", () => {
         summary.deflated_sharpe == null ? "N/A" : `z: ${summary.deflated_sharpe.toFixed(2)}`,
       ],
       [
-        "Bootstrap CI (Sharpe lower)",
+        "Bootstrap CI (t-stat lower)",
         summary.bootstrap_sharpe_lower == null
           ? "N/A"
           : `≥${summary.bootstrap_sharpe_lower.toFixed(2)}`,
