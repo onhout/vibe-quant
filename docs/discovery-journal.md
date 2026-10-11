@@ -4,6 +4,22 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: RESULT H-9 — REJECTED; conclusion of the day: price momentum in crypto perps decayed after mid-2022
+
+H-9 (spec cb51c36, run once): `data/swarm/20261011-h2b/h9_xs_momentum.py` on Binance Vision 1d klines (`h9_download.py`). Universe by the pre-registered rule: 66 of 74 candidates had a 2020-10 file (missing: OCEAN CVC BEL CTK AXS ALPHA ZEN SKL); delisted coins (SRM, TOMO, BLZ, YFII, …) included until their data ends; 57 coins alive at 2020-10-01, 60 at the end. Largest daily return 3.898 (DOGE 2021-01-28, the real WSB pump). Annual turnover 34.3×.
+
+| Window | Net Sharpe | Net return | Max DD | Beta to EW universe buy-and-hold |
+|---|---|---|---|---|
+| FULL 2020-10..2026-09 | 0.2653221146956247 | 0.22054325253669016 | 0.4314783016643351 | -0.04598300342026544 |
+| A 2020-10..2022-05 | 1.288767161256503 | 0.6577384636795582 | 0.18359230470315768 | -0.02833940430108933 |
+| B 2022-06..2026-09 | -0.32137861064102496 | -0.2637299071727297 | 0.3605080400388173 | -0.06487655811972477 |
+
+**REJECT** (FULL < 1.0; B < 0.5). Market-neutral as designed (|beta| < 0.07), but the factor is dead or reversed since mid-2022 — the same break as H-8 (A 1.54 → B 0.09).
+
+**Day summary (17 GA runs + H-2b + H-8 + H-9, all honest gates):** every price-derived construction — GA threshold rules (15m–4h), long-only time-series trend (H-2b), hedged alt-vs-BTC momentum (H-8), 66-coin cross-sectional momentum (H-9) — either fails significance or only matches/undershoots buy-and-hold; the momentum families worked in 2020–mid-2022 and decayed after. More GA budget, more symbols, or more parameter variants on OHLCV are not the lever. The remaining lever is new information (open interest, liquidations, order-flow/taker imbalance, positioning), which needs data infrastructure and a user decision, followed by pre-registered hypotheses on that data.
+
+---
+
 ## 2026-10-11: RESULT H-8 — REJECTED (spread decayed after mid-2022); PRE-REGISTRATION H-9 — broad-universe cross-sectional momentum
 
 **H-8 result** (`data/swarm/20261011-h2b/h8_relative_strength.py`, spec b240978, run once):
