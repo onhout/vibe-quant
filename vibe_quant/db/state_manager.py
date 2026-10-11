@@ -204,8 +204,10 @@ class StateManager:
         Returns:
             Strategy dict or None if not found.
         """
-        cursor = self.conn.execute("SELECT * FROM strategies WHERE id = ?", (strategy_id,))
-        row = cursor.fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM strategies WHERE id = ?", (strategy_id,)
+            ).fetchone()
         if row is None:
             return None
         result = dict(row)
@@ -221,8 +223,10 @@ class StateManager:
         Returns:
             Strategy dict or None if not found.
         """
-        cursor = self.conn.execute("SELECT * FROM strategies WHERE name = ?", (name,))
-        row = cursor.fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM strategies WHERE name = ?", (name,)
+            ).fetchone()
         if row is None:
             return None
         result = dict(row)
@@ -243,9 +247,10 @@ class StateManager:
             query += " WHERE is_active = 1"
         query += " ORDER BY updated_at DESC"
 
-        cursor = self.conn.execute(query)
+        with self._write_lock:
+            rows = self.conn.execute(query).fetchall()
         results = []
-        for row in cursor:
+        for row in rows:
             result = dict(row)
             result["dsl_config"] = json.loads(result["dsl_config"])
             results.append(result)
@@ -316,8 +321,10 @@ class StateManager:
 
     def get_sizing_config(self, config_id: int) -> JsonDict | None:
         """Get sizing config by ID."""
-        cursor = self.conn.execute("SELECT * FROM sizing_configs WHERE id = ?", (config_id,))
-        row = cursor.fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM sizing_configs WHERE id = ?", (config_id,)
+            ).fetchone()
         if row is None:
             return None
         result = dict(row)
@@ -326,9 +333,12 @@ class StateManager:
 
     def list_sizing_configs(self) -> list[JsonDict]:
         """List all sizing configs."""
-        cursor = self.conn.execute("SELECT * FROM sizing_configs ORDER BY name")
+        with self._write_lock:
+            rows = self.conn.execute(
+                "SELECT * FROM sizing_configs ORDER BY name"
+            ).fetchall()
         results = []
-        for row in cursor:
+        for row in rows:
             result = dict(row)
             result["config"] = json.loads(result["config"])
             results.append(result)
@@ -377,8 +387,10 @@ class StateManager:
 
     def get_risk_config(self, config_id: int) -> JsonDict | None:
         """Get risk config by ID."""
-        cursor = self.conn.execute("SELECT * FROM risk_configs WHERE id = ?", (config_id,))
-        row = cursor.fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM risk_configs WHERE id = ?", (config_id,)
+            ).fetchone()
         if row is None:
             return None
         result = dict(row)
@@ -388,9 +400,10 @@ class StateManager:
 
     def list_risk_configs(self) -> list[JsonDict]:
         """List all risk configs."""
-        cursor = self.conn.execute("SELECT * FROM risk_configs ORDER BY name")
+        with self._write_lock:
+            rows = self.conn.execute("SELECT * FROM risk_configs ORDER BY name").fetchall()
         results = []
-        for row in cursor:
+        for row in rows:
             result = dict(row)
             result["strategy_level"] = json.loads(result["strategy_level"])
             result["portfolio_level"] = json.loads(result["portfolio_level"])
@@ -423,10 +436,11 @@ class StateManager:
             Dict with keys: kill_switch (bool), reason (str|None),
             killed_at (str|None), killed_by (str|None), updated_at (str).
         """
-        row = self.conn.execute(
-            "SELECT kill_switch, reason, killed_at, killed_by, updated_at "
-            "FROM system_state WHERE id = 1"
-        ).fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT kill_switch, reason, killed_at, killed_by, updated_at "
+                "FROM system_state WHERE id = 1"
+            ).fetchone()
         if row is None:
             # Defensive: row should have been inserted by init_schema.
             return {
@@ -470,10 +484,11 @@ class StateManager:
 
     def get_research_subreddits(self, source: str) -> list[str] | None:
         """Return the saved subreddit list for ``source``, or None if unset."""
-        row = self.conn.execute(
-            "SELECT subreddits_json FROM research_settings WHERE source = ?",
-            (source,),
-        ).fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT subreddits_json FROM research_settings WHERE source = ?",
+                (source,),
+            ).fetchone()
         if row is None:
             return None
         parsed = json.loads(row[0])
@@ -558,8 +573,10 @@ class StateManager:
 
     def get_backtest_run(self, run_id: int) -> JsonDict | None:
         """Get backtest run by ID."""
-        cursor = self.conn.execute("SELECT * FROM backtest_runs WHERE id = ?", (run_id,))
-        row = cursor.fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM backtest_runs WHERE id = ?", (run_id,)
+            ).fetchone()
         if row is None:
             return None
         result = dict(row)
@@ -628,9 +645,10 @@ class StateManager:
 
         query += " ORDER BY created_at DESC"
 
-        cursor = self.conn.execute(query, params)
+        with self._write_lock:
+            rows = self.conn.execute(query, params).fetchall()
         results = []
-        for row in cursor:
+        for row in rows:
             result = dict(row)
             result["symbols"] = json.loads(result["symbols"])
             result["parameters"] = json.loads(result["parameters"])
@@ -696,11 +714,11 @@ class StateManager:
 
     def get_backtest_result(self, run_id: int) -> JsonDict | None:
         """Get the (latest) backtest result for a run."""
-        cursor = self.conn.execute(
-            "SELECT * FROM backtest_results WHERE run_id = ? ORDER BY id DESC LIMIT 1",
-            (run_id,),
-        )
-        row = cursor.fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM backtest_results WHERE run_id = ? ORDER BY id DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
         return dict(row) if row else None
 
     def list_backtest_results(
@@ -737,9 +755,10 @@ class StateManager:
             query += " LIMIT ?"
             params.append(limit)
 
-        cursor = self.conn.execute(query, params)
+        with self._write_lock:
+            rows = self.conn.execute(query, params).fetchall()
         results = []
-        for row in cursor:
+        for row in rows:
             result = dict(row)
             # Parse JSON fields from the joined run data
             if "symbols" in result and result["symbols"] is not None:
@@ -823,10 +842,11 @@ class StateManager:
 
     def get_trades(self, run_id: int) -> list[JsonDict]:
         """Get all trades for a backtest run."""
-        cursor = self.conn.execute(
-            "SELECT * FROM trades WHERE run_id = ? ORDER BY entry_time", (run_id,)
-        )
-        return [dict(row) for row in cursor]
+        with self._write_lock:
+            rows = self.conn.execute(
+                "SELECT * FROM trades WHERE run_id = ? ORDER BY entry_time", (run_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # --- Sweep Results CRUD ---
 
@@ -901,9 +921,10 @@ class StateManager:
             query += " AND is_pareto_optimal = 1"
         query += " ORDER BY sharpe_ratio DESC"
 
-        cursor = self.conn.execute(query, (run_id,))
+        with self._write_lock:
+            rows = self.conn.execute(query, (run_id,)).fetchall()
         results = []
-        for row in cursor:
+        for row in rows:
             result = dict(row)
             result["parameters"] = json.loads(result["parameters"])
             results.append(result)
@@ -956,14 +977,19 @@ class StateManager:
 
     def get_job(self, run_id: int) -> JsonDict | None:
         """Get job by run ID."""
-        cursor = self.conn.execute("SELECT * FROM background_jobs WHERE run_id = ?", (run_id,))
-        row = cursor.fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM background_jobs WHERE run_id = ?", (run_id,)
+            ).fetchone()
         return dict(row) if row else None
 
     def get_running_jobs(self) -> list[JsonDict]:
         """Get all running jobs."""
-        cursor = self.conn.execute("SELECT * FROM background_jobs WHERE status = 'running'")
-        return [dict(row) for row in cursor]
+        with self._write_lock:
+            rows = self.conn.execute(
+                "SELECT * FROM background_jobs WHERE status = 'running'"
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def update_job_status(self, run_id: int, status: str, error: str | None = None) -> None:
         """Update job status.
@@ -1047,9 +1073,10 @@ class StateManager:
 
         query += " ORDER BY r.created_at DESC"
 
-        cursor = self.conn.execute(query, params)
+        with self._write_lock:
+            rows = self.conn.execute(query, params).fetchall()
         results = []
-        for row in cursor:
+        for row in rows:
             result = dict(row)
             if result.get("symbols") is not None:
                 result["symbols"] = json.loads(result["symbols"])
@@ -1109,9 +1136,10 @@ class StateManager:
                 ) from e
 
     def get_research_item(self, item_id: int) -> JsonDict | None:
-        row = self.conn.execute(
-            "SELECT * FROM research_items WHERE id = ?", (item_id,)
-        ).fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM research_items WHERE id = ?", (item_id,)
+            ).fetchone()
         if row is None:
             return None
         d = dict(row)
@@ -1185,7 +1213,8 @@ class StateManager:
             params.append(f"%{q.lower()}%")
         query += f" ORDER BY {order_by} LIMIT ? OFFSET ?"
         params.extend([limit, offset])
-        rows = self.conn.execute(query, params).fetchall()
+        with self._write_lock:
+            rows = self.conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
     def update_research_item_status(self, item_id: int, status: str) -> bool:
@@ -1247,18 +1276,20 @@ class StateManager:
             return cursor.lastrowid
 
     def list_extractions_for_item(self, item_id: int) -> list[JsonDict]:
-        rows = self.conn.execute(
-            """SELECT * FROM research_extractions
-               WHERE research_item_id = ?
-               ORDER BY extracted_at DESC, id DESC""",
-            (item_id,),
-        ).fetchall()
+        with self._write_lock:
+            rows = self.conn.execute(
+                """SELECT * FROM research_extractions
+                   WHERE research_item_id = ?
+                   ORDER BY extracted_at DESC, id DESC""",
+                (item_id,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def get_extraction(self, extraction_id: int) -> JsonDict | None:
-        row = self.conn.execute(
-            "SELECT * FROM research_extractions WHERE id = ?", (extraction_id,)
-        ).fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM research_extractions WHERE id = ?", (extraction_id,)
+            ).fetchone()
         return dict(row) if row else None
 
     def update_extraction_status(
@@ -1322,21 +1353,23 @@ class StateManager:
         self, extraction_id: int, idx: int
     ) -> JsonDict | None:
         """Return the cached scaffold outcome for (extraction_id, idx) or None."""
-        row = self.conn.execute(
-            """SELECT * FROM research_indicator_scaffolds
-               WHERE extraction_id = ? AND idx = ?""",
-            (extraction_id, idx),
-        ).fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                """SELECT * FROM research_indicator_scaffolds
+                   WHERE extraction_id = ? AND idx = ?""",
+                (extraction_id, idx),
+            ).fetchone()
         return dict(row) if row else None
 
     def list_indicator_scaffolds(self, extraction_id: int) -> list[JsonDict]:
         """All scaffold rows for an extraction, indexed by idx ascending."""
-        rows = self.conn.execute(
-            """SELECT * FROM research_indicator_scaffolds
-               WHERE extraction_id = ?
-               ORDER BY idx""",
-            (extraction_id,),
-        ).fetchall()
+        with self._write_lock:
+            rows = self.conn.execute(
+                """SELECT * FROM research_indicator_scaffolds
+                   WHERE extraction_id = ?
+                   ORDER BY idx""",
+                (extraction_id,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def upsert_indicator_scaffold(
@@ -1395,20 +1428,21 @@ class StateManager:
         Returns ``None`` when no scaffold row matches — promote still
         runs (the file exists), just without source-URL provenance.
         """
-        row = self.conn.execute(
-            """SELECT
-                   s.extraction_id    AS extraction_id,
-                   e.research_item_id AS research_item_id,
-                   i.url              AS item_url
-               FROM research_indicator_scaffolds s
-               JOIN research_extractions e ON e.id = s.extraction_id
-               JOIN research_items       i ON i.id = e.research_item_id
-               WHERE s.status = 'ok'
-                 AND s.plugin_path LIKE ?
-               ORDER BY s.updated_at DESC
-               LIMIT 1""",
-            (f"%{plugin_path_suffix}",),
-        ).fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                """SELECT
+                       s.extraction_id    AS extraction_id,
+                       e.research_item_id AS research_item_id,
+                       i.url              AS item_url
+                   FROM research_indicator_scaffolds s
+                   JOIN research_extractions e ON e.id = s.extraction_id
+                   JOIN research_items       i ON i.id = e.research_item_id
+                   WHERE s.status = 'ok'
+                     AND s.plugin_path LIKE ?
+                   ORDER BY s.updated_at DESC
+                   LIMIT 1""",
+                (f"%{plugin_path_suffix}",),
+            ).fetchone()
         return dict(row) if row else None
 
     def delete_indicator_scaffold(self, extraction_id: int, idx: int) -> bool:
@@ -1440,16 +1474,18 @@ class StateManager:
             return cursor.lastrowid
 
     def get_scrape_run(self, run_id: int) -> JsonDict | None:
-        row = self.conn.execute(
-            "SELECT * FROM research_scrape_runs WHERE id = ?", (run_id,)
-        ).fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM research_scrape_runs WHERE id = ?", (run_id,)
+            ).fetchone()
         return dict(row) if row else None
 
     def latest_scrape_run(self, source: str) -> JsonDict | None:
-        row = self.conn.execute(
-            "SELECT * FROM research_scrape_runs WHERE source = ? ORDER BY id DESC LIMIT 1",
-            (source,),
-        ).fetchone()
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM research_scrape_runs WHERE source = ? ORDER BY id DESC LIMIT 1",
+                (source,),
+            ).fetchone()
         return dict(row) if row else None
 
     def adopt_scrape_run(self, run_id: int, pid: int) -> bool:
@@ -1475,15 +1511,16 @@ class StateManager:
 
         Pass `source` to filter to a single source.
         """
-        if source is None:
-            rows = self.conn.execute(
-                "SELECT * FROM research_scrape_runs WHERE status = 'running' ORDER BY id DESC"
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM research_scrape_runs WHERE status = 'running' AND source = ? ORDER BY id DESC",
-                (source,),
-            ).fetchall()
+        with self._write_lock:
+            if source is None:
+                rows = self.conn.execute(
+                    "SELECT * FROM research_scrape_runs WHERE status = 'running' ORDER BY id DESC"
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT * FROM research_scrape_runs WHERE status = 'running' AND source = ? ORDER BY id DESC",
+                    (source,),
+                ).fetchall()
         return [dict(r) for r in rows]
 
     def count_research_items(
@@ -1514,7 +1551,8 @@ class StateManager:
         if q:
             query += " AND LOWER(i.title) LIKE ?"
             params.append(f"%{q.lower()}%")
-        row = self.conn.execute(query, params).fetchone()
+        with self._write_lock:
+            row = self.conn.execute(query, params).fetchone()
         return int(row["c"]) if row else 0
 
     def update_scrape_run_heartbeat(self, run_id: int) -> bool:
@@ -1914,8 +1952,9 @@ class StateManager:
         if not status_list:
             return []
         placeholders = ",".join("?" for _ in status_list)
-        rows = self.conn.execute(
-            f"""SELECT j.id, j.research_item_id, j.status, j.queued_at,
+        with self._write_lock:
+            rows = self.conn.execute(
+                f"""SELECT j.id, j.research_item_id, j.status, j.queued_at,
                        j.started_at, j.completed_at, j.attempts, j.max_attempts,
                        j.last_error, j.error_message, j.heartbeat_at,
                        i.title AS item_title, i.url AS item_url,
@@ -1925,16 +1964,17 @@ class StateManager:
                 WHERE j.status IN ({placeholders})
                 ORDER BY j.queued_at ASC, j.id ASC
                 LIMIT ?""",
-            (*status_list, int(limit)),
-        ).fetchall()
+                (*status_list, int(limit)),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def count_active_extraction_jobs(self) -> int:
         """Number of jobs currently in status IN ('queued', 'running')."""
-        row = self.conn.execute(
-            """SELECT COUNT(*) AS c FROM research_extraction_jobs
+        with self._write_lock:
+            row = self.conn.execute(
+                """SELECT COUNT(*) AS c FROM research_extraction_jobs
                WHERE status IN ('queued', 'running')"""
-        ).fetchone()
+            ).fetchone()
         return int(row["c"]) if row else 0
 
     def sweep_stuck_extraction_jobs(
@@ -1971,7 +2011,8 @@ class StateManager:
             placeholders = ",".join("?" for _ in excluded)
             sql += f" AND id NOT IN ({placeholders})"
             params.extend(excluded)
-        rows = self.conn.execute(sql, tuple(params)).fetchall()
+        with self._write_lock:
+            rows = self.conn.execute(sql, tuple(params)).fetchall()
         out: list[JsonDict] = []
         for r in rows:
             out.append(
@@ -2050,14 +2091,15 @@ class StateManager:
         status: str | None = None,
         limit: int = 100,
     ) -> list[JsonDict]:
-        if status is None:
-            rows = self.conn.execute(
-                "SELECT * FROM research_extraction_jobs ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM research_extraction_jobs WHERE status = ? ORDER BY id DESC LIMIT ?",
-                (status, limit),
-            ).fetchall()
+        with self._write_lock:
+            if status is None:
+                rows = self.conn.execute(
+                    "SELECT * FROM research_extraction_jobs ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT * FROM research_extraction_jobs WHERE status = ? ORDER BY id DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
         return [dict(r) for r in rows]
