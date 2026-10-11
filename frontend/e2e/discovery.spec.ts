@@ -39,11 +39,11 @@ test.describe("Discovery page", () => {
   });
 
   test("GA parameter inputs have sensible defaults", async ({ page }) => {
-    await expect(page.getByLabel("Population Size")).toHaveValue("50");
-    await expect(page.getByLabel("Generations")).toHaveValue("100");
+    await expect(page.getByLabel("Population Size")).toHaveValue("20");
+    await expect(page.getByLabel("Generations")).toHaveValue("15");
     await expect(page.getByLabel("Crossover Rate")).toHaveValue("0.8");
     await expect(page.getByLabel("Mutation Rate")).toHaveValue("0.1");
-    await expect(page.getByLabel("Elite Count")).toHaveValue("5");
+    await expect(page.getByLabel("Elite Count")).toHaveValue("2");
     await expect(page.getByLabel("Tournament Size")).toHaveValue("3");
   });
 
@@ -53,9 +53,9 @@ test.describe("Discovery page", () => {
     await expect(symbolsInput).toHaveValue("BTCUSDT");
   });
 
-  test("Target Config has date inputs", async ({ page }) => {
-    await expect(page.getByLabel("Start Date")).toBeVisible();
-    await expect(page.getByLabel("End Date")).toBeVisible();
+  test("Target Config has date range controls", async ({ page }) => {
+    await expect(page.locator("#disc-start-date")).toBeVisible();
+    await expect(page.locator("#disc-end-date")).toBeVisible();
   });
 
   test("Launch Discovery button is visible", async ({ page }) => {

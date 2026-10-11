@@ -33,7 +33,11 @@ test.describe("Sidebar navigation", () => {
     });
 
     await p.goto("/strategies");
-    await p.waitForLoadState("networkidle");
+    await expect(p.getByRole("heading", { name: "Strategy Management" })).toBeVisible();
+    // The page holds a jobs WebSocket open, so `networkidle` never fires; wait
+    // for the strategy-list query to settle instead — the search input only
+    // renders once the list has loaded (no skeleton).
+    await expect(p.getByPlaceholder("Search…")).toBeVisible({ timeout: 20_000 });
 
     // Filter out expected API errors (backend not running in E2E)
     const unexpected = errors.filter(

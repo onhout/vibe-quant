@@ -93,7 +93,7 @@ Coverage axes — check which ones the change crosses and verify each side:
 | Pre-review gate (PASS cached per HEAD; runs the unit suite in parallel) | `scripts/agents/swarm-check.sh <worktree> --scope <globs> [--no-cache]` |
 | Backend | `.venv/bin/uvicorn "vibe_quant.api.app:create_app" --factory --port 8000` |
 | Frontend dev / build / unit | `cd frontend && pnpm dev` / `pnpm build` / `pnpm vitest run` |
-| E2E (against ui-check stack) | `cd frontend && E2E_BASE_URL=http://localhost:5188 pnpm exec playwright test e2e/discovery-flow.spec.ts` |
+| E2E (against ui-check stack) | `scripts/agents/e2e.sh <worktree>` (boots the stack, runs all specs, always tears down; `... <worktree> e2e/<file>` to filter) |
 | Extraction worker | `.venv/bin/vibe-quant extraction-worker` (run beside the backend so re-extractions progress) |
 | Throwaway UI stack | `scripts/agents/ui-check.sh up\|down <worktree>` (backend :8001 + Vite :5188 on a DB copy) |
 | Worktree for a task | `scripts/agents/worktree.sh <slug> [base] [--private-node-modules]` |

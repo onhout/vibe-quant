@@ -21,24 +21,22 @@ test.describe("Settings page", () => {
     test(`${tab} tab renders content`, async ({ page }) => {
       await page.getByRole("tab", { name: tab }).click();
 
-      // Each tab should render some content below the tab bar
-      // Wait for tab content to appear (lazy-loaded components)
-      const tabPanel = page.locator("[role=tabpanel]");
+      // Radix keeps every panel mounted (inactive ones hidden); the panel is
+      // named by its tab, so getByRole picks the active one.
+      const tabPanel = page.getByRole("tabpanel", { name: tab });
       await expect(tabPanel).toBeVisible();
-      // Content should not be empty
       await expect(tabPanel).not.toBeEmpty();
     });
   }
 
   test("Sizing tab New Config button shows form", async ({ page }) => {
-    // Sizing tab is the default
     await page.getByRole("tab", { name: "Sizing" }).click();
-    const tabPanel = page.locator("[role=tabpanel]");
+    const tabPanel = page.getByRole("tabpanel", { name: "Sizing" });
     await expect(tabPanel).toBeVisible();
 
-    // Click New Config -- may be in EmptyState or in the header
     const newConfigBtn = tabPanel.getByRole("button", { name: "New Config" });
-    await expect(newConfigBtn.first()).toBeVisible();
+    // The config list loads async; allow for a slow backend under parallel load.
+    await expect(newConfigBtn.first()).toBeVisible({ timeout: 15_000 });
     await newConfigBtn.first().click();
 
     // Form should now appear with Name input and method selector
@@ -50,7 +48,7 @@ test.describe("Settings page", () => {
 
   test("Sizing tab form Cancel hides form", async ({ page }) => {
     await page.getByRole("tab", { name: "Sizing" }).click();
-    const tabPanel = page.locator("[role=tabpanel]");
+    const tabPanel = page.getByRole("tabpanel", { name: "Sizing" });
 
     const newConfigBtn = tabPanel.getByRole("button", { name: "New Config" });
     await newConfigBtn.first().click();
@@ -62,21 +60,18 @@ test.describe("Settings page", () => {
   });
 
   test("switching tabs preserves tab panel rendering", async ({ page }) => {
-    // Click Risk tab
     await page.getByRole("tab", { name: "Risk" }).click();
-    const riskPanel = page.locator("[role=tabpanel]");
+    const riskPanel = page.getByRole("tabpanel", { name: "Risk" });
     await expect(riskPanel).toBeVisible();
     await expect(riskPanel).not.toBeEmpty();
 
-    // Click Latency tab
     await page.getByRole("tab", { name: "Latency" }).click();
-    const latencyPanel = page.locator("[role=tabpanel]");
+    const latencyPanel = page.getByRole("tabpanel", { name: "Latency" });
     await expect(latencyPanel).toBeVisible();
     await expect(latencyPanel).not.toBeEmpty();
 
-    // Click back to Risk
     await page.getByRole("tab", { name: "Risk" }).click();
-    await expect(page.locator("[role=tabpanel]")).toBeVisible();
-    await expect(page.locator("[role=tabpanel]")).not.toBeEmpty();
+    await expect(page.getByRole("tabpanel", { name: "Risk" })).toBeVisible();
+    await expect(page.getByRole("tabpanel", { name: "Risk" })).not.toBeEmpty();
   });
 });

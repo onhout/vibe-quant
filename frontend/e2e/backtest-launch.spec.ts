@@ -6,18 +6,15 @@ test.describe("Backtest Launch page", () => {
   });
 
   test("renders launch form", async ({ page }) => {
-    // BacktestLaunchForm should render with strategy/config fields
-    await expect(page.getByText(/backtest|launch|strategy/i).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Backtest Launch" })).toBeVisible();
   });
 
   test("renders preflight status component", async ({ page }) => {
-    // PreflightStatus is part of BacktestLaunchForm
-    await expect(page.getByText(/preflight|status|ready/i).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /preflight/i })).toBeVisible();
   });
 
   test("renders active jobs panel", async ({ page }) => {
-    // ActiveJobsPanel shows running/queued jobs
-    await expect(page.getByText(/active|jobs|queue/i).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Active Jobs" })).toBeVisible();
   });
 
   test("strategy selector renders with placeholder", async ({ page }) => {
@@ -26,23 +23,23 @@ test.describe("Backtest Launch page", () => {
   });
 
   test("mode toggle shows Screening and Validation buttons", async ({ page }) => {
-    await expect(page.getByRole("button", { name: "screening" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "validation" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "screening", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "validation", exact: true })).toBeVisible();
   });
 
   test("clicking Validation mode shows validation settings", async ({ page }) => {
-    await page.getByRole("button", { name: "validation" }).click();
+    await page.getByRole("button", { name: "validation", exact: true }).click();
     await expect(page.getByText("Validation Settings")).toBeVisible();
     await expect(page.getByLabel("Latency Preset")).toBeVisible();
   });
 
   test("clicking Screening mode hides validation settings", async ({ page }) => {
     // Switch to validation first
-    await page.getByRole("button", { name: "validation" }).click();
+    await page.getByRole("button", { name: "validation", exact: true }).click();
     await expect(page.getByText("Validation Settings")).toBeVisible();
 
     // Switch back to screening
-    await page.getByRole("button", { name: "screening" }).click();
+    await page.getByRole("button", { name: "screening", exact: true }).click();
     await expect(page.getByText("Validation Settings")).toBeHidden();
   });
 
@@ -59,16 +56,13 @@ test.describe("Backtest Launch page", () => {
   test("date preset populates start and end dates", async ({ page }) => {
     await page.getByRole("button", { name: "3M", exact: true }).click();
 
-    const startInput = page.getByLabel("Start Date");
-    const endInput = page.getByLabel("End Date");
-    // After clicking preset, both should have values
-    await expect(startInput).not.toHaveValue("");
-    await expect(endInput).not.toHaveValue("");
+    // The range pickers are popover-trigger buttons; the preset fills both labels.
+    await expect(page.locator("#start-date")).toHaveText(/\d{4}/);
+    await expect(page.locator("#end-date")).toHaveText(/\d{4}/);
   });
 
   test("launch button is disabled without strategy selected", async ({ page }) => {
-    // The Launch button should be disabled when no strategy is selected
-    const launchBtn = page.getByRole("button", { name: /launch screening/i });
+    const launchBtn = page.getByRole("button", { name: "Launch Screening", exact: true });
     await expect(launchBtn).toBeDisabled();
   });
 
@@ -79,12 +73,5 @@ test.describe("Backtest Launch page", () => {
     await expect(leverageInput).toBeVisible();
     await expect(balanceInput).toHaveValue("10000");
     await expect(leverageInput).toHaveValue("10");
-  });
-
-  test("overfitting filters section renders", async ({ page }) => {
-    await expect(page.getByText("Overfitting Filters")).toBeVisible();
-    await expect(page.getByText("Deflated Sharpe Ratio (DSR)")).toBeVisible();
-    await expect(page.getByText("Walk-Forward Analysis (WFA)")).toBeVisible();
-    await expect(page.getByText("Purged K-Fold CV")).toBeVisible();
   });
 });

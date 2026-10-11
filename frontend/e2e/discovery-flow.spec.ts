@@ -7,7 +7,9 @@ import { type APIRequestContext, expect, test } from "@playwright/test";
  * E2E_BASE_URL set (see playwright.config.ts). Real rows are picked from the
  * API copy of the state DB rather than hard-coded ids.
  */
-const API = process.env.E2E_API_URL ?? "http://localhost:8001";
+// 127.0.0.1, not localhost: uvicorn binds IPv4 only, but Node resolves
+// `localhost` to ::1 first → ECONNREFUSED under load.
+const API = process.env.E2E_API_URL ?? "http://127.0.0.1:8001";
 
 /**
  * The GA genome's indicator pool (discovery.genome.build_indicator_pool(include_context=True)

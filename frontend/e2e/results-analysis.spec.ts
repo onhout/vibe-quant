@@ -9,20 +9,11 @@ test.describe("Results Analysis page", () => {
     await expect(page.getByRole("heading", { name: "Results Analysis" })).toBeVisible();
   });
 
-  test("renders run selector", async ({ page }) => {
-    // RunSelector component should be visible
-    await expect(page.getByText(/select.*run|no run selected/i).first()).toBeVisible();
-  });
-
-  test("renders Single Run and Compare tabs", async ({ page }) => {
-    await expect(page.getByRole("tab", { name: /single run/i })).toBeVisible();
-    await expect(page.getByRole("tab", { name: /compare/i })).toBeVisible();
-  });
-
-  test("Compare tab shows comparison view", async ({ page }) => {
-    await page.getByRole("tab", { name: /compare/i }).click();
-
-    // ComparisonView should render
-    await expect(page.getByText(/compare|comparison|select.*runs/i).first()).toBeVisible();
+  test("renders runs table with mode filters", async ({ page }) => {
+    // The page is a single runs list; filters are comboboxes above the table.
+    await expect(page.getByRole("combobox").filter({ hasText: "Validation only" })).toBeVisible();
+    // The runs list is div-based (no table/columnheader roles); wait for a header
+    // to prove the list rendered.
+    await expect(page.getByText("Sharpe").first()).toBeVisible({ timeout: 20_000 });
   });
 });
