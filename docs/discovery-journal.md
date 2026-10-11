@@ -4,6 +4,18 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: PRE-REGISTRATION H-8 — hedged alt-vs-BTC relative-strength momentum (feasibility, off-engine)
+
+Committed before the script is written or run. Purpose: decide whether option 2 (market-neutral relative strength) justifies an engine build (more symbols + a portfolio-level strategy that trades a hedge leg — the DSL runs one strategy per symbol and cannot express it today). H-2b showed long-only trend is de-risked beta; removing beta is the next lever, IF the spread exists.
+
+**Spec (frozen):** daily closes from the catalog (1d bars). Every Monday (UTC) close, for each alt in {ETH, SOL, BNB} with ≥ 28 d history: rel = 28-day return(alt) − 28-day return(BTC) (crypto momentum horizon 1–4 weeks, Liu/Tsyvinski/Wu 2022). Position for the next 7 days: rel > 0 → +1 alt / −1 BTC; rel ≤ 0 → −1 alt / +1 BTC (equal notional, beta to BTC hedged 1:1). Portfolio = equal weight of the alt pairs available that week. Held from the signal close (close-to-close returns, positions use only data up to the signal close). Costs: 0.05% per unit of notional traded per leg (taker); funding not modelled (stated limitation: net funding of long alt/short BTC pairs is small but non-zero).
+
+**Window:** 2020-10-01..2026-09-30; halves A = 2020-10-01..2022-05-31, B = 2022-06-01..2026-09-30.
+
+**PASS (justifies proposing the engine build) only if all:** (1) full-window annualised Sharpe (daily, √365) ≥ 1.0 net of costs; (2) Sharpe > 0.5 in BOTH halves; (3) |beta| of daily returns to equal-weight 4-coin buy-and-hold < 0.3. **Otherwise REJECT** option 2 for this universe; no variants (other lookbacks/rebalance days) will be tried on this data.
+
+---
+
 ## 2026-10-11: RESULT H-2b — REJECTED as pre-registered (beats nothing but drawdown)
 
 Pre-registration: previous entry (commit 5e4393e, written before the data existed). Data: Binance perps 2020-01..2021-12 ingested (SOL from 2020-09, BNB from 2020-02; 3,781,979 new 1m bars, 7,881 funding rates); exactness_239 screening + validation-multi IDENTICAL after the catalog rebuild. Strategy id 242.
