@@ -1,0 +1,72 @@
+{
+  "general": {
+    "strategy_type": "momentum",
+    "symbols": ["BTCUSDT"],
+    "timeframe": "4h"
+  },
+  "indicators": [
+    {
+      "type": "EMA",
+      "params": {
+        "period": 20
+      }
+    },
+    {
+      "type": "ATR",
+      "params": {
+        "period": 14
+      }
+    },
+    {
+      "type": "MACD",
+      "params": {
+        "fast": 12,
+        "fast_period": 12,
+        "slow": 26,
+        "slow_period": 26,
+        "signal_period": 9
+      }
+    },
+    {
+      "type": "STOCH",
+      "params": {
+        "period": 14,
+        "k_period": 14,
+        "period_k": 14,
+        "d_period": 3,
+        "period_d": 3
+      }
+    }
+  ],
+  "conditions": {
+    "entry": [
+      {
+        "left": "EMA(20)",
+        "operator": ">",
+        "right": "ATR(14)"
+      }
+    ],
+    "exit": [
+      {
+        "left": "EMA(20)",
+        "operator": "<",
+        "right": "ATR(14)"
+      }
+    ]
+  },
+  "risk": {
+    "stop_loss": {
+      "type": "fixed_pct",
+      "value": 2
+    },
+    "take_profit": {
+      "type": "fixed_pct",
+      "value": 4
+    },
+    "position_sizing": {
+      "type": "percent_equity",
+      "value": 10
+    }
+  },
+  "time": {}
+}

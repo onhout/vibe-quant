@@ -1,0 +1,95 @@
+{
+  "general": {
+    "strategy_type": "momentum",
+    "symbols": ["BTCUSDT"],
+    "timeframe": "4h"
+  },
+  "indicators": [
+    {
+      "type": "EMA",
+      "params": {
+        "period": 12.5
+      }
+    },
+    {
+      "type": "ATR",
+      "params": {
+        "period": 14
+      }
+    },
+    {
+      "type": "MACD",
+      "params": {
+        "fast_period": 12,
+        "slow_period": 26,
+        "signal_period": 9
+      }
+    },
+    {
+      "type": "STOCH",
+      "params": {
+        "period_k": 14,
+        "period_d": 3
+      }
+    },
+    {
+      "type": "ICHIMOKU",
+      "params": {
+        "tenkan": 9,
+        "kijun": 26,
+        "senkou": 52
+      }
+    },
+    {
+      "type": "ADAPTIVE_RSI",
+      "params": {
+        "period": 14,
+        "alpha": 0.5
+      }
+    },
+    {
+      "type": "SQUEEZE_MOM",
+      "params": {
+        "length": 20
+      }
+    },
+    {
+      "type": "BBANDS",
+      "params": {
+        "period": 20,
+        "std_dev": 2
+      }
+    }
+  ],
+  "conditions": {
+    "entry": [
+      {
+        "left": "EMA(12)",
+        "operator": ">",
+        "right": "ATR(14)"
+      }
+    ],
+    "exit": [
+      {
+        "left": "EMA(12)",
+        "operator": "<",
+        "right": "ATR(14)"
+      }
+    ]
+  },
+  "risk": {
+    "stop_loss": {
+      "type": "fixed_pct",
+      "value": 2
+    },
+    "take_profit": {
+      "type": "fixed_pct",
+      "value": 4
+    },
+    "position_sizing": {
+      "type": "percent_equity",
+      "value": 10
+    }
+  },
+  "time": {}
+}

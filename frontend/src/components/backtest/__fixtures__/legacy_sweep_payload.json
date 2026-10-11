@@ -1,0 +1,12 @@
+{
+  "ema_12_period": [12, 13],
+  "ema_12_2_period": [12, 13],
+  "macd_fast_period": [12, 13],
+  "macd_slow_period": [26, 27],
+  "macd_signal_period": [9, 10],
+  "bbands_20_period": [20, 21],
+  "bbands_20_std_dev": [2, 3],
+  "stoch_period": [14, 15],
+  "stoch_d_period": [3, 4],
+  "atr_14_period": [14, 15]
+}

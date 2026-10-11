@@ -1,0 +1,77 @@
+{
+  "rsi_mean_reversion": {
+    "rsi_period": [14, 15],
+    "ema_filter_period": [50, 51],
+    "atr_period": [14, 15]
+  },
+  "rsi_divergence": {
+    "rsi_period": [14, 15],
+    "ema_fast_period": [9, 10],
+    "ema_slow_period": [21, 22],
+    "ema_trend_period": [50, 51],
+    "atr_period": [14, 15]
+  },
+  "macd_crossover": {
+    "macd_fast_period": [12, 13],
+    "macd_slow_period": [26, 27],
+    "macd_signal_period": [9, 10],
+    "ema_fast_period": [9, 10],
+    "ema_slow_period": [21, 22],
+    "atr_period": [14, 15]
+  },
+  "stochastic_reversal": {
+    "stoch_period": [14, 15],
+    "ema_trend_period": [50, 51],
+    "atr_period": [14, 15]
+  },
+  "ema_ribbon": {
+    "ema_fast_period": [9, 10],
+    "ema_mid_period": [21, 22],
+    "ema_slow_period": [55, 56],
+    "rsi_period": [14, 15],
+    "atr_period": [14, 15]
+  },
+  "donchian_breakout": {
+    "donchian_period": [20, 21],
+    "ema_trend_period": [50, 51],
+    "atr_period": [14, 15]
+  },
+  "dual_ema_crossover": {
+    "ema_fast_period": [12, 13],
+    "ema_slow_period": [26, 27],
+    "atr_period": [14, 15]
+  },
+  "bollinger_squeeze": {
+    "bbands_period": [20, 21],
+    "bbands_std_dev": [2, 3],
+    "atr_period": [14, 15],
+    "rsi_period": [14, 15],
+    "ema_period": [20, 21]
+  },
+  "keltner_trend": {
+    "kc_period": [20, 21],
+    "kc_atr_multiplier": [1.5, 2.5],
+    "rsi_period": [14, 15],
+    "ema_period": [50, 51],
+    "atr_period": [14, 15]
+  },
+  "mtf_trend_scalp": {
+    "rsi_period": [14, 15],
+    "ema_trend_1h_period": [50, 51],
+    "ema_trend_4h_period": [50, 51],
+    "atr_period": [14, 15]
+  },
+  "mtf_momentum_filter": {
+    "rsi_period": [14, 15],
+    "macd_fast_period": [12, 13],
+    "macd_slow_period": [26, 27],
+    "macd_signal_period": [9, 10],
+    "ema_trend_period": [50, 51],
+    "atr_period": [14, 15]
+  },
+  "vwap_intraday": {
+    "rsi_period": [14, 15],
+    "ema_period": [20, 21],
+    "atr_period": [14, 15]
+  }
+}

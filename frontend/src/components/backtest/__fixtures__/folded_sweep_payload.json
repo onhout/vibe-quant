@@ -1,0 +1,9 @@
+{
+  "ema_20_period": [20, 21],
+  "atr_14_period": [14, 15],
+  "macd_fast_period": [12, 13],
+  "macd_slow_period": [26, 27],
+  "macd_signal_period": [9, 10],
+  "stoch_14_period": [14, 15],
+  "stoch_14_d_period": [3, 4]
+}

@@ -1,0 +1,17 @@
+{
+  "ema_12_period": [12, 13],
+  "atr_14_period": [14, 15],
+  "macd_fast_period": [12, 13],
+  "macd_slow_period": [26, 27],
+  "macd_signal_period": [9, 10],
+  "stoch_period": [14, 15],
+  "stoch_d_period": [3, 4],
+  "ichimoku_tenkan": [9, 10],
+  "ichimoku_kijun": [26, 27],
+  "ichimoku_senkou": [52, 53],
+  "adaptive_rsi_14_period": [14, 15],
+  "adaptive_rsi_14_alpha": [0.5, 1.5],
+  "squeeze_mom_length": [20, 21],
+  "bbands_20_period": [20, 21],
+  "bbands_20_std_dev": [2, 3]
+}

@@ -10,7 +10,6 @@ import { useListSymbolsApiDataSymbolsGet } from "@/api/generated/data/data";
 import type { CoverageCheckResponseCoverage } from "@/api/generated/models";
 import { useListLatencyPresetsApiSettingsLatencyPresetsGet } from "@/api/generated/settings/settings";
 import { useListStrategiesApiStrategiesGet } from "@/api/generated/strategies/strategies";
-import { parseDslConfig } from "@/components/strategies/editor/types";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DatasetRangeIndicator } from "@/components/ui/DatasetRangeIndicator";
@@ -26,8 +25,17 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { useDatasetDateRange } from "@/hooks/useDatasetDateRange";
+import { useIndicatorCatalog } from "@/hooks/useIndicatorCatalog";
 import { PreflightStatus } from "./PreflightStatus";
-import { SweepBuilder, type SweepConfig, sweepToPayload } from "./SweepBuilder";
+import {
+  SweepBuilder,
+  type SweepCatalog,
+  type SweepConfig,
+  sweepableParamsFor,
+  strategyTranslationProblem,
+  sweepProblem,
+  sweepToPayload,
+} from "./SweepBuilder";
 
 type BacktestMode = "screening" | "validation";
 
@@ -59,6 +67,7 @@ export function BacktestLaunchForm() {
   const symbolsQuery = useListSymbolsApiDataSymbolsGet();
   const latencyQuery = useListLatencyPresetsApiSettingsLatencyPresetsGet();
   const datasetRange = useDatasetDateRange();
+  const catalogQuery = useIndicatorCatalog();
 
   // Reset sweep config when strategy changes to avoid stale indicator indices
   useEffect(() => {
@@ -82,13 +91,26 @@ export function BacktestLaunchForm() {
   const symbols = symbolsQuery.data?.status === 200 ? symbolsQuery.data.data : [];
   const latencyPresets = latencyQuery.data?.status === 200 ? latencyQuery.data.data : [];
 
-  // Extract indicators from selected strategy for sweep builder
+  // Sweepable params of the selected strategy, keyed as the backend's compiled config fields
   const selectedStrategy = strategies.find((s) => String(s.id) === strategyId);
-  const strategyIndicators = useMemo(() => {
+  // Int-ness of a param comes from the catalog: no sweep is built or launched without it
+  const catalogReady = catalogQuery.data?.status === 200;
+  const sweepableParams = useMemo(() => {
     if (!selectedStrategy) return [];
-    const dsl = parseDslConfig(selectedStrategy.dsl_config as Record<string, unknown>);
-    return dsl.indicators;
-  }, [selectedStrategy]);
+    const catalog: SweepCatalog | undefined =
+      catalogQuery.data?.status === 200
+        ? Object.fromEntries(catalogQuery.data.data.indicators.map((i) => [i.type_name, i]))
+        : undefined;
+    return sweepableParamsFor(selectedStrategy.dsl_config as Record<string, unknown>, catalog);
+  }, [selectedStrategy, catalogQuery.data]);
+
+  const strategyProblem = useMemo(
+    () =>
+      selectedStrategy
+        ? strategyTranslationProblem(selectedStrategy.dsl_config as Record<string, unknown>)
+        : null,
+    [selectedStrategy],
+  );
 
   const isLaunching = screeningMutation.isPending || validationMutation.isPending;
 
@@ -97,6 +119,8 @@ export function BacktestLaunchForm() {
     selectedSymbols.length > 0 &&
     startDate !== "" &&
     endDate !== "" &&
+    !strategyProblem &&
+    !(sweepEnabled && (!catalogReady || sweepProblem(sweepConfig, sweepableParams))) &&
     !isLaunching;
 
   function handleSymbolToggle(symbol: string) {
@@ -220,6 +244,14 @@ export function BacktestLaunchForm() {
             )}
           </div>
 
+          {strategyProblem && (
+            <div className="rounded-md border border-destructive bg-destructive/10 px-3 py-2">
+              <p className="text-sm text-destructive">
+                {strategyProblem}. Fix the strategy before launching: the backtest would fail.
+              </p>
+            </div>
+          )}
+
           {/* Mode toggle */}
           <div className="space-y-2">
             <Label>Mode</Label>
@@ -243,7 +275,7 @@ export function BacktestLaunchForm() {
           </div>
 
           {/* Parameter sweep toggle */}
-          {strategyId !== "" && strategyIndicators.length > 0 && (
+          {strategyId !== "" && sweepableParams.length > 0 && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <Label>Parameter Sweep</Label>
@@ -251,6 +283,7 @@ export function BacktestLaunchForm() {
                   type="button"
                   variant={sweepEnabled ? "default" : "outline"}
                   size="sm"
+                  disabled={!catalogReady}
                   onClick={() => {
                     setSweepEnabled((v) => !v);
                     if (!sweepEnabled) setSweepConfig({ params: [] });
@@ -259,9 +292,16 @@ export function BacktestLaunchForm() {
                   {sweepEnabled ? "Enabled" : "Disabled"}
                 </Button>
               </div>
+              {!catalogReady && (
+                <p className="text-xs text-muted-foreground">
+                  {catalogQuery.isError
+                    ? "Indicator catalog failed to load: sweeps are unavailable."
+                    : "Loading indicator catalog..."}
+                </p>
+              )}
               {sweepEnabled && (
                 <SweepBuilder
-                  indicators={strategyIndicators}
+                  params={sweepableParams}
                   value={sweepConfig}
                   onChange={setSweepConfig}
                 />

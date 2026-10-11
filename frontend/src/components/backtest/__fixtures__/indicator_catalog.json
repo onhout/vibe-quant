@@ -1,0 +1,302 @@
+{
+  "ADAPTIVE_RSI": {
+    "default_params": {
+      "period": 14,
+      "alpha": 0.5
+    },
+    "param_schema": {
+      "period": "int",
+      "alpha": "float"
+    }
+  },
+  "ADX": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "ATR": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "BBANDS": {
+    "default_params": {
+      "period": 20,
+      "std_dev": 2.0
+    },
+    "param_schema": {
+      "period": "int",
+      "std_dev": "float"
+    }
+  },
+  "BTC_ROC": {
+    "default_params": {
+      "period": 20
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "BTC_TREND": {
+    "default_params": {
+      "period": 200
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "CCI": {
+    "default_params": {
+      "period": 20
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "DEMA": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "DONCHIAN": {
+    "default_params": {
+      "period": 20
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "EMA": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "FRAMA": {
+    "default_params": {
+      "period": 16
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "FUNDING": {
+    "default_params": {
+      "period": 1
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "FUNDING_Z": {
+    "default_params": {
+      "period": 30
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "ICHIMOKU": {
+    "default_params": {
+      "tenkan": 9,
+      "kijun": 26,
+      "senkou": 52
+    },
+    "param_schema": {
+      "tenkan": "int",
+      "kijun": "int",
+      "senkou": "int"
+    }
+  },
+  "KAMA": {
+    "default_params": {
+      "period": 10
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "KC": {
+    "default_params": {
+      "period": 20,
+      "atr_multiplier": 2.0
+    },
+    "param_schema": {
+      "period": "int",
+      "atr_multiplier": "float"
+    }
+  },
+  "MACD": {
+    "default_params": {
+      "fast_period": 12,
+      "slow_period": 26,
+      "signal_period": 9
+    },
+    "param_schema": {
+      "fast_period": "int",
+      "slow_period": "int",
+      "signal_period": "int"
+    }
+  },
+  "MFI": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "NATR": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "OBV": {
+    "default_params": {},
+    "param_schema": {}
+  },
+  "OWN_TREND": {
+    "default_params": {
+      "period": 200
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "PRICE_POSITION": {
+    "default_params": {
+      "period": 52
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "RAMS": {
+    "default_params": {
+      "period": 50
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "ROC": {
+    "default_params": {
+      "period": 10
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "RSI": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "SMA": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "SQUEEZE_MOM": {
+    "default_params": {
+      "length": 20
+    },
+    "param_schema": {
+      "length": "int"
+    }
+  },
+  "SQUEEZE_RATIO": {
+    "default_params": {
+      "length": 20,
+      "bb_mult": 2.0,
+      "kc_mult": 1.5
+    },
+    "param_schema": {
+      "length": "int",
+      "bb_mult": "float",
+      "kc_mult": "float"
+    }
+  },
+  "STOCH": {
+    "default_params": {
+      "period_k": 14,
+      "period_d": 3
+    },
+    "param_schema": {
+      "period_k": "int",
+      "period_d": "int"
+    }
+  },
+  "TEMA": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "TREND_ENSEMBLE": {
+    "default_params": {
+      "max_lookback": 250
+    },
+    "param_schema": {
+      "max_lookback": "int"
+    }
+  },
+  "VIDYA": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "VOLSMA": {
+    "default_params": {
+      "period": 20
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "VWAP": {
+    "default_params": {},
+    "param_schema": {}
+  },
+  "WILLR": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  },
+  "WMA": {
+    "default_params": {
+      "period": 14
+    },
+    "param_schema": {
+      "period": "int"
+    }
+  }
+}
