@@ -542,6 +542,14 @@ def compute_bbands(df: pd.DataFrame, params: dict[str, object]) -> dict[str, pd.
 
     pandas-ta-classic's ``ta.bbands`` column order: BBL, BBM, BBU, BBB, BBP
     (iloc 0/1/2/3/4).
+
+    ``bandwidth`` and ``percent_b`` are derived from the returned bands with the
+    exact formulas and guards of ``derived.compute_bandwidth`` /
+    ``compute_percent_b`` on the NT path: bandwidth is a FRACTION
+    ``(upper - lower) / middle`` (0.0 when ``middle <= 0``; the GA samples
+    [0, 0.2]) and ``percent_b`` is 0.5 on zero-width bands. pandas-ta's own
+    BBB (percent, x100) and BBP columns add an epsilon that breaks both on a flat
+    window, so they are not used. Warm-up rows (bands NaN) stay NaN.
     """
     period = int_param(params, "period", 20)
     std_dev = float_param(params, "std_dev", 2.0)
@@ -555,12 +563,16 @@ def compute_bbands(df: pd.DataFrame, params: dict[str, object]) -> dict[str, pd.
             "bandwidth": empty,
             "percent_b": empty,
         }
+    lower, middle, upper = result.iloc[:, 0], result.iloc[:, 1], result.iloc[:, 2]
+    band_range = upper - lower
+    bandwidth = (band_range / middle).where(middle > 0, 0.0).where(middle.notna())
+    percent_b = ((df["close"] - lower) / band_range).where(band_range > 0, 0.5)
     return {
-        "lower": result.iloc[:, 0],
-        "middle": result.iloc[:, 1],
-        "upper": result.iloc[:, 2],
-        "bandwidth": result.iloc[:, 3],
-        "percent_b": result.iloc[:, 4],
+        "lower": lower,
+        "middle": middle,
+        "upper": upper,
+        "bandwidth": bandwidth,
+        "percent_b": percent_b.where(band_range.notna()),
     }
 
 
