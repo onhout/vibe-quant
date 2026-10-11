@@ -739,24 +739,6 @@ class TestDetailTimeframe:
         assert result == "1s"
         runner.close()
 
-    def test_resolve_detail_non_sub_bar_timeframe(
-        self, temp_db: Path, temp_logs: Path
-    ) -> None:
-        """Supra-5m timeframes (4h, 1h) default to 1m fill-resolution detail
-        when the catalog covers the window, else None (coverage-gated)."""
-        runner = ValidationRunner(db_path=temp_db, logs_path=temp_logs)
-        result = runner._resolve_detail_timeframe(
-            run_config={
-                "symbols": '["BTCUSDT"]',
-                "start_date": "2025-01-01",
-                "end_date": "2025-01-31",
-            },
-            strategy_timeframe="4h",
-            override=None,
-        )
-        assert result in ("1m", None)
-        runner.close()
-
     def test_resolve_detail_from_run_config_parameters(
         self, temp_db: Path, temp_logs: Path
     ) -> None:
@@ -815,26 +797,6 @@ class TestDetailTimeframe:
         assert config_with_detail.fill_config.prob_best_price_fill == 1.0
         assert isinstance(config_no_detail.fill_config, VolumeSlippageFillModelConfig)
         assert config_no_detail.fill_config.prob_best_price_fill == 0.7
-
-        runner.close()
-
-    def test_augment_params_no_delay_with_detail(
-        self, temp_db: Path, temp_logs: Path
-    ) -> None:
-        """Detail data forces execution_delay_probability=0 (own-bar release)."""
-        runner = ValidationRunner(db_path=temp_db, logs_path=temp_logs)
-
-        # Without detail: delay probability is injected
-        params_no_detail = runner._augment_strategy_params_for_validation(
-            {}, timeframe="1m", has_detail_data=False
-        )
-        assert "execution_delay_probability" in params_no_detail
-
-        # With detail: delay forced to 0, even over an explicit value
-        params_with_detail = runner._augment_strategy_params_for_validation(
-            {"execution_delay_probability": 0.45}, timeframe="1m", has_detail_data=True
-        )
-        assert params_with_detail["execution_delay_probability"] == 0.0
 
         runner.close()
 

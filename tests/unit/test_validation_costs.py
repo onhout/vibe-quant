@@ -68,16 +68,6 @@ class TestFundingCalculator:
             FundingCalculator.symbol_from_instrument_id("BTCUSDT-PERP.BINANCE") == "BTCUSDT"
         )
 
-    def test_long_pays_three_settlements(self, archive_path: Path) -> None:
-        calc = FundingCalculator(archive_path)
-        base_ns = 1_735_689_600_000 * 1_000_000  # 2025-01-01T00:00Z
-        entry_ns = base_ns + 1 * _HOUR_NS  # 01:00
-        exit_ns = base_ns + 25 * _HOUR_NS  # next day 01:00 -> 08/16/00 = 3 settlements
-        funding = calc.compute_funding(
-            "BTCUSDT-PERP.BINANCE", "LONG", 10_000.0, entry_ns, exit_ns
-        )
-        assert funding == pytest.approx(3 * 0.0003 * 10_000.0)
-
     def test_short_receives(self, archive_path: Path) -> None:
         calc = FundingCalculator(archive_path)
         base_ns = 1_735_689_600_000 * 1_000_000
@@ -101,18 +91,6 @@ class TestFundingCalculator:
             base_ns + 2 * _HOUR_NS,
         )
         assert funding == 0.0
-
-    def test_fallback_default_rate_when_no_archive(self, tmp_path: Path) -> None:
-        calc = FundingCalculator(tmp_path / "missing.db")
-        base_ns = 1_735_689_600_000 * 1_000_000
-        funding = calc.compute_funding(
-            "ETHUSDT-PERP.BINANCE",
-            "LONG",
-            10_000.0,
-            base_ns + 1 * _HOUR_NS,
-            base_ns + 25 * _HOUR_NS,
-        )
-        assert funding == pytest.approx(3 * DEFAULT_FUNDING_RATE_PER_PERIOD * 10_000.0)
 
     def test_open_trade_no_funding(self, archive_path: Path) -> None:
         calc = FundingCalculator(archive_path)

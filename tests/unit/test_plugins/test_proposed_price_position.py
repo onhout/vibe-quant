@@ -18,8 +18,16 @@ from vibe_quant.dsl.plugins.proposed_price_position import (
     compute_price_position,
 )
 
-# Every period in param_ranges['period'] = (20.0, 252.0), plus the clamp path.
-_PERIODS = (1, 2, *range(20, 253))
+# Boundary periods, not the full 20..252 range: the fast path is a scipy
+# min/max filter whose window is an exact selection, so it is bit-identical to
+# pandas rolling for every window size -- only period parity (the filter's
+# origin=(period-1)//2) and the range edges are distinct code paths. Kept:
+#   1, 2      -> period-1 clamp / smallest window (period-1 = 0 or 1).
+#   20, 21    -> param_range lo, even and odd parities.
+#   52        -> plugin default_params period (even, mid-range).
+#   251, 252  -> param_range hi, odd and even parities.
+#   253       -> just above the declared range (defensive).
+_PERIODS = (1, 2, 20, 21, 52, 251, 252, 253)
 _SIZE_KINDS = ("n15", "n40", "n400", "period-1", "period", "period+1")
 _WALKS = ("random_walk", "flat", "mixed")
 

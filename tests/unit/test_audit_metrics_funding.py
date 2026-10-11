@@ -108,9 +108,11 @@ class TestInteriorHoles:
     def test_missing_archive_file_is_not_created(self, tmp_path: Path) -> None:
         missing = tmp_path / "nope" / "raw.db"
         calc = FundingCalculator(missing)
-        acc = calc.accrue("BTCUSDT-PERP.BINANCE", "LONG", 1_000.0, _BASE_NS + 1,
+        acc = calc.accrue("BTCUSDT-PERP.BINANCE", "LONG", 10_000.0, _BASE_NS + 1,
                           _BASE_NS + _DAY_NS)
         assert acc.fallback_settlements == 3
+        # Whole 24h hold at the fallback rate: 3 settlements x default x notional.
+        assert acc.total == pytest.approx(3 * DEFAULT_FUNDING_RATE_PER_PERIOD * 10_000.0)
         assert not missing.exists()
 
     def test_rates_cached_per_process(self, tmp_path: Path) -> None:

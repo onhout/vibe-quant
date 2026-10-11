@@ -121,11 +121,26 @@ class TestDetailResolution:
             _cfg(["BTCUSDT"], "2025-01-01", "2025-02-01"), "1m", None
         ) is None
 
-    def test_no_detail_sub_bar_defers_every_fill(self, runner: ValidationRunner) -> None:
-        params = runner._augment_strategy_params_for_validation(
-            {}, timeframe="1m", has_detail_data=False
+    @pytest.mark.parametrize(
+        ("has_detail_data", "params", "expected"),
+        [
+            # No detail data: every fill deferred one bar (screening parity).
+            (False, {}, 1.0),
+            # Detail data: own-bar release, forced to 0 even over an explicit value.
+            (True, {"execution_delay_probability": 0.45}, 0.0),
+        ],
+    )
+    def test_execution_delay_param_by_detail_data(
+        self,
+        runner: ValidationRunner,
+        has_detail_data: bool,
+        params: dict[str, object],
+        expected: float,
+    ) -> None:
+        out = runner._augment_strategy_params_for_validation(
+            dict(params), timeframe="1m", has_detail_data=has_detail_data
         )
-        assert params["execution_delay_probability"] == 1.0
+        assert out["execution_delay_probability"] == expected
 
 
 def _validation_run(state: StateManager, symbols: list[str], end: str) -> int:
