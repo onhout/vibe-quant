@@ -4,6 +4,18 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-12: PRE-REGISTRATION H-12 — volatility-managed buy-and-hold of BTC/ETH/SOL/BNB (beat buy-and-hold risk-adjusted)
+
+Committed before the script exists. Every price-based hypothesis today failed the same bar: not better than buy-and-hold risk-adjusted on the user's 4 coins (H-2b 1.78 vs 1.996; 0.51 vs 0.74). Volatility-managed exposure (Moreira & Muir 2017; volatility clusters, high-vol periods have worse risk-adjusted returns) is the documented single mechanism aimed exactly at that bar. Not alpha — a better way to hold the same coins. No leverage.
+
+**Spec (frozen):** daily closes of BTCUSDT/ETHUSDT/SOLUSDT/BNBUSDT from the catalog (1d bars). Base = equal-weight, daily-rebalanced 4-coin portfolio (coins with a return that day). σ̂_t = sample std (ddof 1) of the base's daily returns over days t−29..t × √365. Exposure decided at close t for day t+1: e_{t+1} = min(1.0, 0.50 / σ̂_t) (target 50 %/yr, cap 1.0 = never more than buy-and-hold). Return_t = e_t × base_t − 0.0005 × |e_t − e_{t−1}| (turnover cost; base's own rebalancing ignored for both strategies alike). First 30 days: no exposure.
+
+**Windows:** FULL 2020-10-01..2026-09-30; A 2020-10-01..2022-05-31; B 2022-06-01..2026-09-30. Benchmark: the base itself (same window, no cost).
+
+**PASS only if all:** Sharpe(H-12) − Sharpe(base) ≥ 0.10 in FULL, A and B; AND max drawdown(H-12) < max drawdown(base) in FULL, A and B. Otherwise REJECT; no other targets, lookbacks or caps on this data. PASS → propose (user decision) an engine implementation (portfolio sizing or per-symbol vol sizing) + full-fidelity validation before any paper step.
+
+---
+
 ## 2026-10-12: H-11F WITHDRAWN (user: only BTC/ETH/SOL/BNB) → PRE-REGISTRATION H-11F4 — forward funding carry on the 4 project coins
 
 **User decision (2026-10-12):** trade only the coins the project had before (BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT). H-11F (29 coins, dd1adc7) is withdrawn before its first decision point (2026-10-12 close) and never evaluated; its universe file is deleted.
