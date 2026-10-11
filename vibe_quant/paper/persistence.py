@@ -111,7 +111,7 @@ class StatePersistence:
         self,
         db_path: Path | None = None,
         trader_id: str = "default",
-        checkpoint_interval: int = 60,
+        checkpoint_interval: float = 60,
     ) -> None:
         """Initialize persistence manager.
 

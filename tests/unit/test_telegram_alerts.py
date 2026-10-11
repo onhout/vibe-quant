@@ -6,6 +6,7 @@ import os
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -256,8 +257,9 @@ class TestTelegramBot:
         async def _record_sleep(delay: float) -> None:
             delays.append(delay)
 
-        # Record (don't wait out) the retry backoff.
-        monkeypatch.setattr(telegram_mod.asyncio, "sleep", _record_sleep)
+        # Record (don't wait out) the retry backoff. Patch only the telegram
+        # module's asyncio view so the global asyncio.sleep stays real.
+        monkeypatch.setattr(telegram_mod, "asyncio", SimpleNamespace(sleep=_record_sleep))
 
         mock_response = MagicMock()
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
@@ -288,7 +290,7 @@ class TestTelegramBot:
         async def _record_sleep(delay: float) -> None:
             delays.append(delay)
 
-        monkeypatch.setattr(telegram_mod.asyncio, "sleep", _record_sleep)
+        monkeypatch.setattr(telegram_mod, "asyncio", SimpleNamespace(sleep=_record_sleep))
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post = AsyncMock(side_effect=httpx.RequestError("Connection failed"))

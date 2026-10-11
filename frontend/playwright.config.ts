@@ -11,7 +11,11 @@ const baseURL = process.env.E2E_BASE_URL ?? "http://localhost:5173";
 // Playwright with no workers at all).
 const onUiCheck = !!process.env.E2E_BASE_URL;
 const requestedWorkers = Number.parseInt(process.env.E2E_WORKERS ?? "", 10);
-const workers = process.env.CI ? 1 : onUiCheck ? (requestedWorkers > 0 ? requestedWorkers : 3) : undefined;
+const workers = process.env.CI
+  ? 1
+  : onUiCheck
+    ? (requestedWorkers > 0 ? requestedWorkers : 3)
+    : undefined;
 
 export default defineConfig({
   testDir: "./e2e",

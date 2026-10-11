@@ -141,7 +141,7 @@ def test_fast_slow_params_match_library() -> None:
 
 @pytest.mark.parametrize("period", _BOUNDARY_PERIODS)
 def test_new_equals_old_all_periods_and_shapes(period: int) -> None:
-    """Zero-tolerance new-vs-old sweep: every period in the registry's param
+    """Zero-tolerance new-vs-old sweep: boundary periods of the registry's param
     range at buffer sizes {15, 40, 400, period-1, period+1, 2*period} over
     random walks, flat bars, and NaN gaps. Both the raw port and the public
     entry point must equal the pre-port pandas implementation exactly."""

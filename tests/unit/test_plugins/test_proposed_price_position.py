@@ -2,8 +2,8 @@
 
 Generated as part of the scaffold pipeline (bd-3p1k.1.3), extended with a
 zero-tolerance sweep proving the scipy.ndimage fast path is bit-identical to
-the pandas rolling reference (``_price_position_pandas``) across every period
-in the param range, short/long buffers, and zero-range bars.
+the pandas rolling reference (``_price_position_pandas``) across boundary
+periods of the param range, short/long buffers, and zero-range bars.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from vibe_quant.dsl.plugins.proposed_price_position import (
 # min/max filter whose window is an exact selection, so it is bit-identical to
 # pandas rolling for every window size -- only period parity (the filter's
 # origin=(period-1)//2) and the range edges are distinct code paths. Kept:
-#   1, 2      -> period-1 clamp / smallest window (period-1 = 0 or 1).
+#   1, 2      -> smallest windows (period-1 = 0 or 1), below param_range lo.
 #   20, 21    -> param_range lo, even and odd parities.
 #   52        -> plugin default_params period (even, mid-range).
 #   251, 252  -> param_range hi, odd and even parities.
