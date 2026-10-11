@@ -111,15 +111,42 @@ function legacyNativeFields(type: string, params: Record<string, number>): Legac
   return { fields, conflicts, handled };
 }
 
+// Plain decimal numeral, as dsl/translator.py `_DECIMAL`: `Number()` also takes `0x10`, Python `float` `1_000`.
+const DECIMAL = /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/;
+
+/**
+ * Mirrors dsl/translator.py `_int_param` for one legacy int field: a number or a numeric string
+ * is parsed, a bool or non-numeric string is rejected, and a fractional value is rejected (never
+ * silently truncated). Returns the translator's message, or null when the value is a whole number.
+ */
+function intParamProblem(type: string, field: string, value: unknown): string | null {
+  const shown = typeof value === "string" ? `'${value}'` : `${value}`;
+  const problem = (reason: string) => `${type} param '${field}'=${shown} ${reason}`;
+  let num: number;
+  if (typeof value === "number") num = value;
+  else if (typeof value === "string" && DECIMAL.test(value.trim())) num = Number(value);
+  else return problem("must be a number");
+  if (!Number.isFinite(num)) return problem("must be a number");
+  if (!Number.isInteger(num)) return problem("must be a whole number");
+  return null;
+}
+
 /**
  * Why launching this UI-format strategy would fail in the translator (null = fine): two
- * spellings of one indicator param hold different values. Applies to every launch, sweep or not.
+ * spellings of one indicator param hold different values, or an int param holds a value the
+ * translator rejects instead of silently truncating. Applies to every launch.
  */
 export function strategyTranslationProblem(raw: Record<string, unknown>): string | null {
   if (isCanonicalDsl(raw)) return null;
   for (const ind of parseDslConfig(raw).indicators) {
-    const { conflicts } = legacyNativeFields(ind.type.toUpperCase(), ind.params);
+    const type = ind.type.toUpperCase();
+    const { fields, conflicts } = legacyNativeFields(type, ind.params);
     if (conflicts[0]) return conflicts[0];
+    for (const [field, key] of fields) {
+      if (!NATIVE_INT_FIELDS.has(field)) continue;
+      const problem = intParamProblem(type, field, ind.params[key]);
+      if (problem) return problem;
+    }
   }
   return null;
 }
@@ -184,8 +211,7 @@ export function sweepableParamsFor(
       out.push({
         key: `${name}_${field}`,
         label: `${name}.${field}`,
-        // translator int()s integer params, so a stored 12.5 compiles as 12
-        currentValue: !canonical && integer ? Math.trunc(value) : value,
+        currentValue: value,
         integer,
       });
     }

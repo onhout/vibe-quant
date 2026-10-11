@@ -8,7 +8,7 @@
     {
       "type": "EMA",
       "params": {
-        "period": 12.5
+        "period": 12
       }
     },
     {

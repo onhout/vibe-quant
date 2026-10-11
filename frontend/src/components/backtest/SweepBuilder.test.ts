@@ -229,9 +229,62 @@ describe("sweepableParamsFor with catalog defaults (what the editor really store
     );
   });
 
-  it("integer defaults are normalised like the translator (12.5 compiles as 12)", () => {
-    const [ema] = sweepableParamsFor(catalogDefaults as Dict, CATALOG);
-    expect(ema).toMatchObject({ key: "ema_12_period", currentValue: 12, integer: true });
+  it("a fractional value for a legacy int param is flagged, not truncated", () => {
+    const raw = { general: {}, indicators: [{ type: "EMA", params: { period: 12.5 } }] };
+    expect(strategyTranslationProblem(raw)).toBe("EMA param 'period'=12.5 must be a whole number");
+    // the real value is surfaced (and the launch blocked above), never silently int()ed
+    const [ema] = sweepableParamsFor(raw, CATALOG);
+    expect(ema).toMatchObject({ key: "ema_12_period", currentValue: 12.5, integer: true });
+  });
+
+  it("flags a fractional legacy int param on EMA, MACD, STOCH and BB alike", () => {
+    const raw = (type: string, params: Record<string, number>) => ({
+      general: {},
+      indicators: [{ type, params }],
+    });
+    expect(strategyTranslationProblem(raw("MACD", { fast: 12.5, slow: 26, signal: 9 }))).toBe(
+      "MACD param 'fast_period'=12.5 must be a whole number",
+    );
+    expect(strategyTranslationProblem(raw("STOCH", { k_period: 14.5, d_period: 3 }))).toBe(
+      "STOCH param 'period'=14.5 must be a whole number",
+    );
+    expect(strategyTranslationProblem(raw("BB", { period: 20.5, std_dev: 2 }))).toBe(
+      "BB param 'period'=20.5 must be a whole number",
+    );
+  });
+
+  it("accepts a numeric string for a legacy int param, like the backend translator", () => {
+    const raw = { general: {}, indicators: [{ type: "EMA", params: { period: "14" } }] };
+    expect(strategyTranslationProblem(raw)).toBeNull();
+  });
+
+  it("accepts only plain decimal numerals for a string legacy int param, like the backend", () => {
+    const raw = (period: string) => ({
+      general: {},
+      indicators: [{ type: "EMA", params: { period } }],
+    });
+    for (const ok of [" 14 ", "1e1", "+7", "5."]) {
+      expect(strategyTranslationProblem(raw(ok))).toBeNull();
+    }
+    // Number("0x10") is 16 and Python float("1_000") is 1000, so both sides reject them
+    for (const bad of ["0x10", "0b11", "1_000", "1 000", "--1", "1e", "+"]) {
+      expect(strategyTranslationProblem(raw(bad))).toBe(
+        `EMA param 'period'='${bad}' must be a number`,
+      );
+    }
+  });
+
+  it("rejects a boolean or a non-numeric string for a legacy int param", () => {
+    const raw = (params: Record<string, unknown>) => ({
+      general: {},
+      indicators: [{ type: "EMA", params }],
+    });
+    expect(strategyTranslationProblem(raw({ period: true }))).toBe(
+      "EMA param 'period'=true must be a number",
+    );
+    expect(strategyTranslationProblem(raw({ period: "abc" }))).toBe(
+      "EMA param 'period'='abc' must be a number",
+    );
   });
 
   it("catalog payload matches the snapshot the backend test decodes", async () => {

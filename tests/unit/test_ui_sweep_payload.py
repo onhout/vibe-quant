@@ -88,12 +88,21 @@ def test_ui_format_strategy_ui_sweep_resolves_on_compiled_config() -> None:
 
 def test_catalog_default_params_ui_sweep_decodes_on_compiled_config() -> None:
     """Editor-shaped strategy built from the live catalog defaults (registry spellings, plugin
-    alpha, ICHIMOKU, SQUEEZE_MOM length, a fractional stored period)."""
+    alpha, ICHIMOKU, SQUEEZE_MOM length)."""
     sweep = _fixture("catalog_sweep_payload.json")
     assert {"macd_fast_period", "stoch_period", "ichimoku_tenkan", "adaptive_rsi_14_alpha"} <= set(
         sweep
     )
     _launch_like_screening_main(_fixture("catalog_ui_strategy.json"), "catalog_ui", sweep)
+
+
+def test_stored_fractional_legacy_int_param_fails_translation() -> None:
+    """A stored legacy ``period: 12.5`` used to translate to EMA(12) -- a different strategy than
+    the user configured; it now fails at launch instead of silently backtesting the wrong period."""
+    raw = _fixture("catalog_ui_strategy.json")
+    raw["indicators"][0]["params"]["period"] = 12.5
+    with pytest.raises(ValueError, match=r"EMA.*'period'"):
+        translate_dsl_config(raw, strategy_name="catalog_frac")
 
 
 def test_folded_synonym_spellings_ui_sweep_decodes_on_compiled_config() -> None:

@@ -39,12 +39,46 @@ def _is_dsl_config_format(raw: dict[str, Any]) -> bool:
     return "general" in raw or (isinstance(raw.get("indicators"), list) and "general" not in raw)
 
 
+_DECIMAL = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
+
+
+def _as_float(value: Any) -> float | None:
+    """``float(value)`` when it is a finite number (or a numeric string), else ``None``.
+
+    ``bool`` is excluded: ``float(True)`` is ``1.0``, but a flag is not a period. A
+    non-finite value (``inf``/``nan``, including those strings) is not a number either, and
+    neither is an int too large for a float. A string must be a plain decimal numeral, the
+    one spelling the editor's ``Number()`` agrees on: ``float`` also takes ``1_000``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    if isinstance(value, str) and _DECIMAL.fullmatch(value.strip()) is None:
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _conflict_key(value: Any) -> Any:
+    """Comparison key for two spellings of one param: numbers compare numerically, a bool
+    never equals a number (``_as_float`` rejects ``True``, so it compares by ``repr``), anything
+    else compares by ``repr`` so it never crashes the check."""
+    number = _as_float(value)
+    return number if number is not None else repr(value)
+
+
 def _generate_indicator_name(ind_type: str, params: dict[str, Any], existing: set[str]) -> str:
     """Generate a unique snake_case indicator name from type + params."""
     base = ind_type.lower()
     period = params.get("period")
     if period is not None:
-        base = f"{base}_{int(period)}"
+        # best-effort: a bad period still reaches ``_int_param`` and fails there with a message
+        # naming the indicator and param, never a raw ``int()``/``TypeError``
+        number = _as_float(period)
+        if number is not None:
+            base = f"{base}_{int(number)}"
     name = base
     counter = 2
     while name in existing:
@@ -94,7 +128,7 @@ def _canonical_params(ind_type: str, params: dict[str, Any]) -> dict[str, Any]:
             for key in spellings
             if key in params and not (legacy_aliases and key != target and key in native)
         }
-        if len({float(v) for v in found.values()}) > 1:
+        if len({_conflict_key(v) for v in found.values()}) > 1:
             shown = ", ".join(f"'{k}'={v!r}" for k, v in found.items())
             msg = f"Conflicting {ind_type} params for '{target}': {shown}"
             raise ValueError(msg)
@@ -122,6 +156,25 @@ def _spec_param(ind_type: str, key: str, value: Any, expected: type) -> Any:
             return int(value)
         return float(value)
     return value
+
+
+def _int_param(ind_type: str, key: str, value: Any) -> int:
+    """Legacy canonical int param: numeric strings parse, bools and fractions are rejected.
+
+    The editor's YAML tab and LLM-extracted DSL spell periods ``"14"``, which ``int()`` used
+    to accept, so a numeric string is parsed. A fractional value is rejected instead of being
+    truncated (``int(12.5)`` would silently run 12 while the user configured 12.5) and an
+    integral float (12.0) becomes 12. A bool is rejected (``True`` used to become period 1).
+    """
+    shown = f"{ind_type} param '{key}'={value!r}"
+    number = _as_float(value)
+    if number is None:
+        msg = f"{shown} must be a number"
+        raise ValueError(msg)
+    if not number.is_integer():
+        msg = f"{shown} must be a whole number"
+        raise ValueError(msg)
+    return int(number)
 
 
 def _spec_params(ind_type: str, params: dict[str, Any], consumed: set[str]) -> dict[str, Any]:
@@ -162,6 +215,23 @@ def _js_str(value: Any) -> str:
     return str(value)
 
 
+def _ref_int(value: Any) -> int:
+    """Canonical int period as an int for an operand ref; a numeric string is int-able.
+
+    ``_build_ref_map`` re-derives canonical params from the raw editor values, so a spell
+    like ``"12.0"`` reaches here as a string (``_translate_indicators`` validated it first).
+
+    Raises:
+        ValueError: if the value is not a number -- a placeholder period would register a
+            ref (``MACD(0,26,9)``) no condition means.
+    """
+    number = _as_float(value)
+    if number is None:
+        msg = f"operand ref period {value!r} must be a number"
+        raise ValueError(msg)
+    return int(number)
+
+
 _CALL_REF = re.compile(r"^([A-Za-z_]\w*)\((.*)\)$")
 
 
@@ -198,11 +268,11 @@ def _translate_indicators(indicators_raw: list[dict[str, Any]]) -> dict[str, dic
         # Map flat params to StrategyDSL field names
         canonical = _canonical_params(ind_type, params)
         if "period" in params and "period" not in canonical:
-            config["period"] = int(params["period"])
+            config["period"] = _int_param(ind_type, "period", params["period"])
         # MACD periods; STOCH k/d (editor spells them k_period / d_period, registry period_k /
         # period_d). Contradictory spellings were rejected above.
         for field, value in canonical.items():
-            config[field] = int(value)
+            config[field] = _int_param(ind_type, field, value)
         # Bollinger Bands
         if "std_dev" in params:
             config["std_dev"] = float(params["std_dev"])
@@ -239,22 +309,24 @@ def _type_refs(type_name: str, params: dict[str, Any], canonical: dict[str, Any]
     MACD(fast,slow,signal) forms built from the canonical periods.
     """
     refs = [type_name, type_name.lower()]
-    # TYPE(period) e.g. "EMA(50)", "RSI(14)"
-    if "period" in params:
-        refs.append(f"{type_name}({int(params['period'])})")
+    # TYPE(period) e.g. "EMA(50)", "RSI(14)"; a numeric-string period ("14", "12.0") is int-able
+    period = _as_float(params.get("period"))
+    if period is not None:
+        refs.append(f"{type_name}({int(period)})")
     # TYPE(v1,v2,...) exactly as buildOperandOptions joins the configured param values
     if params:
         values = [_js_str(v) for v in params.values()]
         refs.append(f"{type_name}({','.join(values)})")
     # STOCH(k,d) e.g. "STOCH(14,3)"
     if type_name == "STOCH" and "period" in canonical and "d_period" in canonical:
-        k, d = int(canonical["period"]), int(canonical["d_period"])
+        k, d = _ref_int(canonical["period"]), _ref_int(canonical["d_period"])
         refs.append(f"STOCH({k},{d})")
     # MACD(fast,slow,signal) e.g. "MACD(12,26,9)"
     if type_name == "MACD" and "fast_period" in canonical and "slow_period" in canonical:
         sig = canonical.get("signal_period", 9)
         refs.append(
-            f"MACD({int(canonical['fast_period'])},{int(canonical['slow_period'])},{int(sig)})"
+            f"MACD({_ref_int(canonical['fast_period'])},{_ref_int(canonical['slow_period'])},"
+            f"{_ref_int(sig)})"
         )
     return refs
 

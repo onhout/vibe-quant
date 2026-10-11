@@ -15,13 +15,15 @@ from vibe_quant.dsl.compiler import StrategyCompiler
 from vibe_quant.dsl.indicators import IndicatorSpec, indicator_registry
 from vibe_quant.dsl.parser import validate_strategy_dict
 from vibe_quant.dsl.plugins.example_adaptive_rsi import compute_adaptive_rsi
-from vibe_quant.dsl.translator import translate_dsl_config
+from vibe_quant.dsl.translator import _build_ref_map, translate_dsl_config
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
-def _cfg(indicators: list[dict[str, Any]], entry: list[dict[str, str]] | None = None) -> dict[str, Any]:
+def _cfg(
+    indicators: list[dict[str, Any]], entry: list[dict[str, str]] | None = None
+) -> dict[str, Any]:
     return {
         "general": {"strategy_type": "momentum", "symbols": ["BTCUSDT"], "timeframe": "1h"},
         "indicators": indicators,
@@ -221,3 +223,193 @@ def test_plugin_native_string_param_survives_ui_translation(
     )
     assert out["indicators"] == {name: expected}
     assert validate_strategy_dict(out).indicators[name].model_extra == {"fast": "ema"}
+
+
+@pytest.mark.parametrize(
+    ("ind_type", "params", "bad"),
+    [
+        ("EMA", {"period": 12.5}, "period"),
+        ("MACD", {"fast_period": 12.5, "slow_period": 26, "signal_period": 9}, "fast_period"),
+        ("STOCH", {"period": 14, "d_period": 3.5}, "d_period"),
+    ],
+)
+def test_fractional_legacy_int_param_raises_naming_indicator_and_param(
+    ind_type: str, params: dict[str, Any], bad: str
+) -> None:
+    # int(12.5) would silently backtest EMA(12) / MACD fast 12 / STOCH %D 3, not the edited strategy
+    cfg = _cfg([{"type": ind_type, "params": params}])
+    with pytest.raises(ValueError, match=rf"(?s)(?=.*{ind_type})(?=.*'{bad}')"):
+        translate_dsl_config(cfg, strategy_name="t_legacy_frac")
+
+
+def test_integral_float_legacy_period_is_accepted_as_int() -> None:
+    # JSON round-trips can turn 12 into 12.0; the user still configured period 12
+    cfg = _cfg([{"type": "EMA", "params": {"period": 12.0}}])
+    out = translate_dsl_config(cfg, strategy_name="t_legacy_int")
+    period = out["indicators"]["ema_12"]["period"]
+    assert period == 12
+    assert isinstance(period, int)
+
+
+@pytest.mark.parametrize(
+    ("ind_type", "params", "expected"),
+    [
+        ("EMA", {"period": "14"}, {"period": 14}),
+        (
+            "MACD",
+            {"fast_period": "12", "slow_period": "26", "signal_period": "9"},
+            {"fast_period": 12, "slow_period": 26, "signal_period": 9},
+        ),
+        (
+            "MACD",
+            {"fast": "12", "slow": "26", "signal": "9"},
+            {"fast_period": 12, "slow_period": 26, "signal_period": 9},
+        ),
+        ("STOCH", {"k_period": "14", "d_period": "3"}, {"period": 14, "d_period": 3}),
+        ("EMA", {"period": "12.0"}, {"period": 12}),
+    ],
+)
+def test_numeric_string_legacy_int_param_is_accepted_as_int(
+    ind_type: str, params: dict[str, Any], expected: dict[str, int]
+) -> None:
+    # The YAML tab and LLM-extracted DSL spell a legacy period "14"; int() used to accept it
+    cfg = _cfg([{"type": ind_type, "params": params}])
+    (config,) = translate_dsl_config(cfg, strategy_name="t_str_int")["indicators"].values()
+    for field, value in expected.items():
+        assert config[field] == value
+        assert isinstance(config[field], int)
+
+
+@pytest.mark.parametrize(
+    ("ind_type", "params", "bad"),
+    [
+        ("EMA", {"period": "12.5"}, "period"),
+        (
+            "MACD",
+            {"fast_period": "12.5", "slow_period": "26", "signal_period": "9"},
+            "fast_period",
+        ),
+        ("MACD", {"fast": "12.5", "slow": "26", "signal": "9"}, "fast_period"),
+        ("STOCH", {"k_period": "14.5", "d_period": "3"}, "period"),
+    ],
+)
+def test_fractional_numeric_string_legacy_int_param_raises_as_fractional(
+    ind_type: str, params: dict[str, Any], bad: str
+) -> None:
+    # A numeric string is parsed, so "12.5" fails the whole-number rule (not "must be a number"):
+    # int() used to silently run 12 while the file said 12.5
+    cfg = _cfg([{"type": ind_type, "params": params}])
+    with pytest.raises(ValueError, match=rf"(?s)(?=.*{ind_type})(?=.*'{bad}')(?=.*whole number)"):
+        translate_dsl_config(cfg, strategy_name="t_str_frac")
+
+
+@pytest.mark.parametrize(
+    ("ind_type", "params", "bad"),
+    [
+        ("MACD", {"fast": True, "slow": 26, "signal": 9}, "fast_period"),
+        ("MACD", {"fast": "abc", "slow": 26, "signal": 9}, "fast_period"),
+        ("STOCH", {"k_period": None, "d_period": 3}, "period"),
+    ],
+)
+def test_non_numeric_legacy_int_param_raises(
+    ind_type: str, params: dict[str, Any], bad: str
+) -> None:
+    # True was silently period 1 and "abc" a TypeError/ValueError later; both now fail loudly
+    cfg = _cfg([{"type": ind_type, "params": params}])
+    with pytest.raises(
+        ValueError, match=rf"(?s)(?=.*{ind_type})(?=.*'{bad}')(?=.*must be a number)"
+    ):
+        translate_dsl_config(cfg, strategy_name="t_non_numeric")
+
+
+@pytest.mark.parametrize(
+    ("ind_type", "params", "ref", "expected_name"),
+    [
+        # MACD without signal: the ref's default signal 9 only comes from the legacy MACD(f,s,sig)
+        ("MACD", {"fast_period": 12, "slow_period": 26}, "MACD(12,26,9)", "macd"),
+        ("MACD", {"fast_period": "12", "slow_period": "26"}, "MACD(12,26,9)", "macd"),
+        ("MACD", {"fast": "12.0", "slow": "26", "signal": "9"}, "MACD(12,26,9)", "macd"),
+        # STOCH with d_period first: the TYPE(v1,v2) join reads STOCH(3,14), only STOCH(k,d) is 14,3
+        ("STOCH", {"d_period": 3, "k_period": 14}, "STOCH(14,3)", "stoch"),
+        ("STOCH", {"d_period": "3", "k_period": "14"}, "STOCH(14,3)", "stoch"),
+        ("STOCH", {"period_d": "3.0", "period_k": "14"}, "STOCH(14,3)", "stoch"),
+    ],
+)
+def test_legacy_macd_stoch_operand_ref_resolves_from_canonical_periods(
+    ind_type: str, params: dict[str, Any], ref: str, expected_name: str
+) -> None:
+    cfg = _cfg(
+        [{"type": ind_type, "params": params}],
+        entry=[{"left": ref, "operator": ">", "right": "0"}],
+    )
+    out = translate_dsl_config(cfg, strategy_name="t_legacy_ref")
+    assert out["entry_conditions"]["long"] == [f"{expected_name} > 0"]
+
+
+def test_ref_map_rejects_non_numeric_canonical_period_instead_of_guessing_zero() -> None:
+    # a 0 sentinel would build a bogus MACD(0,26,9) ref and hide the bad param
+    with pytest.raises(ValueError, match=r"'abc'.*must be a number"):
+        _build_ref_map(
+            [{"type": "MACD", "params": {"fast_period": "abc", "slow_period": 26}}], ["macd"]
+        )
+
+
+def test_bool_spelling_conflicts_with_numeric_spelling_of_same_param() -> None:
+    # float(True) == 1.0 used to make {fast_period: 1, fast: True} agree and fold True into period 1
+    cfg = _cfg([{"type": "MACD", "params": {"fast_period": 1, "fast": True, "slow_period": 26}}])
+    with pytest.raises(ValueError, match=r"Conflicting MACD params for 'fast_period'"):
+        translate_dsl_config(cfg, strategy_name="t_bool_conflict")
+
+
+def test_non_numeric_spelling_conflicts_with_numeric_spelling_of_same_param() -> None:
+    cfg = _cfg([{"type": "MACD", "params": {"fast_period": 12, "fast": "abc", "slow_period": 26}}])
+    with pytest.raises(ValueError, match=r"Conflicting MACD params for 'fast_period'"):
+        translate_dsl_config(cfg, strategy_name="t_text_conflict")
+
+
+def test_astronomically_large_period_raises_must_be_a_number() -> None:
+    # float(10**400) is an OverflowError, which used to escape as a raw traceback
+    cfg = _cfg([{"type": "EMA", "params": {"period": 10**400}}])
+    with pytest.raises(ValueError, match=r"EMA param 'period'.*must be a number"):
+        translate_dsl_config(cfg, strategy_name="t_huge")
+
+
+@pytest.mark.parametrize("text", ["1_000", "0x10", "0b11", "1 000", "--1", "1e", "+"])
+def test_non_decimal_string_period_raises_must_be_a_number(text: str) -> None:
+    # Python float("1_000") is 1000.0 but JS Number("1_000") is NaN: only plain decimals count
+    cfg = _cfg([{"type": "EMA", "params": {"period": text}}])
+    with pytest.raises(ValueError, match=r"EMA param 'period'.*must be a number"):
+        translate_dsl_config(cfg, strategy_name="t_non_decimal")
+
+
+@pytest.mark.parametrize(("text", "period"), [(" 14 ", 14), ("1e1", 10), ("+7", 7), ("5.", 5)])
+def test_plain_decimal_string_period_is_accepted(text: str, period: int) -> None:
+    cfg = _cfg([{"type": "EMA", "params": {"period": text}}])
+    (config,) = translate_dsl_config(cfg, strategy_name="t_decimal")["indicators"].values()
+    assert config["period"] == period
+
+
+@pytest.mark.parametrize("period", ["14", " 14 "])
+def test_numeric_string_period_names_indicator_with_its_period(period: str) -> None:
+    # the generated name carries the period, so a string "14" must name ema_14, not ema:
+    # a string period used to be ignored by the name builder and refs pointed at the wrong indicator
+    cfg = _cfg([{"type": "EMA", "params": {"period": period}}])
+    out = translate_dsl_config(cfg, strategy_name="t_str_name")
+    assert list(out["indicators"]) == ["ema_14"]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"fast_period": "12", "fast": 12, "slow_period": 26},
+        {"fast_period": 12, "fast": 12.0},
+    ],
+    ids=["string-and-int", "int-and-float"],
+)
+def test_numeric_string_and_number_spellings_of_one_param_agree(
+    params: dict[str, Any],
+) -> None:
+    # "12" and 12 are the same period: folding the spellings must not look like a conflict
+    cfg = _cfg([{"type": "MACD", "params": params}])
+    (config,) = translate_dsl_config(cfg, strategy_name="t_synonym")["indicators"].values()
+    assert config["fast_period"] == 12
