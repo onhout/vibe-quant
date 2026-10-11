@@ -4,6 +4,26 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: RESULT H-8 — REJECTED (spread decayed after mid-2022); PRE-REGISTRATION H-9 — broad-universe cross-sectional momentum
+
+**H-8 result** (`data/swarm/20261011-h2b/h8_relative_strength.py`, spec b240978, run once):
+
+| Window | Net Sharpe | Net return | Max DD | Beta to EW buy-and-hold |
+|---|---|---|---|---|
+| FULL 2020-10..2026-09 | 0.7188937490943916 | 2.77563677627366 | 0.5774853280750745 | 0.021342461534101406 |
+| A 2020-10..2022-05 | 1.5416514642124088 | 3.03314776837718 | 0.41977234522717133 | 0.10891883981987667 |
+| B 2022-06..2026-09 | 0.09148757847699206 | -0.06384863805948227 | 0.577485328075074 | -0.0663549924691598 |
+
+(1) FULL ≥ 1.0 FAIL; (2) both halves > 0.5 FAIL (B 0.09); (3) |beta| < 0.3 PASS. **REJECT** — hedged alt-vs-BTC momentum removed beta but its edge vanished after mid-2022 (≈11–13 flips/yr per pair, costs ≈0.05 Sharpe). No variants will be tried on this data.
+
+**H-9 pre-registration** (committed before any download): is the missing piece the universe (3 alts) rather than the mechanism? Standard cross-sectional crypto momentum (Liu/Tsyvinski/Wu 2022) on a broad universe, off-engine on daily klines.
+
+- **Universe rule (fixed before download):** candidate list = Binance USDT-M perps I believe were listed by 2020-10: BTC ETH BCH XRP EOS LTC TRX ETC LINK XLM ADA XMR DASH ZEC XTZ BNB ATOM ONT IOTA BAT VET NEO QTUM IOST THETA ALGO ZIL KNC ZRX COMP OMG DOGE SXP KAVA BAND RLC WAVES MKR SNX DOT YFI BAL CRV TRB SUSHI SOL EGLD ICX STORJ BLZ UNI AVAX FTM YFII ENJ FLM TOMO REN KSM NEAR AAVE FIL RSR LRC MATIC OCEAN CVC BEL CTK AXS ALPHA ZEN SKL SRM (all +USDT). Kept = those whose Binance Vision 1d monthly file for 2020-10 exists; delisted coins stay in until their data ends (limits survivorship bias). No coin listed after 2020-10 is added.
+- **Strategy:** every Monday close, rank coins with ≥ 28 d history by 28-day return; long the top third, short the bottom third, equal weight, dollar-neutral; held 7 days, close-to-close; a coin whose data ends is closed at its last close. Costs 0.05% per unit notional traded. Funding not modelled (limitation).
+- **PASS only if all:** FULL 2020-10-01..2026-09-30 net Sharpe ≥ 1.0; net Sharpe > 0.5 in both halves (A 2020-10-01..2022-05-31, B 2022-06-01..2026-09-30); |beta| to equal-weight universe buy-and-hold < 0.3. Otherwise REJECT; no lookback/holding variants on this data. PASS → propose an engine build (instrument universe + portfolio-level cross-sectional strategy) to the user; it is not itself a tradable result.
+
+---
+
 ## 2026-10-11: PRE-REGISTRATION H-8 — hedged alt-vs-BTC relative-strength momentum (feasibility, off-engine)
 
 Committed before the script is written or run. Purpose: decide whether option 2 (market-neutral relative strength) justifies an engine build (more symbols + a portfolio-level strategy that trades a hedge leg — the DSL runs one strategy per symbol and cannot express it today). H-2b showed long-only trend is de-risked beta; removing beta is the next lever, IF the spread exists.
