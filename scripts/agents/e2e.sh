@@ -32,7 +32,10 @@ fi
 cleanup() {
   "$here/ui-check.sh" down "$wt" >/dev/null 2>&1 || true
 }
-trap cleanup EXIT INT TERM
+# Report temp file goes on EXIT only: INT/TERM run their trap mid-script and the
+# summary below still reads it. report_json is unset if we stopped before mktemp.
+trap 'cleanup; [[ -z "${report_json:-}" ]] || rm -f "$report_json"' EXIT
+trap cleanup INT TERM
 
 cd "$wt/frontend"
 # Second reporter (json) so the summary can count skips: data-picked specs skip
@@ -70,5 +73,4 @@ def walk(suite, prefix):
 for suite in report.get("suites", []):
     walk(suite, f"{suite.get('file')} > ")
 PY
-rm -f "$report_json"
 exit "$status"

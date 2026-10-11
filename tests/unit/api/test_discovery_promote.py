@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator  # noqa: TCH003
 from pathlib import Path  # noqa: TCH003
 
 import pytest
@@ -20,7 +21,7 @@ def tmp_db(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-async def client(tmp_db: Path):
+async def client(tmp_db: Path) -> AsyncIterator[tuple[AsyncClient, StateManager]]:
     app = create_app()
     state_mgr = StateManager(db_path=tmp_db)
     _ = state_mgr.conn
@@ -621,3 +622,22 @@ async def test_launch_defaults_to_holdout_and_passes_explicit_zero(
     assert commands[0][i0 + 1] == "0.8"
     i1 = commands[1].index("--train-test-split")
     assert commands[1][i1 + 1] == "0.0"
+
+
+async def test_promote_without_strategy_type_defaults_to_momentum(
+    client: tuple[AsyncClient, StateManager],
+) -> None:
+    """Genome DSL with no strategy_type -> row gets the router default 'momentum'."""
+    ac, state = client
+    dsl = _genome_dsl("genome_nostype", 30)
+    assert "strategy_type" not in dsl
+    run_id = _create_discovery_run_with_results(
+        state, top_strategies=[{"dsl": dsl, "score": 0.9}],
+    )
+    r = await ac.post(f"/api/discovery/results/{run_id}/promote/0")
+    assert r.status_code == 201
+    row = state.conn.execute(
+        "SELECT strategy_type FROM strategies WHERE id = ?", (r.json()["strategy_id"],),
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "momentum"
