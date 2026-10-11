@@ -4,6 +4,21 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: Tuned follow-up — 2 uncontended portfolio runs (runs 889–890, 0 champions)
+
+Tuned from the 880–888 lessons: only 2 runs in parallel (8 workers, no contention), multi-symbol portfolio + ≥3.75 y windows to clear the 50-trade gate, eval_windows 2 (less zero-gradient than 3), cross-window [1,2] + WFA 120 d armed, `vibe-quant-9s8c4` fix live (no stale progress).
+
+| Run | Config | Pop×Gen | Wall | Best score | Best genome (worst-of-2 windows) | Outcome |
+|---|---|---|---|---|---|---|
+| 889 | ETH+SOL+BNB portfolio 4h, TREND_ENSEMBLE/DONCHIAN/SQUEEZE_RATIO/NATR, 2022-06..2026-09, seed 20261031 | 16×6 | 1056 s (176 s/gen) | 0.4046 | long TREND_ENSEMBLE entry, SQUEEZE_RATIO exit, SL 8% TP 11.4%: sharpe 0.42, PF 1.14, DD 18.2%, ret 12.5%, 141 trades | 5 rejected: DSR p 0.9961–0.9984 (N 21852, pooled ann SR 0.44–0.61), bootstrap lower −0.24…−1.00 |
+| 890 | BTC+ETH portfolio **1h**, BBANDS/MACD/WILLR/CCI/STOCH, 2023-01..2026-09, seed 20261032 | 20×8 | 1511 s (189 s/gen) | 0.4130 | both-dir CCI+BBANDS entry, STOCH exit, SL 8% TP 13.6%: sharpe 0.14, PF 1.13, DD 3.6%, ret 0.7%, 61 trades | 5 rejected: DSR p 0.9834–0.9945 (N 2152, pooled ann SR 0.41–0.63), bootstrap lower −0.47…0.13 (1h floor 1.0) |
+
+No errors in either log; OrderRejected lines are reduce-only exits racing a stop fill (by design, `templates.py`). Cross-window/WFA never ran (no guardrail survivor). zero_score fell from 14/16 → 12/16 (889) and 19/20 → 10/20 (890): portfolio + long windows give the GA a gradient, but the best genomes plateau at score ≈0.41 and pooled ann Sharpe ≈0.6.
+
+**Lessons:** (1) With the gradient fixed, the ceiling is the edge itself: trend (alts 4h) and oscillator (BTC/ETH 1h) families both top out at ann Sharpe ≈0.6, far below significance even at N=1 for 1h (N 2152 → needs ≈3+). (2) 2 parallel runs at ~3 min/gen is the efficient budget on 10 cores; TREND_ENSEMBLE remains the slowest indicator. (3) Next candidates need a new information source (funding/OI/cross-asset features), not more GA budget over the same indicator families.
+
+---
+
 ## 2026-10-11: Post-upgrade shakedown — 4 configs exercising the last days' changes (runs 880–888, 0 champions)
 
 Goal: full-flow smoke of the 2026-10-10/11 changes (per-instrument fill release + multi-symbol portfolio, worst-of-symbols soft score with eval_windows>1, pandas-ta-classic 0.8.32 ADX/RSI path, BBANDS typical price, cumulative DSR N, seeds, cross-window + WFA). Backend on :8010 (:8000 held by an unrelated http.server). All 4h unless noted, holdout 20%, default gates. Compiler hash in run notes.
@@ -17,9 +32,9 @@ Goal: full-flow smoke of the 2026-10-10/11 changes (per-instrument fill release 
 
 Calibration runs 881–883 (smaller/shorter variants of the same configs) ended the same way: 881 worst-symbol FAIL (SOL), 882 zero 12/12 (4h single-symbol BTC, 17–48 trades per genome < 50-trade gate), 883 DSR p 0.9979 (N 21546). 884/886 killed (oversized for the 30-min budget under contention). No champion → nothing promoted or validated.
 
-**Findings:** (1) DSR gate N is ~21 500 on 4h because the cumulative rule counts 127 prior runs (all symbols, back to run 7, across comparability breaks) — every 4h candidate fails DSR at p > 0.99 regardless of quality. Bootstrap CI also failed every candidate, so the conclusion "no edge" holds even without DSR. (2) 4 parallel API runs × 4 hardcoded workers → load ≈ 29 on 10 cores, backtests ~10× slower than idle (1.5–3 s → 20–60 s). (3) Stale `discovery_<id>_progress.json` from another DB shows wrong progress for colliding run ids (bead filed). (4) All new code paths ran without errors: multi-symbol portfolio, worst-mode + eval_windows 2, cumulative DSR, 1h ADX path.
+**Findings:** (1) DSR gate N is ~21 500 on 4h because the cumulative rule counts 127 prior runs (all symbols, back to run 7, across comparability breaks) — but N is NOT what rejected these candidates: the best (880, ann SR 0.858, T 801 d) has DSR p 0.10 at N=1, 0.97 at N=600, 0.997 at N=21541 (calculate_dsr, default skew/kurt). N only bites for strong candidates (p<0.05 needs ann SR ≈3.5 at N=600 vs >4 at N=21541). Bootstrap CI also failed every candidate — the candidates are weak, the gates are not miscalibrated. (2) 4 parallel API runs × 4 hardcoded workers → load ≈ 29 on 10 cores, backtests ~10× slower than idle (1.5–3 s → 20–60 s). (3) Stale `discovery_<id>_progress.json` from another DB shows wrong progress for colliding run ids (bead filed). (4) All new code paths ran without errors: multi-symbol portfolio, worst-mode + eval_windows 2, cumulative DSR, 1h ADX path.
 
-**Next:** decide the DSR N scope (same symbol? since last comparability break?) before more 4h discovery; use ≥4 y windows or portfolio mode to clear the 50-trade gate.
+**Next:** run ≤2 discoveries in parallel (no contention), ≥4 y windows or portfolio mode to clear the 50-trade gate; DSR N scope (vibe-quant-a9ndz) is a secondary policy question.
 
 ---
 
