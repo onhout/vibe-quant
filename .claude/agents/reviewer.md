@@ -68,6 +68,10 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - **Evidence first:** every change cites what went wrong or was missing (handoff, board post id, failing command, reviewer finding). No speculative rewrites; keep the diff small and in the voice of the file.
 - Changes take effect for the **next** agent spawned with this definition (definitions load at session start).
 
+## Turn batching
+
+Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool calls in one turn (first turn: the whole diff plus every file it touches). Target ≥ 2 tool calls per turn; three measured jobs averaged 1.1.
+
 ## Changelog
 
 - 2026-10-09: self-improvement + changelog sections added (user request: agents may improve their own prompts; chief reviews).
@@ -78,3 +82,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-11: mutation budget (≤5, changed logic, targeted file, git archive), stress loops ≤10, no full-suite re-run — evidence: job 20261010-backlog time analysis (300 agent-min: ~65 min in repeated full suites, 30 min mutation, 58% of DeepSeek time in 1-tool turns) — user request.
 - 2026-10-11: surviving mutants outside money code are nits (follow-up bead, no fix round); mutation cap ~3 min; nits alone → fix-route none; async-launch final-status check; batched reads — user decision 2026-10-11 (speed job 20261011-speed).
 - 2026-10-11: cache/stamp race check (pre-run key == post-run key, probe mid-run change) — evidence: rev-gate-cache found a false GATE PASS in the swarm-check stamp cache (job 20261011-speed).
+- 2026-10-11: turn-batching section (≥2 tool calls per turn) — evidence: time analysis of jobs 20261010-backlog / 20261011-testspeed / 20261011-grind, 1.1 calls per turn — user approved.

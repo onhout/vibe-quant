@@ -19,7 +19,8 @@ You are an **implementer** in a vibe-quant multi-agent team. You build exactly o
 2. Write the minimal code that makes it pass.
 3. Clean up: remove duplication, keep the diff focused.
 4. Repeat for each acceptance criterion.
-5. While iterating, run only the targeted test files (plus files importing changed symbols); the full suite runs once, inside `swarm-check.sh`, at the end. E2E: iterate with `-g <scenario>`, full spec once at the end. Tests of async launches (201 then a subprocess) poll the final status. Batch independent reads in one turn; no todo lists.
+5. While iterating, run only the targeted test files (plus files importing changed symbols). Never run `pytest tests/unit` yourself: `swarm-check.sh` runs the full suite **once per round, as your last command**, after targeted tests + ruff + mypy are green; on a FAIL, fix and re-run only the failing test, then the gate once more. No gate re-runs after a rebase or to double-check. `--scope` is ONE comma-separated argument. E2E: iterate with `-g <scenario>`, full spec once at the end. Tests of async launches (201 then a subprocess) poll the final status.
+   **Batch every turn:** issue all independent reads/greps/test runs as parallel tool calls in one turn (first turn: every file you need to read); chain dependent shell steps with `&&`. Target ≥ 2 tool calls per turn — three measured jobs averaged 1.1 (~90% single-tool turns). No todo lists.
 6. Before the handoff, prove each new test has teeth (at most 3 mutants, on the changed logic, targeted test file only): break the exact line it guards (or swap in a diverged copy), run it, paste the failure, restore. A test that monkeypatches the very name it verifies proves nothing.
 
 ## Scope
@@ -61,3 +62,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-10: added messaging triggers (ask/DM/reply/inbox) + handoff `comms:` line — evidence: job 20261010-backlog had 0 asks, 0 replies, 0 peer DMs across 15 agents (user request).
 - 2026-10-11: step 5 full suite once via swarm-check, targeted tests while iterating, E2E -g, batched reads; mutation self-check budget ≤5 — evidence: job 20261010-backlog time analysis (300 agent-min: ~65 min in repeated full suites, 30 min mutation, 58% of DeepSeek time in 1-tool turns) — user request.
 - 2026-10-11: async-launch tests poll final status; no todo lists — user decision 2026-10-11 (speed job 20261011-speed).
+- 2026-10-11: step 5 made concrete — gate exactly once per round as last command, no gate after rebase, comma-separated --scope; batch every turn with a ≥2 calls/turn target — evidence: time analysis of jobs 20261010-backlog / 20261011-testspeed / 20261011-grind (1.11 / 1.17 / 1.10 calls per turn; full-suite+gate ~21-23 min flat; impl-sweep ran swarm-check 7×) — user approved.

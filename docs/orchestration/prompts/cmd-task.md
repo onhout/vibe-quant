@@ -16,8 +16,9 @@ FILES YOU MAY EDIT OR CREATE (inside the worktree): <exact paths>. Leave every o
 FILES TO READ FIRST: <exact paths + line ranges, the fewest that suffice — read them all in ONE turn>
 
 SPEED RULES (measured: one model turn costs 4–10 s; the full test suite costs ~3 min serial, ~1 min under `-n auto --dist worksteal`):
-- Batch independent reads/greps/commands into ONE turn (parallel tool calls). Read whole functions or the line ranges given below, not 70-line slices. No todo lists.
-- While iterating, run only the targeted test files. The full suite runs ONCE, inside swarm-check at the end — do not also run `pytest tests/unit` separately.
+- BATCH: your first turn issues every read in FILES TO READ FIRST as parallel tool calls. After that, before each turn list what else can run now and send it in the same turn (independent reads, greps, test files). Target ≥ 2 tool calls per turn; measured jobs averaged 1.1, with ~90% single-tool turns (jobs 20261010-backlog, 20261011-testspeed, 20261011-grind). Read whole functions or the given line ranges, not 70-line slices. No todo lists.
+- GATE ONCE: never run `pytest tests/unit` yourself. Run swarm-check exactly once per round, as the last command before commit/handoff, and only after targeted tests + ruff + mypy are green. If it fails, fix and re-run only the failing targeted test, then run swarm-check once more. Do not re-run it after a rebase or to double-check a cached PASS. (Full-suite/gate time stayed ~21 min per job across three jobs; one maker ran it 7 times.)
+- `--scope` takes ONE comma-separated argument: `--scope 'vibe_quant/dsl/**,tests/unit/dsl/**'`.
 - The gate is main's `scripts/agents/swarm-check.sh <worktree>`. Only when your task changes the gate itself (`scripts/agents/swarm_check.py`), prove it with the worktree's copy: `<worktree>/scripts/agents/swarm-check.sh <worktree>`.
 - Chain checks in one shell call: `ruff check && mypy && <targeted pytest>`.
 - E2E: iterate with `playwright test <spec> -g "<scenario>"`; run the full spec once at the end.

@@ -90,7 +90,7 @@ Coverage axes — check which ones the change crosses and verify each side:
 | Tests (targeted / full ≈ 1 min) | `.venv/bin/python -m pytest tests/unit/test_x.py -q` / `... tests/unit -q -n auto --dist worksteal -m "not timing"` then `... tests/unit -m timing` (serial; 183 s serial without `-n`) |
 | Lint / types | `.venv/bin/ruff check` / `.venv/bin/mypy` |
 | Exactness proof (≈ 6 s) | `.venv/bin/python scripts/agents/exactness_239.py [--validation-multi]` |
-| Pre-review gate (PASS cached per HEAD; runs the unit suite in parallel) | `scripts/agents/swarm-check.sh <worktree> --scope <globs> [--no-cache]` |
+| Pre-review gate (PASS cached per HEAD; runs the unit suite in parallel) | `scripts/agents/swarm-check.sh <worktree> --scope '<glob>,<glob>' [--no-cache]` (one comma-separated arg) |
 | Backend | `.venv/bin/uvicorn "vibe_quant.api.app:create_app" --factory --port 8000` |
 | Frontend dev / build / unit | `cd frontend && pnpm dev` / `pnpm build` / `pnpm vitest run` |
 | E2E (against ui-check stack) | `scripts/agents/e2e.sh <worktree>` (boots the stack, runs all specs, always tears down; `... <worktree> e2e/<file>` to filter) |
@@ -104,8 +104,8 @@ Coverage axes — check which ones the change crosses and verify each side:
 ## Agent speed rules
 
 Measured costs: full `tests/unit` ≈ 3 min serial, ≈ 1 min under `-n auto --dist worksteal` (the gate uses this: `-m "not timing"` in parallel, `-m timing` serially) · `swarm-check.sh` ≈ 1 min when it runs the full suite, seconds on a cached PASS · `exactness_239.py` ≈ 6 s · Playwright spec ≈ 1.5 min + `ui-check.sh` up/down · one model turn ≈ 4–10 s.
-- **Full suite once per round**, via `swarm-check.sh` at the end. While iterating, run the targeted test files plus the files that import changed symbols.
-- **Fewer, fatter turns:** batch independent reads/greps into one turn, read whole functions, chain shell checks with `&&`, track work in beads instead of todo lists. DeepSeek spent 58% of its time on single-tool turns.
+- **Gate once per round:** never run `pytest tests/unit` yourself; `swarm-check.sh` runs it as your last command, after targeted tests + ruff + mypy are green. On FAIL re-run only the failing test, then the gate once more; no gate after a rebase. Full-suite/gate time stayed ~21 min per job across three jobs (one maker ran it 7×).
+- **Fewer, fatter turns:** first turn reads every needed file in parallel; afterwards send all independent reads/greps/test runs in one turn, read whole functions, chain shell checks with `&&`, track work in beads instead of todo lists. Target ≥ 2 tool calls per turn — jobs 20261010-backlog / 20261011-testspeed / 20261011-grind averaged 1.11 / 1.17 / 1.10 (~90% single-tool turns).
 - **Mutation checks are capped:** ≤ 5 mutants (~3 min) per review, ≤ 3 per maker self-check, only on changed logic, each against the targeted test file in a `git archive` scratch copy (`cp -r` shares the worktree's git index). Stress loops ≤ 10 runs unless flakiness is the finding. A surviving mutant outside money code (screening/validation/discovery/overfitting/dsl/risk/paper/data, fills, metrics, DB writes, concurrency) becomes a follow-up bead, not a fix round.
 - **Gate cache:** `swarm-check.sh` caches a PASS per HEAD + base + scope + tool hash (clean tree only); re-running it on an unchanged worktree is instant, `--no-cache` forces a full run.
 - **E2E:** iterate with `-g <scenario>`, run the full spec once at the end.

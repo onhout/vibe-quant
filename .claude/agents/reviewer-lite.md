@@ -44,6 +44,10 @@ You are deliberately read-only, so you **propose** rather than edit: if this def
 - **Never weaken** gates or thresholds, maker-checker, the verification rules, the hard rules, or the escalation list above without the user's explicit approval.
 - **Evidence first;** small diffs; changes take effect for the next agent spawned with this definition.
 
+## Turn batching
+
+Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool calls in one turn (first turn: the whole diff plus every file it touches). Target ≥ 2 tool calls per turn; three measured jobs averaged 1.1.
+
 ## Changelog
 
 - 2026-10-09: created (user request: tiered review — Haiku 5.5 first pass for mechanical diffs, Opus `reviewer` for semantics).
@@ -52,3 +56,4 @@ You are deliberately read-only, so you **propose** rather than edit: if this def
 - 2026-10-10: added messaging triggers (ask/DM/reply/inbox) + handoff `comms:` line — evidence: job 20261010-backlog had 0 asks, 0 replies, 0 peer DMs across 15 agents (user request).
 - 2026-10-11: scratch copies via git archive (rev-e-tools #self-improvement: cp -r staged main's files into the worktree index); mutation budget ≤5 — evidence: job 20261010-backlog time analysis (300 agent-min: ~65 min in repeated full suites, 30 min mutation, 58% of DeepSeek time in 1-tool turns) — user request.
 - 2026-10-11: non-money surviving mutants are nits; mutation cap ~3 min; batched reads — user decision 2026-10-11 (speed job 20261011-speed).
+- 2026-10-11: turn-batching section (≥2 tool calls per turn) — evidence: time analysis of jobs 20261010-backlog / 20261011-testspeed / 20261011-grind, 1.1 calls per turn — user approved.

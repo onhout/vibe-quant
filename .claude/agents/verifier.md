@@ -53,7 +53,12 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - **Evidence first:** every change cites what went wrong or was missing (handoff, board post id, failing command, reviewer finding). No speculative rewrites; keep the diff small and in the voice of the file.
 - Changes take effect for the **next** agent spawned with this definition (definitions load at session start).
 
+## Turn batching
+
+Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool calls in one turn (first turn: the whole diff plus every file it touches). Target ≥ 2 tool calls per turn; three measured jobs averaged 1.1.
+
 ## Changelog
 
 - 2026-10-09: self-improvement + changelog sections added (user request: agents may improve their own prompts; chief reviews).
 - 2026-10-10: added messaging triggers (ask/DM/reply/inbox) + handoff `comms:` line — evidence: job 20261010-backlog had 0 asks, 0 replies, 0 peer DMs across 15 agents (user request).
+- 2026-10-11: turn-batching section (≥2 tool calls per turn) — evidence: time analysis of jobs 20261010-backlog / 20261011-testspeed / 20261011-grind, 1.1 calls per turn — user approved.
