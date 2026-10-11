@@ -4,6 +4,26 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-12: H-11F WITHDRAWN (user: only BTC/ETH/SOL/BNB) → PRE-REGISTRATION H-11F4 — forward funding carry on the 4 project coins
+
+**User decision (2026-10-12):** trade only the coins the project had before (BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT). H-11F (29 coins, dd1adc7) is withdrawn before its first decision point (2026-10-12 close) and never evaluated; its universe file is deleted.
+
+**In-sample context (NOT evidence; the 4 coins are inside the 66-coin set the lead came from):** same evaluator on the 4 coins, k = 1 → one long / one short leg:
+
+| Window | NET | NET capped | price leg | Max DD |
+|---|---|---|---|---|
+| 2020-10..2026-09 | 0.46253758194569367 | 0.42778015466198116 | 0.2387941419833504 | 0.7908620584413422 |
+| 2020-10..2022-05 | 0.08286581995435809 | 0.03363191281238387 | -0.1495199331120902 | 0.7908620584413422 |
+| 2022-06..2026-09 | 0.8812472152415362 | 0.8545884897097705 | 0.626870882726678 | 0.3099638408555284 |
+
+Carry 6.9–14.7%/yr. Far weaker than the 29-coin lead (1.50) and a single pair can draw down 79% — expect the forward test to fail; it is frozen because it is free and the universe is the user's.
+
+**Frozen artifacts (SHA-256):** `scripts/research/h11f/h11_funding_carry.py` ad5b812d7fe54aebf06f1ba8aa077259530447cf5a18889ce6d22d7dd9f6e2b2 and `h11f_fetch.py` acd00e5b9a81c538e7ed290776807a612b329e57e911ba7adc02a33f3d84d987 (unchanged), `h11f4_universe.txt` fa796be08e83e51f43db5c765e53b220da1a94fae729d3211ef090d7be4b30e9 (BTC ETH SOL BNB).
+
+**Spec, start, evaluation commands and decision rules:** exactly as H-11F below (first positions at the 2026-10-12 close; 26w futility 2027-04-13 NET < 0 → shelve; 52w candidate 2027-10-12 NET ≥ 1.0 AND capped ≥ 0.8 AND |beta| < 0.3; final 2028-10-09), with `h11f4_universe.txt` in place of `h11f_universe.txt`.
+
+---
+
 ## 2026-10-11: PRE-REGISTRATION H-11F — FORWARD test of funding carry on established coins (clock starts 2026-10-12)
 
 The established-coin carry lead (H-11 secondary: 66 coins, net 1.50; 2022-06..2026-09 net 1.24, capped 1.05) cannot be confirmed on any historical data without forking paths. Forward data is the only clean evidence, and it accrues by itself once the spec is frozen — no orders, no money, no infrastructure.
