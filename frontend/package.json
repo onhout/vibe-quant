@@ -28,13 +28,13 @@
     "js-yaml": "^5.4.3",
     "lightweight-charts": "^5.2.1",
     "lucide-react": "^1.55.0",
-    "plotly.js-dist-min": "^3.7.0",
+    "plotly.js-dist-min": "^4.1.2",
     "radix-ui": "^1.7.0",
     "react": "^19.3.0",
     "react-day-picker": "^10.0.2",
     "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",
-    "react-plotly.js": "^2.6.0",
+    "react-plotly.js": "^4.1.0",
     "react-resizable-panels": "^4.14.4",
     "recharts": "^3.10.1",
     "remark-gfm": "^4.0.1",
@@ -50,7 +50,6 @@
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@types/react-plotly.js": "^2.6.4",
     "@vitejs/plugin-react": "^6.1.2",
     "orval": "8.4.0",
     "tailwindcss": "^4.3.3",
@@ -59,8 +58,14 @@
     "vitest": "^5.0.3"
   },
   "pnpm": {
-    "overrides": {
-      "maplibre-gl": "^6.4.1"
+    "packageExtensions": {
+      "react-plotly.js": {
+        "peerDependenciesMeta": {
+          "plotly.js": {
+            "optional": true
+          }
+        }
+      }
     }
   }
 }
