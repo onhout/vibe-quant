@@ -1,0 +1,111 @@
+[
+  {
+    "indicator": {
+      "type": "SMA",
+      "params": {
+        "period": 20
+      }
+    },
+    "operand": "SMA(20)"
+  },
+  {
+    "indicator": {
+      "type": "BB",
+      "params": {
+        "period": 20,
+        "std_dev": 2
+      }
+    },
+    "operand": "BB(20,2)"
+  },
+  {
+    "indicator": {
+      "type": "BBANDS",
+      "params": {
+        "period": 20,
+        "std_dev": 2.5
+      }
+    },
+    "operand": "BBANDS(20,2.5)"
+  },
+  {
+    "indicator": {
+      "type": "MACD",
+      "params": {
+        "fast_period": 8,
+        "slow_period": 30,
+        "signal_period": 5
+      }
+    },
+    "operand": "MACD(8,30,5)"
+  },
+  {
+    "indicator": {
+      "type": "MACD",
+      "params": {
+        "fast": 12,
+        "slow": 26,
+        "signal": 9
+      }
+    },
+    "operand": "MACD(12,26,9)"
+  },
+  {
+    "indicator": {
+      "type": "STOCH",
+      "params": {
+        "period_k": 10,
+        "period_d": 4
+      }
+    },
+    "operand": "STOCH(10,4)"
+  },
+  {
+    "indicator": {
+      "type": "STOCH",
+      "params": {
+        "k_period": 14,
+        "d_period": 3
+      }
+    },
+    "operand": "STOCH(14,3)"
+  },
+  {
+    "indicator": {
+      "type": "SQUEEZE_RATIO",
+      "params": {
+        "length": 20,
+        "bb_mult": 2,
+        "kc_mult": 1.5
+      }
+    },
+    "operand": "SQUEEZE_RATIO(20,2,1.5)"
+  },
+  {
+    "indicator": {
+      "type": "VWAP",
+      "params": {}
+    },
+    "operand": "VWAP"
+  },
+  {
+    "indicator": {
+      "type": "ADAPTIVE_RSI",
+      "params": {
+        "period": 14,
+        "alpha": 0.000001
+      }
+    },
+    "operand": "ADAPTIVE_RSI(14,0.000001)"
+  },
+  {
+    "indicator": {
+      "type": "ADAPTIVE_RSI",
+      "params": {
+        "period": 14,
+        "alpha": 1e-7
+      }
+    },
+    "operand": "ADAPTIVE_RSI(14,1e-7)"
+  }
+]

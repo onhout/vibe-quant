@@ -11,7 +11,27 @@ This module bridges the two formats so frontend-created strategies can be backte
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Any
+
+# Editor indicator types whose StrategyDSL registry name differs. Only the config `type`
+# is renamed: generated indicator names and condition refs keep the editor spelling
+# (the UI sweep builder mirrors `<editor type lowercased>_<period>`).
+_TYPE_ALIASES = {"BB": "BBANDS"}
+
+# Alternate spellings of one StrategyDSL param: legacy editor names (types.ts) and the registry
+# `default_params` the catalog hands out. Canonical field -> accepted spellings.
+_PARAM_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "fast_period": ("fast_period", "fast"),
+    "slow_period": ("slow_period", "slow"),
+    "signal_period": ("signal_period", "signal"),
+}
+# STOCH's k/d periods; IndicatorConfig.normalize_param_aliases folds the same spellings
+_STOCH_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "period": ("period", "k_period", "period_k"),
+    "d_period": ("d_period", "period_d"),
+}
 
 
 def _is_dsl_config_format(raw: dict[str, Any]) -> bool:
@@ -33,6 +53,60 @@ def _generate_indicator_name(ind_type: str, params: dict[str, Any], existing: se
     return name
 
 
+def _canonical_params(ind_type: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Fold param spellings onto StrategyDSL field names (MACD periods, STOCH k/d).
+
+    Raises:
+        ValueError: if two spellings of one param disagree -- picking one would silently
+            run different periods than the user configured (IndicatorConfig rejects the same).
+    """
+    groups = dict(_PARAM_SYNONYMS)
+    if ind_type == "STOCH":
+        groups.update(_STOCH_SYNONYMS)
+    out: dict[str, Any] = {}
+    for target, spellings in groups.items():
+        found = {key: params[key] for key in spellings if key in params}
+        if len({float(v) for v in found.values()}) > 1:
+            shown = ", ".join(f"'{k}'={v!r}" for k, v in found.items())
+            msg = f"Conflicting {ind_type} params for '{target}': {shown}"
+            raise ValueError(msg)
+        if found:
+            out[target] = next(iter(found.values()))
+    return out
+
+
+def _js_str(value: Any) -> str:
+    """JavaScript ``String(value)`` for a param value (the editor joins them into operands)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+_CALL_REF = re.compile(r"^([A-Za-z_]\w*)\((.*)\)$")
+
+
+def _norm_ref(ref: str) -> str:
+    """Canonical form of ``TYPE(a,b,...)``: spaces dropped, numeric args compared as numbers.
+
+    The editor prints args with JavaScript ``String(number)`` (``0.000001``, ``1e-7``), which
+    Python spells differently (``1e-06``); parsing both sides as floats makes them equal.
+    """
+    m = _CALL_REF.match(ref)
+    if m is None:
+        return ref
+    args = []
+    for arg in (a.strip() for a in m.group(2).split(",")):
+        try:
+            num = float(arg)
+        except ValueError:
+            args.append(arg)
+            continue
+        args.append(repr(num) if math.isfinite(num) else arg)
+    return f"{m.group(1)}({','.join(args)})"
+
+
 def _translate_indicators(indicators_raw: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Convert DslConfig indicator array to StrategyDSL indicators dict."""
     result: dict[str, dict[str, Any]] = {}
@@ -41,29 +115,22 @@ def _translate_indicators(indicators_raw: list[dict[str, Any]]) -> dict[str, dic
         params = ind.get("params", {}) or {}
         name = _generate_indicator_name(ind_type, params, set(result.keys()))
 
-        config: dict[str, Any] = {"type": ind_type}
+        config: dict[str, Any] = {"type": _TYPE_ALIASES.get(ind_type, ind_type)}
 
         # Map flat params to StrategyDSL field names
-        if "period" in params:
+        canonical = _canonical_params(ind_type, params)
+        if "period" in params and "period" not in canonical:
             config["period"] = int(params["period"])
-        # MACD
-        if "fast" in params:
-            config["fast_period"] = int(params["fast"])
-        if "slow" in params:
-            config["slow_period"] = int(params["slow"])
-        if "signal" in params:
-            config["signal_period"] = int(params["signal"])
+        # MACD periods; STOCH k/d (editor spells them k_period / d_period, registry period_k /
+        # period_d). Contradictory spellings were rejected above.
+        for field, value in canonical.items():
+            config[field] = int(value)
         # Bollinger Bands
         if "std_dev" in params:
             config["std_dev"] = float(params["std_dev"])
         # ATR-based
         if "atr_multiplier" in params:
             config["atr_multiplier"] = float(params["atr_multiplier"])
-        # STOCH (editor spells the periods k_period / d_period)
-        if "k_period" in params and "period" not in params:
-            config["period"] = int(params["k_period"])
-        if "d_period" in params:
-            config["d_period"] = int(params["d_period"])
         # Per-indicator timeframe (was silently dropped)
         tf_override = ind.get("timeframe_override")
         if tf_override:
@@ -73,49 +140,95 @@ def _translate_indicators(indicators_raw: list[dict[str, Any]]) -> dict[str, dic
     return result
 
 
+def _type_refs(type_name: str, params: dict[str, Any], canonical: dict[str, Any]) -> list[str]:
+    """Ref spellings one indicator answers to when written with ``type_name``.
+
+    Covers the bare type, ``TYPE(period)``, the editor's ``TYPE(v1,v2,...)`` (every param value
+    in order, see frontend buildOperandOptions), and the legacy STOCH(k,d) /
+    MACD(fast,slow,signal) forms built from the canonical periods.
+    """
+    refs = [type_name, type_name.lower()]
+    # TYPE(period) e.g. "EMA(50)", "RSI(14)"
+    if "period" in params:
+        refs.append(f"{type_name}({int(params['period'])})")
+    # TYPE(v1,v2,...) exactly as buildOperandOptions joins the configured param values
+    if params:
+        values = [_js_str(v) for v in params.values()]
+        refs.append(f"{type_name}({','.join(values)})")
+    # STOCH(k,d) e.g. "STOCH(14,3)"
+    if type_name == "STOCH" and "period" in canonical and "d_period" in canonical:
+        k, d = int(canonical["period"]), int(canonical["d_period"])
+        refs.append(f"STOCH({k},{d})")
+    # MACD(fast,slow,signal) e.g. "MACD(12,26,9)"
+    if type_name == "MACD" and "fast_period" in canonical and "slow_period" in canonical:
+        sig = canonical.get("signal_period", 9)
+        refs.append(
+            f"MACD({int(canonical['fast_period'])},{int(canonical['slow_period'])},{int(sig)})"
+        )
+    return refs
+
+
+def _add_ref(refs: dict[str, list[str]], ref: str, name: str) -> None:
+    owners = refs.setdefault(_norm_ref(ref), [])
+    if name not in owners:
+        owners.append(name)
+
+
 def _build_ref_map(
     indicators_raw: list[dict[str, Any]], canonical_names: list[str]
-) -> dict[str, str]:
-    """Map human-readable refs like 'RSI(14)' or 'EMA(50)' to canonical names."""
-    ref_map: dict[str, str] = {}
+) -> dict[str, list[str]]:
+    """Map human-readable refs like 'RSI(14)' or 'EMA(50)' to the canonical names they denote.
+
+    A ref owned by several indicators is ambiguous (two ``BBANDS(20,2)`` on different timeframes
+    print the same operand); ``_resolve_ref`` rejects it. Refs spelled with an indicator's own
+    type always beat refs that reach it only through a registry alias (``BBANDS(20)`` names the
+    BBANDS indicator even when a ``BB(20)`` one exists).
+    """
+    explicit: dict[str, list[str]] = {}
+    via_alias: dict[str, list[str]] = {}
     for ind, canonical in zip(indicators_raw, canonical_names, strict=True):
         ind_type = str(ind.get("type", "EMA")).upper()
         params = ind.get("params", {}) or {}
+        canonical_params = _canonical_params(ind_type, params)
 
-        # Bare type name (e.g. "RSI", "EMA")
-        ref_map[ind_type] = canonical
-        ref_map[ind_type.lower()] = canonical
+        for ref in _type_refs(ind_type, params, canonical_params):
+            _add_ref(explicit, ref, canonical)
+        alias = _TYPE_ALIASES.get(ind_type)
+        if alias:
+            for ref in _type_refs(alias, params, canonical_params):
+                _add_ref(via_alias, ref, canonical)
 
-        # TYPE(period) e.g. "EMA(50)", "RSI(14)"
-        if "period" in params:
-            ref_map[f"{ind_type}({int(params['period'])})"] = canonical
+    # Canonical names are unique and always map to themselves
+    for canonical in canonical_names:
+        explicit[canonical] = [canonical]
 
-        # STOCH(k,d) e.g. "STOCH(14,3)"
-        if ind_type == "STOCH" and "k_period" in params and "d_period" in params:
-            ref_map[f"STOCH({int(params['k_period'])},{int(params['d_period'])})"] = canonical
-            ref_map[f"STOCH({int(params['k_period'])}, {int(params['d_period'])})"] = canonical
-
-        # MACD(fast,slow,signal) e.g. "MACD(12,26,9)"
-        if ind_type == "MACD" and "fast" in params and "slow" in params:
-            sig = params.get("signal", 9)
-            ref_map[f"MACD({int(params['fast'])},{int(params['slow'])},{int(sig)})"] = canonical
-
-        # Canonical name always maps to itself
-        ref_map[canonical] = canonical
-
-    return ref_map
+    return via_alias | explicit
 
 
 _PRICE_ALIASES = {"price": "close", "Price": "close", "PRICE": "close"}
 
 
-def _resolve_ref(token: str, ref_map: dict[str, str]) -> str:
-    """Replace a human-readable indicator ref with its canonical name."""
+def _resolve_ref(token: str, ref_map: dict[str, list[str]]) -> str:
+    """Replace a human-readable indicator ref with its canonical name.
+
+    Raises:
+        ValueError: if the ref matches several indicators -- compiling against one of them
+            would silently trade the wrong configuration.
+    """
     token = _PRICE_ALIASES.get(token, token)
-    return ref_map.get(token, token)
+    owners = ref_map.get(_norm_ref(token))
+    if not owners:
+        return token
+    if len(owners) > 1:
+        msg = (
+            f"Ambiguous operand '{token}' matches indicators {', '.join(owners)}; "
+            f"reference one by its name (e.g. '{owners[0]}') or give them different params"
+        )
+        raise ValueError(msg)
+    return owners[0]
 
 
-def _condition_to_str(cond: dict[str, Any] | str, ref_map: dict[str, str] | None = None) -> str:
+def _condition_to_str(cond: dict[str, Any] | str, ref_map: dict[str, list[str]] | None = None) -> str:
     """Convert a DslCondition object or raw string to expression string."""
     if isinstance(cond, str):
         return cond
@@ -129,7 +242,7 @@ def _condition_to_str(cond: dict[str, Any] | str, ref_map: dict[str, str] | None
 
 
 def _condition_list(
-    conditions: dict[str, Any], key: str, ref_map: dict[str, str] | None
+    conditions: dict[str, Any], key: str, ref_map: dict[str, list[str]] | None
 ) -> list[str]:
     """Translate one editor condition list; AND-only (StrategyDSL semantics).
 
@@ -151,7 +264,7 @@ def _condition_list(
 
 
 def _translate_conditions(
-    conditions: dict[str, Any], ref_map: dict[str, str] | None = None
+    conditions: dict[str, Any], ref_map: dict[str, list[str]] | None = None
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Return (long_entry, short_entry, long_exit, short_exit) condition lists."""
     long_conds = _condition_list(conditions, "long_entry", ref_map)
