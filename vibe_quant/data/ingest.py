@@ -153,34 +153,40 @@ def get_download_preview(
     """
     import calendar
 
+    owns_archive = archive is None
     if archive is None:
         archive = RawDataArchive()
 
     months = get_months_in_range(start_date, end_date)
     preview: list[dict[str, Any]] = []
 
-    for symbol in symbols:
-        for year, month in months:
-            actual = archive.get_month_kline_count(symbol, "1m", year, month)
-            _, days = calendar.monthrange(year, month)
-            expected = days * 24 * 60
+    try:
+        for symbol in symbols:
+            for year, month in months:
+                actual = archive.get_month_kline_count(symbol, "1m", year, month)
+                _, days = calendar.monthrange(year, month)
+                expected = days * 24 * 60
 
-            if actual >= expected * 0.9:
-                status = "Archived"
-            elif actual > 0:
-                status = "Partial - will re-download"
-            else:
-                status = "Will download"
+                if actual >= expected * 0.9:
+                    status = "Archived"
+                elif actual > 0:
+                    status = "Partial - will re-download"
+                else:
+                    status = "Will download"
 
-            preview.append(
-                {
-                    "Symbol": symbol,
-                    "Month": f"{year}-{month:02d}",
-                    "Status": status,
-                    "Klines": actual,
-                    "Expected": expected,
-                }
-            )
+                preview.append(
+                    {
+                        "Symbol": symbol,
+                        "Month": f"{year}-{month:02d}",
+                        "Status": status,
+                        "Klines": actual,
+                        "Expected": expected,
+                    }
+                )
+    finally:
+        # Close only the archive opened here; a caller-supplied one stays open.
+        if owns_archive:
+            archive.close()
 
     return preview
 

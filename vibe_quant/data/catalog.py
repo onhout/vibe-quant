@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -407,14 +408,20 @@ class CatalogManager:
         """
         self._catalog_path = catalog_path or DEFAULT_CATALOG_PATH
         self._catalog: ParquetDataCatalog | None = None
+        self._catalog_lock = threading.Lock()
 
     @property
     def catalog(self) -> ParquetDataCatalog:
-        """Get or create catalog, cleaning up corrupt epoch-timestamp files first."""
+        """Get or create catalog, cleaning up corrupt epoch-timestamp files first.
+
+        Lock-guarded so concurrent first use (threadpool GET handlers) builds one catalog.
+        """
         if self._catalog is None:
-            self._catalog_path.mkdir(parents=True, exist_ok=True)
-            self._cleanup_epoch_parquet()
-            self._catalog = ParquetDataCatalog(str(self._catalog_path))
+            with self._catalog_lock:
+                if self._catalog is None:
+                    self._catalog_path.mkdir(parents=True, exist_ok=True)
+                    self._cleanup_epoch_parquet()
+                    self._catalog = ParquetDataCatalog(str(self._catalog_path))
         return self._catalog
 
     def _cleanup_epoch_parquet(self) -> None:
