@@ -482,7 +482,16 @@ def test_cancel_running_job_waits_and_returns_200_when_worker_confirms(
     assert sm.get_extraction_job(job_id)["status"] == "running"  # type: ignore[index]
 
     def _confirm() -> None:
-        time.sleep(0.2)
+        # Ordering handshake: confirm only after the endpoint has stamped
+        # cancel_requested_at (the signal the worker's watcher polls in prod).
+        # A fixed sleep raced the POST under load: a worker that finished first
+        # left cancel_requested_at NULL. Bounded, so a missing stamp leaves the
+        # job running and the endpoint's 202 fails the test instead of hanging.
+        deadline = time.monotonic() + 10.0
+        while not sm.extraction_job_cancel_requested(job_id):
+            if time.monotonic() > deadline:
+                return
+            time.sleep(0.01)
         sm.finish_cancelled_extraction_job(job_id, error_message="cancelled by user")
 
     th = threading.Thread(target=_confirm)
@@ -490,7 +499,7 @@ def test_cancel_running_job_waits_and_returns_200_when_worker_confirms(
     try:
         resp = client.post(f"/api/research/extraction-jobs/{job_id}/cancel")
     finally:
-        th.join(timeout=5.0)
+        th.join(timeout=15.0)
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "cancelled"
