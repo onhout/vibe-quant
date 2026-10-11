@@ -3,11 +3,31 @@
 
     swarm-check.sh <worktree> [--base REF] [--scope glob,glob,...]
                    [--exactness auto|always|never] [--frontend auto|always|never]
-                   [--json out.json]
+                   [--json out.json] [--no-cache]
 
 Checks (each prints "PASS|FAIL|SKIP <name>: <detail>"), then "GATE PASS" /
 "GATE FAIL (n failed)" as the last line; exit 0/1. Default base: main;
 default exactness/frontend: auto (run only when relevant paths changed).
+
+PASS-stamp cache: a GATE PASS on a clean worktree writes
+`<git-dir>/swarm-check/pass-<key[:16]>.json` in that worktree's git dir (per-worktree,
+never committed, invisible to `git status`). The key is a sha256 over HEAD, the base
+commit, the sorted scope globs, exactness/frontend modes, this script's own bytes and the
+sha256 of the MAIN checkout's scripts/agents/exactness_239.py, uv.lock and
+frontend/pnpm-lock.yaml (a missing file hashes as a fixed token), so any change to the
+diff or to the checks invalidates it. A later run whose tree is clean and whose key
+matches prints the stored check lines as `(cached) ...`, then
+`PASS cache: reused stamp from <ts> for <head[:12]>` and `GATE PASS` (and posts
+"GATE PASS (cached <head12>)" to the bus), without running any tool.
+The stamp is written only when the key computed BEFORE the run is non-empty (clean start)
+AND equals the key recomputed after it (nothing moved while the tools ran: a commit made
+mid-run would otherwise stamp a HEAD that was never gated). Writes are atomic (temp file +
+os.replace). FAILs, WARNs, dirty trees and stubs are never cached; load_stamp accepts only
+PASS/SKIP lines, and any problem reading a stamp falls back to the full gate (fail
+closed: never a false PASS). `--no-cache` disables both reuse and writing.
+NOT in the key (known gaps; --no-cache to force): the main checkout's .venv (tool
+versions), data/catalog (exactness inputs), the frontend lint baseline in main's
+working tree and any uncommitted edit in main other than the keyed files.
 
 The gate FAILS CLOSED: a bad --base, any git error, a timed-out or missing tool is a
 FAIL, never a PASS. Exactness always runs the MAIN checkout's exactness_239.py (the
@@ -25,13 +45,16 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fnmatch
+import hashlib
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -74,6 +97,12 @@ STUB_VARS = ("SWARM_CHECK_RUFF", "SWARM_CHECK_MYPY", "SWARM_CHECK_PYTEST")
 TEST_TIMEOUT = 1800  # seconds: pytest, exactness
 TOOL_TIMEOUT = 600  # seconds: everything else
 PYTEST_NO_TESTS_RC = 5
+CACHE_DIR = "swarm-check"
+CACHE_VERSION = 2
+CHECK_STATUSES = ("PASS", "FAIL", "SKIP", "WARN")
+STAMP_STATUSES = ("PASS", "SKIP")  # the only line statuses a reusable stamp may contain
+MAIN_KEY_FILES = ("scripts/agents/exactness_239.py", "uv.lock", "frontend/pnpm-lock.yaml")
+MISSING_FILE_TOKEN = "missing"
 
 
 @dataclass(frozen=True)
@@ -99,6 +128,14 @@ class GitState:
     changed: list[str]  # committed diff + uncommitted incl. untracked (cmd-report.md excluded)
     untracked: list[str]  # untracked files, cmd-report.md excluded
     error: str = ""  # non-empty: the diff is UNKNOWN (bad base / git failure) -> gate FAIL
+    uncommitted: list[str] = field(default_factory=list)  # tracked/index changes (not committed)
+
+
+@dataclass(frozen=True)
+class Stamp:
+    head: str
+    ts: str
+    checks: list[Check]
 
 
 def real_run(
@@ -126,14 +163,17 @@ def real_run(
     return proc.returncode, proc.stdout + proc.stderr
 
 
-def parse_porcelain(text: str) -> tuple[list[str], list[str]]:
-    """Split `git status --porcelain=v1 -z` output into (all changed paths, untracked).
+def parse_porcelain(text: str) -> tuple[list[str], list[str], list[str]]:
+    """Split `git status --porcelain=v1 -z` into (all changed, untracked, uncommitted).
 
-    NUL-separated, so no quoting. A rename/copy entry is "XY new\0old\0": both sides
-    are reported so an out-of-scope old path cannot hide behind a rename.
+    NUL-separated, so no quoting. A rename/copy entry is "XY new\\0old\\0": both sides
+    are reported so an out-of-scope old path cannot hide behind a rename. `uncommitted`
+    is every status entry that is not untracked (a dirty working tree/index) and is used
+    by the PASS-stamp cache, which never caches a tree with uncommitted edits.
     """
     changed: list[str] = []
     untracked: list[str] = []
+    uncommitted: list[str] = []
     tokens = text.split("\0")
     i = 0
     while i < len(tokens):
@@ -150,8 +190,10 @@ def parse_porcelain(text: str) -> tuple[list[str], list[str]]:
             if path in UNTRACKED_OK:
                 continue
             untracked.append(path)
+        else:
+            uncommitted.extend(p for p in paths if p)
         changed.extend(p for p in paths if p)
-    return changed, untracked
+    return changed, untracked, uncommitted
 
 
 def git_state(wt: Path, base: str, run: RunFn) -> GitState:
@@ -173,11 +215,11 @@ def git_state(wt: Path, base: str, run: RunFn) -> GitState:
     if rc != 0:
         return GitState([], [], f"git status failed: {tail_line(status_out)}")
     committed = [p for p in diff_out.split("\0") if p]
-    uncommitted, untracked = parse_porcelain(status_out)
+    changed, untracked, uncommitted = parse_porcelain(status_out)
     seen: dict[str, None] = {}
-    for path in committed + uncommitted:
+    for path in committed + changed:
         seen.setdefault(path, None)
-    return GitState(changed=list(seen), untracked=untracked)
+    return GitState(changed=list(seen), untracked=untracked, uncommitted=uncommitted)
 
 
 def scope_offenders(paths: Sequence[str], globs: Sequence[str]) -> list[str]:
@@ -274,6 +316,148 @@ def to_json_dict(checks: Sequence[Check]) -> dict[str, Any]:
     _, failed = gate_summary(checks)
     data["gate"] = "FAIL" if failed else "PASS"
     return data
+
+
+def is_clean(state: GitState) -> bool:
+    """A reuse/write-safe tree: known diff, no untracked files, no uncommitted edits."""
+    return not state.error and not state.untracked and not state.uncommitted
+
+
+def tool_hash() -> str:
+    """sha256 of this script's own source bytes: any gate change invalidates the cache."""
+    return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+
+
+def main_files_hash(main_root: Path) -> dict[str, str]:
+    """sha256 per main-checkout input of the gate (exactness script, lockfiles)."""
+    out: dict[str, str] = {}
+    for rel in MAIN_KEY_FILES:
+        try:
+            out[rel] = hashlib.sha256((main_root / rel).read_bytes()).hexdigest()
+        except OSError:
+            out[rel] = MISSING_FILE_TOKEN
+    return out
+
+
+def cache_key(head: str, base_sha: str, cfg: Config, thash: str) -> str:
+    payload = json.dumps(
+        {
+            "head": head,
+            "base": base_sha,
+            "scope": sorted(cfg.scope),
+            "exactness": cfg.exactness,
+            "frontend": cfg.frontend,
+            "tool": thash,
+            "main": main_files_hash(cfg.main_root),
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def parse_check_line(line: str) -> Check | None:
+    """Inverse of format_line (None when the line is not a well-formed check)."""
+    status, sep, rest = line.partition(" ")
+    name, sep2, detail = rest.partition(": ")
+    if not sep or not sep2 or status not in CHECK_STATUSES or not name:
+        return None
+    return Check(name, status, detail)
+
+
+def _git_out(wt: Path, run: RunFn, *args: str) -> str:
+    rc, out = run(["git", "-C", str(wt), *args], wt, None, TOOL_TIMEOUT)
+    return out.strip() if rc == 0 else ""
+
+
+def git_dir(wt: Path, run: RunFn) -> Path | None:
+    """This worktree's own git dir (per-worktree for linked worktrees; never committed)."""
+    out = _git_out(wt, run, "rev-parse", "--absolute-git-dir")
+    return Path(out) if out else None
+
+
+def stamp_path(wt: Path, run: RunFn, key: str) -> Path | None:
+    gd = git_dir(wt, run)
+    return gd / CACHE_DIR / f"pass-{key[:16]}.json" if gd is not None else None
+
+
+def _cache_probe(cfg: Config, run: RunFn) -> tuple[str, GitState | None]:
+    """(cache key, git state): the key is "" when a stamp must not be reused or written."""
+    try:
+        state = git_state(cfg.worktree, cfg.base, run)
+        if not is_clean(state):
+            return "", state
+        head = _git_out(cfg.worktree, run, "rev-parse", "HEAD")
+        base_sha = _git_out(cfg.worktree, run, "rev-parse", cfg.base + "^{commit}")
+        if not head or not base_sha:
+            return "", state
+        return cache_key(head, base_sha, cfg, tool_hash()), state
+    except Exception:  # fail closed: any doubt -> run the full gate
+        return "", None
+
+
+def load_stamp(wt: Path, run: RunFn, key: str) -> Stamp | None:
+    """A valid stored PASS for `key`, or None (any corruption/mismatch -> full gate)."""
+    if not key:
+        return None
+    try:
+        path = stamp_path(wt, run, key)
+        if path is None or not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        if data.get("version") != CACHE_VERSION or data.get("key") != key:
+            return None
+        if data.get("gate") != "PASS":
+            return None
+        head, ts, lines = data.get("head"), data.get("ts"), data.get("checks")
+        if not isinstance(head, str) or not isinstance(ts, str):
+            return None
+        if not isinstance(lines, list) or not lines:
+            return None
+        checks: list[Check] = []
+        for line in lines:
+            parsed = parse_check_line(line) if isinstance(line, str) else None
+            if parsed is None:
+                return None
+            checks.append(parsed)
+        if any(c.status not in STAMP_STATUSES for c in checks):
+            return None  # only PASS/SKIP lines: a stored FAIL or WARN is never a PASS
+        return Stamp(head=head, ts=ts, checks=checks)
+    except Exception:
+        return None
+
+
+def write_stamp(wt: Path, run: RunFn, cfg: Config, key: str, checks: Sequence[Check]) -> None:
+    if not key:
+        return
+    path = stamp_path(wt, run, key)
+    if path is None:
+        return
+    data = {
+        "version": CACHE_VERSION,
+        "key": key,
+        "head": _git_out(wt, run, "rev-parse", "HEAD"),
+        "base": cfg.base,
+        "base_sha": _git_out(wt, run, "rev-parse", cfg.base + "^{commit}"),
+        "scope": sorted(cfg.scope),
+        "exactness": cfg.exactness,
+        "frontend": cfg.frontend,
+        "tool": tool_hash(),
+        "ts": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "gate": "PASS",
+        "checks": [format_line(c) for c in checks],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".tmp-pass-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp_name, path)  # atomic: a reader sees the whole stamp or none
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 def stubs_allowed() -> bool:
@@ -481,13 +665,15 @@ def _derive_main_root(wt: Path) -> Path:
     return Path(proc.stdout.strip()).parent
 
 
-def bus_post(cfg: Config, checks: Sequence[Check]) -> None:
+def bus_post(cfg: Config, checks: Sequence[Check], cached_head: str = "") -> None:
     bus = os.environ.get("SWARM_BUS")
     if not bus:
         return
     gate, _ = gate_summary(checks)
     failed = [c.name for c in checks if c.status == "FAIL"]
     body = f"{cfg.worktree.name}: {gate}"
+    if cached_head:
+        body += f" (cached {cached_head[:12]})"
     if failed:
         body += " (" + ", ".join(failed) + ")"
     with contextlib.suppress(Exception):
@@ -504,7 +690,7 @@ def bus_post(cfg: Config, checks: Sequence[Check]) -> None:
         )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, run: RunFn | None = None) -> int:
     parser = argparse.ArgumentParser(description="Pre-review gate for a worker's worktree")
     parser.add_argument("worktree")
     parser.add_argument("--base", default="main")
@@ -512,6 +698,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--exactness", choices=("auto", "always", "never"), default="auto")
     parser.add_argument("--frontend", choices=("auto", "always", "never"), default="auto")
     parser.add_argument("--json", dest="json_out", default=None)
+    parser.add_argument("--no-cache", dest="no_cache", action="store_true")
     args = parser.parse_args(argv)
 
     wt = Path(args.worktree).resolve()
@@ -531,8 +718,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         json_out=Path(args.json_out) if args.json_out else None,
     )
 
+    runner: RunFn = run or real_run
+    key, _ = _cache_probe(cfg, runner) if not args.no_cache else ("", None)  # PRE-run key
+    stamp = load_stamp(wt, runner, key)
+
+    if stamp is not None:
+        for check in stamp.checks:
+            print(f"(cached) {format_line(check)}")
+        print(f"PASS cache: reused stamp from {stamp.ts} for {stamp.head[:12]}")
+        print("GATE PASS")
+        if cfg.json_out:
+            cached = to_json_dict(stamp.checks)
+            cached["cached"] = True
+            with open(cfg.json_out, "w", encoding="utf-8") as fh:
+                json.dump(cached, fh, indent=2)
+                fh.write("\n")
+        bus_post(cfg, stamp.checks, cached_head=stamp.head)
+        return 0
+
     try:
-        checks = run_checks(cfg)
+        checks = run_checks(cfg) if run is None else run_checks(cfg, runner)
     except Exception as exc:  # fail closed: a crashed gate is a failed gate
         checks = [Check("internal", "FAIL", f"gate crashed: {type(exc).__name__}: {exc}")]
     for check in checks:
@@ -544,6 +749,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         with open(cfg.json_out, "w", encoding="utf-8") as fh:
             json.dump(to_json_dict(checks), fh, indent=2)
             fh.write("\n")
+
+    if not args.no_cache and not failed and not active_stubs() and key:
+        # key is the PRE-run key (non-empty = clean start). Stamp only if nothing moved while
+        # the tools ran; otherwise the verdict is for a HEAD/tree that was never gated.
+        post_key, _ = _cache_probe(cfg, runner)
+        if post_key == key:
+            with contextlib.suppress(Exception):
+                write_stamp(wt, runner, cfg, key, checks)
 
     bus_post(cfg, checks)
     return 1 if failed else 0

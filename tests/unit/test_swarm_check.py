@@ -685,6 +685,320 @@ class TestFailClosed:
         assert data["clean"]["status"] == "WARN" and data["gate"] == "PASS"
 
 
+class TestCacheKey:
+    def test_scope_order_insensitive(self, tmp_path: Path) -> None:
+        a = _cfg(tmp_path, tmp_path, scope=("b/*", "a/*"))
+        b = _cfg(tmp_path, tmp_path, scope=("a/*", "b/*"))
+        assert swarm_check.cache_key("h", "s", a, "t") == swarm_check.cache_key("h", "s", b, "t")
+
+    def test_every_field_matters(self, tmp_path: Path) -> None:
+        base = _cfg(tmp_path, tmp_path)
+        key = swarm_check.cache_key("h", "s", base, "t")
+        assert key != swarm_check.cache_key("h2", "s", base, "t")
+        assert key != swarm_check.cache_key("h", "s2", base, "t")
+        assert key != swarm_check.cache_key("h", "s", _cfg(tmp_path, tmp_path, scope=("x",)), "t")
+        assert key != swarm_check.cache_key("h", "s", _cfg(tmp_path, tmp_path, exactness="always"), "t")
+        assert key != swarm_check.cache_key("h", "s", _cfg(tmp_path, tmp_path, frontend="always"), "t")
+        assert key != swarm_check.cache_key("h", "s", base, "t2")
+
+    def test_main_root_inputs_matter(self, tmp_path: Path) -> None:
+        cfg = _cfg(tmp_path, tmp_path)
+        none = swarm_check.cache_key("h", "s", cfg, "t")  # all three files missing: fixed token
+        assert none == swarm_check.cache_key("h", "s", cfg, "t")
+        seen = {none}
+        for rel in swarm_check.MAIN_KEY_FILES:
+            path = tmp_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("v1\n")
+            first = swarm_check.cache_key("h", "s", cfg, "t")
+            path.write_text("v2\n")
+            second = swarm_check.cache_key("h", "s", cfg, "t")
+            assert first != second, rel
+            assert first not in seen and second not in seen, rel
+            seen.update({first, second})
+
+    def test_main_key_files_cover_exactness_and_lockfiles(self) -> None:
+        assert set(swarm_check.MAIN_KEY_FILES) == {
+            "scripts/agents/exactness_239.py", "uv.lock", "frontend/pnpm-lock.yaml",
+        }
+
+    def test_parse_check_line_roundtrip(self) -> None:
+        check = swarm_check.Check("tests", "PASS", "1 passed | x: y")
+        line = swarm_check.format_line(check)
+        assert swarm_check.parse_check_line(line) == check
+        assert swarm_check.parse_check_line("garbage") is None
+        assert swarm_check.parse_check_line("BOGUS name: detail") is None
+
+
+class TestPassCache:
+    def _pass_repo(self, tmp_path: Path) -> Path:
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-qb", "feature")
+        (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 2\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "change foo")
+        return repo
+
+    def _runner(self) -> FakeRunner:
+        runner = FakeRunner()
+        runner.responses = {
+            "ruff": (0, "All checks passed!"),
+            "mypy": (0, "Success"),
+            "pytest": (0, "1 passed in 0.01s"),
+        }
+        return runner
+
+    def _main(self, repo: Path, runner: FakeRunner, *extra: str) -> int:
+        rc: int = swarm_check.main(
+            [str(repo), "--base", "main", "--exactness", "never", "--frontend", "never", *extra],
+            run=runner,
+        )
+        return rc
+
+    def _stamps(self, repo: Path) -> list[Path]:
+        return sorted((repo / ".git" / "swarm-check").glob("pass-*.json"))
+
+    def test_pass_writes_stamp_then_reuses(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = self._pass_repo(tmp_path)
+        first = self._runner()
+        assert self._main(repo, first) == 0
+        assert "GATE PASS" in capsys.readouterr().out
+        assert _called_with(first, "pytest")  # expensive tools really ran
+        assert len(self._stamps(repo)) == 1
+        assert _git(repo, "status", "--porcelain").strip() == ""  # stamp invisible to git
+
+        second = self._runner()
+        out_json = tmp_path / "cached.json"
+        assert self._main(repo, second, "--json", str(out_json)) == 0
+        out = capsys.readouterr().out
+        assert "(cached) PASS ruff: All checks passed!" in out
+        assert "PASS cache: reused stamp from" in out
+        assert out.strip().endswith("GATE PASS")
+        assert not _called_with(second, "pytest")
+        assert not _called_with(second, "ruff")
+        assert not _called_with(second, "mypy")
+        data = json.loads(out_json.read_text())
+        assert data["gate"] == "PASS" and data["cached"] is True
+        assert data["tests"] == {"status": "PASS", "detail": "1 passed in 0.01s"}
+
+    def test_new_head_no_reuse(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        repo = self._pass_repo(tmp_path)
+        assert self._main(repo, self._runner()) == 0
+        capsys.readouterr()
+        (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 3\n")
+        _git(repo, "commit", "-qam", "bump")
+        runner = self._runner()
+        assert self._main(repo, runner) == 0
+        assert _called_with(runner, "pytest")
+        assert "PASS cache:" not in capsys.readouterr().out
+
+    def test_base_moved_no_reuse(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        repo = self._pass_repo(tmp_path)
+        assert self._main(repo, self._runner()) == 0
+        capsys.readouterr()
+        _git(repo, "checkout", "-q", "main")
+        (repo / "vibe_quant" / "keep.py").write_text("X = 9\n")
+        _git(repo, "commit", "-qam", "advance main")
+        _git(repo, "checkout", "-q", "feature")
+        runner = self._runner()
+        assert self._main(repo, runner) == 0
+        assert _called_with(runner, "pytest")
+        assert "PASS cache:" not in capsys.readouterr().out
+
+    def test_different_scope_no_reuse(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = self._pass_repo(tmp_path)
+        assert self._main(repo, self._runner(), "--scope", "vibe_quant/*") == 0
+        capsys.readouterr()
+        runner = self._runner()
+        assert self._main(repo, runner, "--scope", "vibe_quant/*,tests/*") == 0
+        assert _called_with(runner, "pytest")
+        assert "PASS cache:" not in capsys.readouterr().out
+
+    def test_untracked_file_blocks_stamp(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = self._pass_repo(tmp_path)
+        (repo / "stray.txt").write_text("x\n")
+        assert self._main(repo, self._runner()) == 0
+        assert not self._stamps(repo)
+        runner = self._runner()
+        assert self._main(repo, runner) == 0
+        assert _called_with(runner, "pytest")
+
+    def test_uncommitted_change_blocks_stamp(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = self._pass_repo(tmp_path)
+        (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 7\n")
+        assert self._main(repo, self._runner()) == 0
+        assert not self._stamps(repo)
+
+    def test_fail_writes_no_stamp(self, tmp_path: Path) -> None:
+        repo = self._pass_repo(tmp_path)
+        runner = self._runner()
+        runner.responses["ruff"] = (1, "E501 boom")
+        assert self._main(repo, runner) == 1
+        assert not self._stamps(repo)
+
+    def test_no_cache_flag_forces_full_run(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = self._pass_repo(tmp_path)
+        assert self._main(repo, self._runner()) == 0
+        capsys.readouterr()
+        runner = self._runner()
+        assert self._main(repo, runner, "--no-cache") == 0
+        assert _called_with(runner, "pytest")
+        assert "PASS cache:" not in capsys.readouterr().out
+
+    def test_corrupt_stamp_forces_full_run(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = self._pass_repo(tmp_path)
+        assert self._main(repo, self._runner()) == 0
+        capsys.readouterr()
+        for stamp in self._stamps(repo):
+            stamp.write_text("{not json")
+        runner = self._runner()
+        assert self._main(repo, runner) == 0
+        assert _called_with(runner, "pytest")
+        assert len(self._stamps(repo)) == 1  # rewritten by the full run
+
+    def test_stamp_with_fail_line_not_reused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = self._pass_repo(tmp_path)
+        assert self._main(repo, self._runner()) == 0
+        capsys.readouterr()
+        for stamp in self._stamps(repo):
+            data = json.loads(stamp.read_text())
+            data["checks"] = ["FAIL ruff: injected"] + data["checks"]
+            stamp.write_text(json.dumps(data))
+        runner = self._runner()
+        assert self._main(repo, runner) == 0  # must re-run, never serve a FALSE PASS
+        assert _called_with(runner, "pytest")
+        assert "PASS cache:" not in capsys.readouterr().out
+
+    def test_tool_hash_change_no_reuse(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._pass_repo(tmp_path)
+        assert self._main(repo, self._runner()) == 0
+        capsys.readouterr()
+        monkeypatch.setattr(swarm_check, "tool_hash", lambda: "0" * 64)
+        runner = self._runner()
+        assert self._main(repo, runner) == 0
+        assert _called_with(runner, "pytest")
+        assert "PASS cache:" not in capsys.readouterr().out
+
+
+    def test_commit_during_run_not_stamped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """B1: a commit made while pytest runs must not be stamped (GATE PASS is for old HEAD)."""
+        repo = self._pass_repo(tmp_path)
+
+        def commit_mid_run(cmd: Sequence[str], cwd: Path) -> tuple[int, str]:
+            (repo / "vibe_quant" / "foo.py").write_text("def foo(:\n")  # broken, never gated
+            _git(repo, "commit", "-qam", "broken mid-run")
+            return 0, "1 passed in 0.01s"
+
+        first = self._runner()
+        first.responses["pytest"] = commit_mid_run
+        assert self._main(repo, first) == 0
+        assert "GATE PASS" in capsys.readouterr().out
+        assert not self._stamps(repo)
+        second = self._runner()
+        assert self._main(repo, second) == 0
+        assert _called_with(second, "pytest")  # re-gated, never served from cache
+        assert "PASS cache:" not in capsys.readouterr().out
+
+    def test_dirty_start_committed_mid_run_not_stamped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """B1: untracked at start (WARN) + committed during the run -> end state is clean."""
+        repo = self._pass_repo(tmp_path)
+        (repo / "stray.py").write_text("X = 1\n")
+
+        def commit_mid_run(cmd: Sequence[str], cwd: Path) -> tuple[int, str]:
+            _git(repo, "add", "-A")
+            _git(repo, "commit", "-qm", "stray")
+            return 0, "1 passed in 0.01s"
+
+        first = self._runner()
+        first.responses["pytest"] = commit_mid_run
+        assert self._main(repo, first) == 0
+        assert not self._stamps(repo)
+        second = self._runner()
+        assert self._main(repo, second) == 0
+        assert _called_with(second, "pytest")
+
+    def test_stamp_with_warn_line_not_reused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = self._pass_repo(tmp_path)
+        assert self._main(repo, self._runner()) == 0
+        capsys.readouterr()
+        for stamp in self._stamps(repo):
+            data = json.loads(stamp.read_text())
+            data["checks"] = ["WARN clean: 1 untracked: x"] + data["checks"]
+            stamp.write_text(json.dumps(data))
+        runner = self._runner()
+        assert self._main(repo, runner) == 0
+        assert _called_with(runner, "pytest")
+        assert "PASS cache:" not in capsys.readouterr().out
+
+    def test_active_stubs_never_stamped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """S1: stubs honoured (ALLOW_STUBS=1) -> the PASS came from fakes -> no stamp."""
+        repo = self._pass_repo(tmp_path)
+        monkeypatch.setenv("SWARM_CHECK_ALLOW_STUBS", "1")
+        monkeypatch.setenv("SWARM_CHECK_RUFF", "ruff-stub")
+        assert self._main(repo, self._runner()) == 0
+        assert "stubs" in capsys.readouterr().out
+        assert not self._stamps(repo)
+
+    def test_stamp_write_is_atomic(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """N2: the stamp appears only via os.replace of a temp file; no leftovers on failure."""
+        repo = self._pass_repo(tmp_path)
+
+        def boom(src: object, dst: object) -> None:
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(swarm_check.os, "replace", boom)
+        assert self._main(repo, self._runner()) == 0  # a stamp problem never fails the gate
+        assert not self._stamps(repo)
+        cache_dir = repo / ".git" / "swarm-check"
+        assert not cache_dir.exists() or not list(cache_dir.iterdir())
+        monkeypatch.undo()
+        assert self._main(repo, self._runner()) == 0
+        assert len(self._stamps(repo)) == 1
+        assert list((repo / ".git" / "swarm-check").iterdir()) == self._stamps(repo)
+
+    def test_cache_hit_posts_to_bus(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """N3: a cached PASS is announced to the chief like a normal run."""
+        repo = self._pass_repo(tmp_path)
+        bus = tmp_path / "bus"
+        monkeypatch.setenv("SWARM_BUS", str(bus))
+        assert self._main(repo, self._runner()) == 0
+        head = _git(repo, "rev-parse", "HEAD").strip()
+        assert self._main(repo, self._runner()) == 0
+        bodies = [
+            json.loads(ln)["body"]
+            for ln in (bus / "messages.jsonl").read_text().splitlines()
+        ]
+        assert bodies == ["wt: GATE PASS", f"wt: GATE PASS (cached {head[:12]})"]
+
+
 class TestIntegration:
     def _repo_with_stubs(self, tmp_path: Path) -> tuple[Path, dict[str, str]]:
         repo = _init_repo(tmp_path)
