@@ -15,7 +15,11 @@ import { type DslConfig, STOP_LOSS_TYPES, TAKE_PROFIT_TYPES } from "./types";
 interface RiskTabProps {
   config: DslConfig;
   onConfigChange: (config: DslConfig) => void;
+  /** Canonical StrategyDSL strategy: position sizing and the % trailing stop cannot be saved. */
+  canonical?: boolean;
 }
+
+const CANONICAL_UNSUPPORTED = "Not supported for canonical strategies yet";
 
 const POSITION_SIZING_TYPES = [
   { value: "fixed", label: "Fixed Size" },
@@ -88,7 +92,7 @@ function RiskRewardDisplay({
   );
 }
 
-export function RiskTab({ config, onConfigChange }: RiskTabProps) {
+export function RiskTab({ config, onConfigChange, canonical = false }: RiskTabProps) {
   const updateRisk = (patch: Partial<DslConfig["risk"]>) => {
     onConfigChange({ ...config, risk: { ...config.risk, ...patch } });
   };
@@ -149,7 +153,7 @@ export function RiskTab({ config, onConfigChange }: RiskTabProps) {
                 updateRisk({ stop_loss: { ...config.risk.stop_loss, type: v } })
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id="stop-loss-type">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -166,6 +170,7 @@ export function RiskTab({ config, onConfigChange }: RiskTabProps) {
               Value {config.risk.stop_loss.type === "fixed_pct" ? "(%)" : "(ATR multiplier)"}
             </Label>
             <Input
+              id="stop-loss-value"
               type="number"
               step="0.1"
               value={config.risk.stop_loss.value}
@@ -238,6 +243,7 @@ export function RiskTab({ config, onConfigChange }: RiskTabProps) {
         <div className="flex items-center gap-3">
           <Checkbox
             id="trailing-stop-enabled"
+            disabled={canonical}
             checked={config.risk.trailing_stop_pct != null}
             onCheckedChange={(v) =>
               updateRisk({ trailing_stop_pct: v === true ? 1.5 : undefined })
@@ -247,6 +253,7 @@ export function RiskTab({ config, onConfigChange }: RiskTabProps) {
             Enable trailing stop
           </Label>
         </div>
+        {canonical && <p className="text-[10px] text-muted-foreground">{CANONICAL_UNSUPPORTED}</p>}
         {config.risk.trailing_stop_pct != null && (
           <div className="space-y-1.5">
             <Label className="text-xs">Trail Distance (%)</Label>
@@ -271,12 +278,13 @@ export function RiskTab({ config, onConfigChange }: RiskTabProps) {
           <div className="space-y-1.5">
             <Label className="text-xs">Method</Label>
             <Select
+              disabled={canonical}
               value={config.risk.position_sizing.type}
               onValueChange={(v) =>
                 updateRisk({ position_sizing: { ...config.risk.position_sizing, type: v } })
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id="position-sizing-method">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -294,8 +302,10 @@ export function RiskTab({ config, onConfigChange }: RiskTabProps) {
                 {config.risk.position_sizing.type === "fixed" ? "Size" : "% of Equity"}
               </Label>
               <Input
+                id="position-sizing-value"
                 type="number"
                 step="0.1"
+                disabled={canonical}
                 value={config.risk.position_sizing.value ?? 0}
                 onChange={(e) =>
                   updateRisk({
@@ -309,6 +319,7 @@ export function RiskTab({ config, onConfigChange }: RiskTabProps) {
             </div>
           )}
         </div>
+        {canonical && <p className="text-[10px] text-muted-foreground">{CANONICAL_UNSUPPORTED}</p>}
       </div>
     </div>
   );

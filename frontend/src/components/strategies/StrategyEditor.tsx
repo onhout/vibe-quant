@@ -64,10 +64,12 @@ function VisualEditorContent({
   onNameChange,
   onDescriptionChange,
   onConfigChange,
+  canonical,
 }: {
   name: string;
   description: string;
   config: DslConfig;
+  canonical: boolean;
   onNameChange: (name: string) => void;
   onDescriptionChange: (desc: string) => void;
   onConfigChange: (config: DslConfig) => void;
@@ -102,11 +104,11 @@ function VisualEditorContent({
       </TabsContent>
 
       <TabsContent value="risk" className="mt-4">
-        <RiskTab config={config} onConfigChange={onConfigChange} />
+        <RiskTab config={config} onConfigChange={onConfigChange} canonical={canonical} />
       </TabsContent>
 
       <TabsContent value="time" className="mt-4">
-        <TimeTab config={config} onConfigChange={onConfigChange} />
+        <TimeTab config={config} onConfigChange={onConfigChange} canonical={canonical} />
       </TabsContent>
     </Tabs>
   );
@@ -384,6 +386,7 @@ export function StrategyEditor({ strategy }: StrategyEditorProps) {
           onNameChange={setName}
           onDescriptionChange={setDescription}
           onConfigChange={setConfig}
+          canonical={canonicalBase !== null}
         />
       )}
 
@@ -398,6 +401,7 @@ export function StrategyEditor({ strategy }: StrategyEditorProps) {
                 onNameChange={setName}
                 onDescriptionChange={setDescription}
                 onConfigChange={setConfig}
+                canonical={canonicalBase !== null}
               />
             </div>
           </ResizablePanel>

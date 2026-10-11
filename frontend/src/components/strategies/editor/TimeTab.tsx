@@ -6,9 +6,11 @@ import { DAYS_OF_WEEK, type DslConfig, SESSIONS } from "./types";
 interface TimeTabProps {
   config: DslConfig;
   onConfigChange: (config: DslConfig) => void;
+  /** Canonical StrategyDSL strategy: Asian/European/US session chips cannot be saved. */
+  canonical?: boolean;
 }
 
-export function TimeTab({ config, onConfigChange }: TimeTabProps) {
+export function TimeTab({ config, onConfigChange, canonical = false }: TimeTabProps) {
   const updateTime = (patch: Partial<DslConfig["time"]>) => {
     onConfigChange({ ...config, time: { ...config.time, ...patch } });
   };
@@ -102,6 +104,7 @@ export function TimeTab({ config, onConfigChange }: TimeTabProps) {
             <div key={session} className="flex items-center gap-2 text-sm">
               <Checkbox
                 id={`session-${session}`}
+                disabled={canonical}
                 checked={(config.time.sessions ?? []).includes(session)}
                 onCheckedChange={() => toggleSession(session)}
               />
@@ -111,6 +114,11 @@ export function TimeTab({ config, onConfigChange }: TimeTabProps) {
             </div>
           ))}
         </div>
+        {canonical && (
+          <p className="text-[10px] text-muted-foreground">
+            Not supported for canonical strategies yet; use trading hours above.
+          </p>
+        )}
       </div>
 
       {/* Funding avoidance */}
