@@ -1,6 +1,6 @@
 # Cheap agents: Command Code as T3 subagents
 
-[Command Code](https://commandcode.ai) serves open models (only DeepSeek V4.1 Flash and MiMo V2.6 Pro are allowed here) for a fraction of Claude's price. Its models are **cheap and literal**: fast at well-specified mechanical work, weak at judgement, at keeping scope, and at noticing they're wrong. Brief them like a new contractor. Every Command Code output is a maker artifact and needs a checker.
+[Command Code](https://commandcode.ai) serves open models (only DeepSeek V4.1 Flash at effort high is allowed here) for a fraction of Claude's price. Its models are **cheap and literal**: fast at well-specified mechanical work, weak at judgement, at keeping scope, and at noticing they're wrong. Brief them like a new contractor. Every Command Code output is a maker artifact and needs a checker.
 
 **Since 2026-10-10 (user): Command Code tasks are dispatched as T3 subagents through the `t3-code` MCP server (`delegate_task`), never through the built-in Agent/Task tool and not through `scripts/agents/cmd-task.sh`.** They then show up as subagents of the chief's thread.
 
@@ -47,12 +47,11 @@ Each Command Code call carries ~17–20k input tokens of system-prompt overhead 
 
 Model slugs as listed by `orchestrator_capabilities` for `commandcode_command` on 2026-10-10 (case matters; re-check the catalog when a slug fails).
 
-**Allowed models (user 2026-10-11, hard rule):** only `deepseek/deepseek-v4.1-flash` (not `deepseek/deepseek-v4-flash`, not `-fast`) and `xiaomi/mimo-v2.6-pro`. Never Kimi, GLM, Qwen, MiniMax or any other Command Code model.
+**Allowed model (user 2026-10-11 17:16, hard rule):** only `deepseek/deepseek-v4.1-flash` at effort `high` (not `deepseek/deepseek-v4-flash`, not `-fast`, no MiMo). Never MiMo, Kimi, GLM, Qwen, MiniMax or any other Command Code model. Work too hard for DeepSeek goes to a Claude Sonnet 5.5 / Haiku 5.5 `implementer`.
 
 | Tier | Model slug | Use for |
 |---|---|---|
 | `code` (default) | `deepseek/deepseek-v4.1-flash` (`options: {"effort": "high"}`; user 2026-10-10: "cheaper and better than MiMo", high not max — max may cause the read-loop stall) | every well-specified task: code, tests, mechanical edits, bulk extraction, read-heavy audits |
-| `pro` | `xiaomi/mimo-v2.6-pro` (fixed reasoning effort; user 2026-10-08: "better than DeepSeek, ~Sonnet 5.5 level") | harder multi-file / judgement-light coding a Claude implementer would otherwise do; fix rounds that need care |
 
 ## Routing
 
@@ -109,3 +108,4 @@ The `verifier` (or the orchestrator for tiny tasks) must:
 - 2026-10-10: DeepSeek is the default maker for all coding tasks; Sonnet reviews and fixes on `fix-route: sonnet` (user: "the workhorse should be deepseek because it is almost free").
 
 - 2026-10-11: allowed Command Code models reduced to `deepseek/deepseek-v4.1-flash` + `xiaomi/mimo-v2.6-pro`; `fast`/`long` tiers and all other alternates removed — user: "DONT run Kimi K3" (job 20261011-testspeed).
+- 2026-10-11 17:16: Command Code restricted to `deepseek/deepseek-v4.1-flash` effort high (MiMo `pro` tier removed); reviews on GPT-6.1-Sol via Codex, Sonnet/Haiku for implementation and fixes, Opus medium for planning — user rule (cost).

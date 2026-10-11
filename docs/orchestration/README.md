@@ -2,7 +2,7 @@
 
 How one **orchestrator** (a Claude Code session running the [`orchestrate`](../../.claude/skills/orchestrate/SKILL.md) skill) splits large work across specialist agents. This file is the single source for the roster, the brief format, the handoff contract and the workspace layout. Other files cover the rest:
 
-- [`cheap-agents.md`](cheap-agents.md): delegating mechanical tasks to Command Code (DeepSeek V4.1 Flash / MiMo V2.6 Pro only) as T3 `delegate_task` subagents.
+- [`cheap-agents.md`](cheap-agents.md): delegating mechanical tasks to Command Code (DeepSeek V4.1 Flash at effort high only) as T3 `delegate_task` subagents.
 - [`research-swarm.md`](research-swarm.md): the strategy-factory lane, plus what we took (and rejected) from the 2026 "AI hedge fund" agent-swarm posts.
 - [`prompts/`](prompts/): brief templates for Command Code tasks ([`prompts/cmd-task.md`](prompts/cmd-task.md)) and the bus protocol block.
 - Agent definitions: [`.claude/agents/*.md`](../../.claude/agents/). Each file's body is the agent's system prompt.
@@ -22,10 +22,10 @@ How one **orchestrator** (a Claude Code session running the [`orchestrate`](../.
 | Agent | Lane | Model | Writes | Job | Checked by |
 |---|---|---|---|---|---|
 | orchestrator | both | session model (Opus) | ledger, merges, beads | decompose, dispatch, integrate, talk to user | user gates |
-| `architect` | eng | opus | design doc only | spec → design → task plan with acceptance criteria | user gate |
+| `architect` | eng | opus, effort medium (user 2026-10-11) | design doc only | spec → design → task plan with acceptance criteria | user gate |
 | DeepSeek maker (`cmd`) | eng | `deepseek/deepseek-v4.1-flash` via T3 Command Code | code + tests, in a worktree | DEFAULT maker for every task with clear acceptance criteria, test-first | `reviewer` + `verifier` |
 | `implementer` | eng | sonnet | code + tests, in a worktree | fixer when the reviewer returns `fix-route: sonnet`; escalation after a DeepSeek stall or 2 failed rounds; tasks the chief judges too risky for DeepSeek | fresh `reviewer` + `verifier` |
-| `reviewer` | eng | sonnet (opus in design mode) | nothing | two verdicts: matches spec? well built? + `fix-route: deepseek / sonnet / none` | orchestrator |
+| `reviewer` | eng | GPT-6.1-Sol high via Codex T3 `delegate_task` (paste the agent body as the task; user 2026-10-11); sonnet when Codex is unavailable; opus in design mode | nothing | two verdicts: matches spec? well built? + `fix-route: deepseek / sonnet / none` | orchestrator |
 | `reviewer-lite` | eng | haiku (5.5), effort high (user rule: Haiku only at high/xhigh — never lower, never max) | nothing | fast first-pass review of mechanical diffs; escalates semantics to `reviewer` | orchestrator |
 | `verifier` | eng | sonnet | nothing | runs quality gates + exactness proofs | orchestrator |
 | `alpha-scout` | research | sonnet | hypothesis tickets | external sources → falsifiable hypotheses | `strategy-author` (feasibility), `overfit-auditor` |
@@ -33,7 +33,7 @@ How one **orchestrator** (a Claude Code session running the [`orchestrate`](../.
 | `backtest-operator` | research | sonnet | DB rows via API/CLI only | runs screening / discovery / validation, reports raw numbers | `overfit-auditor` |
 | `overfit-auditor` | research | opus | nothing | skeptic: PASS / REJECT against the repo's gates | `risk-officer` |
 | `risk-officer` | research | opus | nothing | veto before any paper/live step, no negotiation | user |
-| Command Code worker (`cmd`) | both | DeepSeek V4.1 Flash / MiMo V2.6 Pro only (T3 instance `commandcode_command`) | scoped files, in a worktree | mechanical bulk work, well-specified implementation | `verifier` or a deterministic check |
+| Command Code worker (`cmd`) | both | DeepSeek V4.1 Flash effort high only (T3 instance `commandcode_command`) | scoped files, in a worktree | mechanical bulk work, well-specified implementation | `verifier` or a deterministic check |
 
 Model choice follows maker-checker: DeepSeek writes, Sonnet checks (a different model family, so fewer shared blind spots); when Sonnet fixes, a fresh reviewer checks the fix. Opus does design and money verdicts. Override per dispatch with the Agent tool's `model` parameter when a task is harder or easier than usual.
 
