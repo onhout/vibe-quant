@@ -35,8 +35,40 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "$wt/frontend"
+# Second reporter (json) so the summary can count skips: data-picked specs skip
+# silently when the DB copy has no matching run (vibe-quant-rh1w4).
+report_json="$(mktemp)"
 E2E_BASE_URL="${E2E_BASE_URL:-http://localhost:5188}" \
 E2E_API_URL="${E2E_API_URL:-http://127.0.0.1:8001}" \
-  pnpm exec playwright test --project=chromium "$@"
+PLAYWRIGHT_HTML_OPEN=never PLAYWRIGHT_JSON_OUTPUT_FILE="$report_json" \
+  pnpm exec playwright test --project=chromium --reporter=html,json "$@"
 status=$?
+
+# Summary: Playwright's own counts plus each skipped spec, so a skip is never silent.
+python3 -I - "$report_json" <<'PY' || echo "e2e summary: no JSON report (skipped count unknown)"
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    report = json.load(f)
+stats = report.get("stats", {})
+print(
+    f"e2e summary: expected={stats.get('expected')} unexpected={stats.get('unexpected')}"
+    f" flaky={stats.get('flaky')} skipped={stats.get('skipped')}"
+)
+
+
+def walk(suite, prefix):
+    for spec in suite.get("specs", []):
+        tests = spec.get("tests", [])
+        if tests and all(t.get("status") == "skipped" for t in tests):
+            print(f"  skipped: {prefix}{spec.get('title')}")
+    for child in suite.get("suites", []):
+        walk(child, f"{prefix}{child.get('title')} > ")
+
+
+for suite in report.get("suites", []):
+    walk(suite, f"{suite.get('file')} > ")
+PY
+rm -f "$report_json"
 exit "$status"

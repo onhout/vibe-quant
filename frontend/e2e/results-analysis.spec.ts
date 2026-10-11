@@ -109,11 +109,9 @@ test.describe("Results Analysis page", () => {
 });
 
 test.describe("Results overfitting badges", () => {
-  // Row container of one CheckRow, found by its label text.
+  // Row container of one CheckRow: a region named by its label (aria-label).
   const checkRow = (page: Page, label: string) =>
-    page.locator("div.rounded-lg", {
-      has: page.getByText(label, { exact: true }),
-    });
+    page.getByRole("region", { name: label, exact: true });
 
   test("gate data renders as PASS/FAIL/N/A rows with values", async ({ page, request }) => {
     // Only a few discovery runs carry gate data; pick one by data, never by id.

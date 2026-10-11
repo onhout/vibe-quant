@@ -27,7 +27,7 @@ function CheckRow({ label, status, detail, threshold, description }: CheckInfo &
         ? "border-red-500/20 bg-red-500/[0.04]"
         : "border-border";
   return (
-    <div className={`rounded-lg border px-3 py-2.5 ${bg}`}>
+    <section aria-label={label} className={`rounded-lg border px-3 py-2.5 ${bg}`}>
       <div className="flex items-center gap-2.5">
         <Badge
           variant={status === "pass" ? "default" : status === "fail" ? "destructive" : "secondary"}
@@ -47,7 +47,7 @@ function CheckRow({ label, status, detail, threshold, description }: CheckInfo &
       {description && (
         <p className="mt-1 pl-[52px] text-[10px] text-muted-foreground">{description}</p>
       )}
-    </div>
+    </section>
   );
 }
 
