@@ -261,10 +261,22 @@ async def test_list_runs(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_data_symbols(client: AsyncClient) -> None:
+async def test_data_symbols(
+    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Symbols come from the archive, not the 2 GB default data/archive DB."""
+    from vibe_quant.data import archive as archive_mod
+
+    db = tmp_path / "symbols.db"
+    arch = archive_mod.RawDataArchive(db)
+    arch.insert_klines("BTCUSDT", "1h", [(0, 1.0, 1.0, 1.0, 1.0, 1.0, 1)], "test")
+    arch.insert_klines("ETHUSDT", "1h", [(0, 1.0, 1.0, 1.0, 1.0, 1.0, 1)], "test")
+    arch.close()
+    monkeypatch.setattr(archive_mod, "DEFAULT_ARCHIVE_PATH", db)
+
     r = await client.get("/api/data/symbols")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert r.json() == ["BTCUSDT", "ETHUSDT"]
 
 
 # ---------------------------------------------------------------------------

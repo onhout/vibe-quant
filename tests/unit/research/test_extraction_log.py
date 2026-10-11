@@ -67,8 +67,19 @@ def test_write_extraction_log_creates_file_per_scrape_item(tmp_path: Path) -> No
     assert payload["findings"][0]["has_proposed_indicators"] is True
 
 
-def test_write_extraction_log_manual_reextract_uses_timestamp_suffix(tmp_path: Path) -> None:
+def test_write_extraction_log_manual_reextract_uses_timestamp_suffix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     log_dir = log_dir_for_manual(root=tmp_path)
+    # Advance the second-resolution suffix clock instead of sleeping on it.
+    real_gmtime = time.gmtime
+    stamps = iter([1_700_000_000, 1_700_000_001])
+
+    def _fake_gmtime(*_args: object) -> time.struct_time:
+        return real_gmtime(next(stamps, 1_700_000_002))
+
+    monkeypatch.setattr(extraction_log.time, "gmtime", _fake_gmtime)
+
     first = write_extraction_log(
         log_dir=log_dir,
         item_id=11,
@@ -76,8 +87,6 @@ def test_write_extraction_log_manual_reextract_uses_timestamp_suffix(tmp_path: P
         extractor_version="v1",
         scrape_run_id=None,
     )
-    # Sleep just enough to advance the second-resolution suffix.
-    time.sleep(1.1)
     second = write_extraction_log(
         log_dir=log_dir,
         item_id=11,
@@ -87,6 +96,8 @@ def test_write_extraction_log_manual_reextract_uses_timestamp_suffix(tmp_path: P
     )
     assert first is not None and second is not None
     assert first.name != second.name
+    assert first.name == "11_20231114T221320.json"
+    assert second.name == "11_20231114T221321.json"
     assert first.exists() and second.exists()
     assert first.parent == tmp_path / "manual"
 

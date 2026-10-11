@@ -50,7 +50,7 @@ def test_stalled_workers_yield_sentinels_and_pipeline_returns() -> None:
         dsl=dsl,
         backtest_runner=_sleeping_runner,
         max_workers=2,
-        stall_timeout_s=1.0,
+        stall_timeout_s=0.2,
     )
 
     started = time.monotonic()

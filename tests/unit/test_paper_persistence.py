@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,8 +15,18 @@ from vibe_quant.paper.persistence import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
     from pathlib import Path
+
+
+async def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
+    """Yield to the loop until ``predicate`` is true (bounded, no wall-clock sleep)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.005)
+    return False
 
 
 class TestStateCheckpoint:
@@ -196,9 +207,9 @@ class TestPeriodicCheckpointing:
 
     @pytest.fixture
     def persistence(self, tmp_path: Path) -> Generator[StatePersistence]:
-        """Create StatePersistence with short interval."""
+        """Create StatePersistence with a tiny (sub-second) test interval."""
         db_path = tmp_path / "periodic_test.db"
-        p = StatePersistence(db_path, trader_id="PAPER-PERIODIC", checkpoint_interval=1)
+        p = StatePersistence(db_path, trader_id="PAPER-PERIODIC", checkpoint_interval=0.02)
         yield p
         p.close()
 
@@ -215,13 +226,12 @@ class TestPeriodicCheckpointing:
                 balance={"checkpoint_num": counter},
             )
 
-        # Start with 1s interval
         await persistence.start_periodic_checkpointing(get_state)
-
-        # Wait for ~2 checkpoints
-        await asyncio.sleep(2.5)
-
-        await persistence.stop_periodic_checkpointing()
+        try:
+            # At least two periodic checkpoints are written.
+            assert await _wait_until(lambda: len(persistence.list_checkpoints()) >= 2)
+        finally:
+            await persistence.stop_periodic_checkpointing()
 
         checkpoints = persistence.list_checkpoints()
         assert len(checkpoints) >= 2
@@ -238,8 +248,10 @@ class TestPeriodicCheckpointing:
             )
 
         await persistence.start_periodic_checkpointing(get_state_async)
-        await asyncio.sleep(1.5)
-        await persistence.stop_periodic_checkpointing()
+        try:
+            assert await _wait_until(lambda: len(persistence.list_checkpoints()) >= 1)
+        finally:
+            await persistence.stop_periodic_checkpointing()
 
         checkpoints = persistence.list_checkpoints()
         assert len(checkpoints) >= 1
@@ -256,13 +268,13 @@ class TestPeriodicCheckpointing:
             return StateCheckpoint(trader_id="PAPER-PERIODIC")
 
         await persistence.start_periodic_checkpointing(get_state)
-        await asyncio.sleep(1.5)
+        assert await _wait_until(lambda: call_count >= 2)
 
         count_at_stop = call_count
         await persistence.stop_periodic_checkpointing()
 
-        # Wait and verify no more calls
-        await asyncio.sleep(1.5)
+        # Several more intervals' worth of time must pass with no callbacks.
+        await asyncio.sleep(0.3)
         assert call_count == count_at_stop
 
 

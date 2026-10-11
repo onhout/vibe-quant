@@ -258,7 +258,7 @@ def test_cancel_ignoring_sigterm_is_killed_after_grace(
     monkeypatch.setenv("VQ_FAKE_STARTED_FILE", str(started))
     monkeypatch.setenv("VQ_FAKE_ALWAYS_SLOW", "1")
     monkeypatch.setenv("VQ_FAKE_IGNORE_SIGTERM", "1")
-    monkeypatch.setattr(extractor_mod, "CANCEL_GRACE_SECONDS", 1.0)
+    monkeypatch.setattr(extractor_mod, "CANCEL_GRACE_SECONDS", 0.2)
 
     ext = ClaudePExtractor(claude_path=str(fake), timeout_seconds=30)
     event = threading.Event()
@@ -423,7 +423,7 @@ def test_worker_hung_subprocess_records_cancelled_after_timeout(
     monkeypatch.setenv("VQ_FAKE_ALWAYS_SLOW", "1")
     monkeypatch.setenv("VQ_FAKE_IGNORE_SIGTERM", "1")
     monkeypatch.setattr(worker_mod, "DEFAULT_CANCEL_POLL_INTERVAL_S", 0.05)
-    monkeypatch.setattr(extractor_mod, "CANCEL_GRACE_SECONDS", 1.0)
+    monkeypatch.setattr(extractor_mod, "CANCEL_GRACE_SECONDS", 0.2)
 
     iid = _seed_item(sm, "hung", body="SLOWJOB")
     job_id = sm.enqueue_extraction_job(iid)

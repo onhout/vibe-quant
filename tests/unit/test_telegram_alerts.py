@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from vibe_quant.alerts import telegram as telegram_mod
 from vibe_quant.alerts.telegram import (
     RATE_LIMIT_SECONDS,
     AlertType,
@@ -246,8 +247,18 @@ class TestTelegramBot:
         mock_client.post.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_send_alert_http_error(self, bot: TelegramBot) -> None:
-        """Returns False on HTTP error."""
+    async def test_send_alert_http_error(
+        self, bot: TelegramBot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retries the full budget, backing off 1s then 2s, then returns False."""
+        delays: list[float] = []
+
+        async def _record_sleep(delay: float) -> None:
+            delays.append(delay)
+
+        # Record (don't wait out) the retry backoff.
+        monkeypatch.setattr(telegram_mod.asyncio, "sleep", _record_sleep)
+
         mock_response = MagicMock()
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
             "Error", request=MagicMock(), response=MagicMock()
@@ -264,10 +275,21 @@ class TestTelegramBot:
         result = await bot.send_alert(AlertType.ERROR, "Test error")
 
         assert result is False
+        assert mock_client.post.await_count == 3
+        assert delays == [1.0, 2.0]
 
     @pytest.mark.asyncio
-    async def test_send_alert_request_error(self, bot: TelegramBot) -> None:
-        """Returns False on request error."""
+    async def test_send_alert_request_error(
+        self, bot: TelegramBot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retries the full budget with the same backoff, then returns False."""
+        delays: list[float] = []
+
+        async def _record_sleep(delay: float) -> None:
+            delays.append(delay)
+
+        monkeypatch.setattr(telegram_mod.asyncio, "sleep", _record_sleep)
+
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post = AsyncMock(side_effect=httpx.RequestError("Connection failed"))
         mock_client.is_closed = False
@@ -279,6 +301,8 @@ class TestTelegramBot:
         result = await bot.send_alert(AlertType.ERROR, "Test error")
 
         assert result is False
+        assert mock_client.post.await_count == 3
+        assert delays == [1.0, 2.0]
 
     @pytest.mark.asyncio
     async def test_send_error(self, bot: TelegramBot) -> None:
