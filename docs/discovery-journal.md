@@ -4,6 +4,21 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: RESULT H-10b — REJECTED (taker flow does not replicate out-of-universe; it reverses)
+
+Spec 000c7d8, `h10b_download.py` + `h10b_taker_flow_oou.py`, run once. Universe rule → 194 USDT-M perps first listed 2020-11..2023-12 (from 1,056 symbols in the Binance Vision bucket; 834 USDT non-delivery non-H10); 189 have data in the window (5 delisted before 2022-05); index perps (BTCDOM, BLUEBIRD, FOOTBALL) kept as the rule did not exclude them. Rankable (≥ 10M USDT 7d avg quote volume) per rebalance: mean 79.2, min 24, max 173. Annual turnover 58.9×.
+
+| Window | Net Sharpe | Net return | Max DD | Beta |
+|---|---|---|---|---|
+| 2022-06-01..2026-09-30 | -0.942173052164818 | -0.6313962913742858 | 0.6859275330131842 | -0.03764560354821404 |
+| (gross) | -0.8071244495620327 | -0.5812052735464328 | 0.645548464836655 | -0.03783098705997082 |
+
+**REJECT** (net Sharpe ≥ 1.0 FAIL; |beta| and ≥ 30 rankable coins PASS). Data-integrity check (not a variant, `h10b_outlier_check.py`): excluding the 8 days on which a held coin moved > 100% (max: LIT +513% 2025-12-23) leaves net Sharpe -0.895462354827252 — outliers do not drive it. H-10's positive result was specific to the older 66-coin universe; taker-flow continuation is shelved.
+
+**Updated conclusion:** five pre-registered mechanisms today (H-2b trend, H-8 hedged relative strength, H-9 cross-sectional momentum, H-10/H-10b taker flow) plus 17 GA runs: nothing replicates with Sharpe ≥ 1 after mid-2022 on Binance USDT-M perps at daily-to-weekly horizons. No remaining candidate lever is one I am confident in; further single-signal tests on this data would be the blind search the user ruled out.
+
+---
+
 ## 2026-10-11: RESULT H-10 — REJECTED as registered (Sharpe 0.81 < 1.0) but the first signal to survive 2022-26; PRE-REGISTRATION H-10b out-of-universe replication
 
 **H-10 result** (spec 784a0e7, `h10_taker_flow.py`, run once; identical machinery to H-9, only the ranking signal differs):
