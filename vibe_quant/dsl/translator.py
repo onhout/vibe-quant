@@ -53,25 +53,103 @@ def _generate_indicator_name(ind_type: str, params: dict[str, Any], existing: se
     return name
 
 
+def _native_param_names(ind_type: str) -> set[str]:
+    """Param names the indicator's registry spec declares natively.
+
+    A name the spec declares belongs to that indicator, so it is not a legacy
+    editor alias for a canonical DSL field (a plugin's ``fast``). See
+    ``_canonical_params``.
+    """
+    from vibe_quant.dsl.indicators import indicator_registry
+
+    spec = indicator_registry.get(_TYPE_ALIASES.get(ind_type, ind_type))
+    return set(spec.param_schema) if spec is not None else set()
+
+
 def _canonical_params(ind_type: str, params: dict[str, Any]) -> dict[str, Any]:
     """Fold param spellings onto StrategyDSL field names (MACD periods, STOCH k/d).
+
+    A legacy alias the indicator's registry spec declares natively is that
+    indicator's own param, not a spelling of the canonical field: folding it
+    would hand the value to a field the plugin ignores. Such a key is left for
+    ``_spec_params`` to type and pass through.
 
     Raises:
         ValueError: if two spellings of one param disagree -- picking one would silently
             run different periods than the user configured (IndicatorConfig rejects the same).
     """
-    groups = dict(_PARAM_SYNONYMS)
+    native = _native_param_names(ind_type)
+    groups: dict[str, tuple[tuple[str, ...], bool]] = {
+        target: (spellings, True) for target, spellings in _PARAM_SYNONYMS.items()
+    }
     if ind_type == "STOCH":
-        groups.update(_STOCH_SYNONYMS)
+        # STOCH's spellings are the registry's own names (period_k/period_d) mapping onto
+        # the DSL fields period/d_period: always folded, native despite the spec declaring them.
+        for target, spellings in _STOCH_SYNONYMS.items():
+            groups[target] = (spellings, False)
     out: dict[str, Any] = {}
-    for target, spellings in groups.items():
-        found = {key: params[key] for key in spellings if key in params}
+    for target, (spellings, legacy_aliases) in groups.items():
+        found = {
+            key: params[key]
+            for key in spellings
+            if key in params and not (legacy_aliases and key != target and key in native)
+        }
         if len({float(v) for v in found.values()}) > 1:
             shown = ", ".join(f"'{k}'={v!r}" for k, v in found.items())
             msg = f"Conflicting {ind_type} params for '{target}': {shown}"
             raise ValueError(msg)
         if found:
             out[target] = next(iter(found.values()))
+    return out
+
+
+def _spec_param(ind_type: str, key: str, value: Any, expected: type) -> Any:
+    """Type one registry-declared param the way ``IndicatorConfig`` validates it.
+
+    Raises:
+        ValueError: if the value cannot be represented as ``expected`` without changing it
+            (``9.5`` for an int param would silently run ``9``).
+    """
+    shown = f"{ind_type} param '{key}'={value!r}"
+    if expected in (int, float):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            msg = f"{shown} must be a number"
+            raise ValueError(msg)
+        if expected is int:
+            if not float(value).is_integer():
+                msg = f"{shown} must be a whole number"
+                raise ValueError(msg)
+            return int(value)
+        return float(value)
+    return value
+
+
+def _spec_params(ind_type: str, params: dict[str, Any], consumed: set[str]) -> dict[str, Any]:
+    """Params beyond the canonical mapping, taken from the indicator's registry spec.
+
+    ``consumed`` holds the keys ``_translate_indicators`` already folded onto StrategyDSL
+    fields. Everything else must be declared by the spec's ``param_schema`` (ICHIMOKU
+    ``tenkan``, plugin ``alpha``, SQUEEZE ``length``, ...) and is passed through typed.
+
+    Raises:
+        ValueError: if a param is neither canonical nor declared by the spec -- dropping it
+            would silently backtest the spec default instead of the user's value.
+    """
+    from vibe_quant.dsl.indicators import indicator_registry
+
+    spec = indicator_registry.get(_TYPE_ALIASES.get(ind_type, ind_type))
+    if spec is None:  # unknown type: StrategyDSL validation rejects it with the valid list
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in params.items():
+        if key in consumed:
+            continue
+        expected = spec.param_schema.get(key)
+        if expected is None:
+            valid = sorted(spec.param_schema)
+            msg = f"Indicator '{ind_type}' got unknown param '{key}'. Valid params: {valid}"
+            raise ValueError(msg)
+        out[key] = _spec_param(ind_type, key, value, expected)
     return out
 
 
@@ -131,6 +209,19 @@ def _translate_indicators(indicators_raw: list[dict[str, Any]]) -> dict[str, dic
         # ATR-based
         if "atr_multiplier" in params:
             config["atr_multiplier"] = float(params["atr_multiplier"])
+        # Spec-declared params (ICHIMOKU tenkan/kijun/senkou, plugin alpha, SQUEEZE length, ...)
+        # A legacy alias the spec declares natively (a plugin's ``fast``) is the indicator's
+        # own param, not a synonym: leave it unconsumed so ``_spec_params`` passes it through.
+        native = _native_param_names(ind_type)
+        consumed = {"period", "std_dev", "atr_multiplier"}
+        for target, spellings in _PARAM_SYNONYMS.items():
+            consumed.update(
+                key for key in spellings if not (key != target and key in native)
+            )
+        if ind_type == "STOCH":
+            for spellings in _STOCH_SYNONYMS.values():
+                consumed.update(spellings)
+        config.update(_spec_params(ind_type, params, consumed))
         # Per-indicator timeframe (was silently dropped)
         tf_override = ind.get("timeframe_override")
         if tf_override:
