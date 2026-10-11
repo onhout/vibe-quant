@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 test.describe("Backtest Launch page", () => {
   test.beforeEach(async ({ page }) => {
@@ -73,5 +73,38 @@ test.describe("Backtest Launch page", () => {
     await expect(leverageInput).toBeVisible();
     await expect(balanceInput).toHaveValue("10000");
     await expect(leverageInput).toHaveValue("10");
+  });
+
+  // The sweep toggle appears only for a strategy with sweepable params (ga_macd_willr_bidir).
+  async function selectSweepableStrategy(page: Page) {
+    await page.locator("#strategy-select").click();
+    await page.getByRole("option", { name: /^ga_macd_willr_bidir \(v/ }).click();
+  }
+
+  test("sweep toggle is disabled with a failure note when the indicator catalog fails", async ({
+    page,
+  }) => {
+    await page.route("**/api/indicators/catalog", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "catalog unavailable" }),
+      }),
+    );
+    await page.reload();
+    await selectSweepableStrategy(page);
+
+    const toggle = page.getByRole("button", { name: "Disabled", exact: true });
+    await expect(
+      page.getByText("Indicator catalog failed to load: sweeps are unavailable."),
+    ).toBeVisible();
+    await expect(toggle).toBeDisabled();
+  });
+
+  test("sweep toggle is enabled once the indicator catalog loads", async ({ page }) => {
+    await selectSweepableStrategy(page);
+
+    await expect(page.getByRole("button", { name: "Disabled", exact: true })).toBeEnabled();
+    await expect(page.getByText("Indicator catalog failed to load")).toHaveCount(0);
   });
 });
