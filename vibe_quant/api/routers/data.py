@@ -80,7 +80,7 @@ def _dir_size(path: str) -> int:
 
 
 @router.get("/status", response_model=DataStatusResponse)
-async def data_status() -> DataStatusResponse:
+def data_status() -> DataStatusResponse:
     from vibe_quant.data.archive import DEFAULT_ARCHIVE_PATH
     from vibe_quant.data.catalog import DEFAULT_CATALOG_PATH
 
@@ -101,32 +101,19 @@ async def data_status() -> DataStatusResponse:
 
 
 @router.get("/coverage", response_model=DataCoverageResponse)
-async def data_coverage(catalog: CatMgr) -> DataCoverageResponse:
+def data_coverage(catalog: CatMgr) -> DataCoverageResponse:
     archive = _get_archive()
     try:
-        symbols = archive.get_symbols()
         items: list[DataCoverageItem] = []
 
-        for symbol in symbols:
-            kline_count = archive.get_kline_count(symbol, "1m")
-            date_range = archive.get_date_range(symbol, "1m")
-
+        for symbol, kline_count, min_time, max_time, funding_rate_count in (
+            archive.get_coverage_rows("1m")
+        ):
             start_date = ""
             end_date = ""
-            if date_range:
-                start_date = datetime.fromtimestamp(date_range[0] / 1000, tz=UTC).strftime(
-                    "%Y-%m-%d"
-                )
-                end_date = datetime.fromtimestamp(date_range[1] / 1000, tz=UTC).strftime("%Y-%m-%d")
-
-            bar_count = catalog.get_bar_count(symbol, "1m")
-
-            # Count funding rates via direct query
-            row = archive.conn.execute(
-                "SELECT COUNT(*) FROM raw_funding_rates WHERE symbol = ?",
-                (symbol,),
-            ).fetchone()
-            funding_rate_count = row[0] if row else 0
+            if min_time is not None and max_time is not None:
+                start_date = datetime.fromtimestamp(min_time / 1000, tz=UTC).strftime("%Y-%m-%d")
+                end_date = datetime.fromtimestamp(max_time / 1000, tz=UTC).strftime("%Y-%m-%d")
 
             items.append(
                 DataCoverageItem(
@@ -134,7 +121,7 @@ async def data_coverage(catalog: CatMgr) -> DataCoverageResponse:
                     start_date=start_date,
                     end_date=end_date,
                     kline_count=kline_count,
-                    bar_count=bar_count,
+                    bar_count=catalog.get_bar_count(symbol, "1m"),
                     funding_rate_count=funding_rate_count,
                 )
             )
@@ -148,7 +135,7 @@ async def data_coverage(catalog: CatMgr) -> DataCoverageResponse:
 
 
 @router.get("/symbols")
-async def list_symbols() -> list[str]:
+def list_symbols() -> list[str]:
     archive = _get_archive()
     try:
         return archive.get_symbols()
@@ -160,7 +147,7 @@ async def list_symbols() -> list[str]:
 
 
 @router.post("/ingest/preview", response_model=IngestPreviewResponse)
-async def ingest_preview(body: IngestRequest) -> IngestPreviewResponse:
+def ingest_preview(body: IngestRequest) -> IngestPreviewResponse:
     from vibe_quant.data.ingest import get_download_preview
 
     try:
@@ -265,7 +252,7 @@ async def rebuild_catalog(jobs: JobMgr) -> dict[str, object]:
 
 
 @router.get("/browse/{symbol}", response_model=BrowseDataResponse)
-async def browse_data(
+def browse_data(
     symbol: str,
     interval: str = Query(default="1m"),
     start: str | None = Query(default=None),
@@ -369,7 +356,7 @@ async def browse_data(
 
 
 @router.get("/indicators/{symbol}", response_model=IndicatorsResponse)
-async def compute_indicators_endpoint(
+def compute_indicators_endpoint(
     symbol: str,
     interval: str = Query(default="1h"),
     start: str | None = Query(default=None),
@@ -534,7 +521,7 @@ def data_quality(symbol: str) -> DataQualityResponse:
 
 
 @router.get("/history")
-async def download_history(limit: int = Query(default=50, ge=1, le=200)) -> list[dict[str, object]]:
+def download_history(limit: int = Query(default=50, ge=1, le=200)) -> list[dict[str, object]]:
     archive = _get_archive()
     try:
         rows = archive.conn.execute(

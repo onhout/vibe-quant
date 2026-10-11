@@ -381,6 +381,52 @@ class RawDataArchive:
         rows = self.conn.execute("SELECT DISTINCT symbol FROM raw_klines ORDER BY symbol")
         return [r[0] for r in rows]
 
+    def get_coverage_rows(
+        self, interval: str = "1m"
+    ) -> list[tuple[str, int, int | None, int | None, int]]:
+        """Batched per-symbol coverage stats, one scan per source table.
+
+        Returns ``(symbol, kline_count, min_open_time, max_open_time,
+        funding_rate_count)`` for every symbol present in ``raw_klines``,
+        ordered by symbol. Symbols whose rows are for other intervals only
+        get ``kline_count`` 0 and a ``None`` range.
+
+        Args:
+            interval: Candle interval the kline stats are counted for.
+        """
+        kline_stats = {
+            row[0]: (row[1], row[2], row[3])
+            for row in self.conn.execute(
+                """SELECT symbol, COUNT(*), MIN(open_time), MAX(open_time)
+                   FROM raw_klines WHERE interval = ? GROUP BY symbol""",
+                (interval,),
+            )
+        }
+        funding_counts = {
+            row[0]: row[1]
+            for row in self.conn.execute(
+                "SELECT symbol, COUNT(*) FROM raw_funding_rates GROUP BY symbol"
+            )
+        }
+        # Skip-scan over the (symbol, interval, open_time) index: one seek per
+        # distinct symbol instead of a full DISTINCT scan of every kline row.
+        symbol_rows = self.conn.execute(
+            """WITH RECURSIVE symbols(x) AS (
+                   SELECT MIN(symbol) FROM raw_klines
+                   UNION ALL
+                   SELECT (SELECT MIN(symbol) FROM raw_klines WHERE symbol > symbols.x)
+                     FROM symbols WHERE symbols.x IS NOT NULL
+               )
+               SELECT x FROM symbols WHERE x IS NOT NULL"""
+        )
+        result: list[tuple[str, int, int | None, int | None, int]] = []
+        for (symbol,) in symbol_rows:
+            kline_count, min_time, max_time = kline_stats.get(symbol, (0, None, None))
+            result.append(
+                (symbol, kline_count, min_time, max_time, funding_counts.get(symbol, 0))
+            )
+        return result
+
     # -- Audit log methods --
 
     def create_download_session(
