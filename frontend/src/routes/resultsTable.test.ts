@@ -143,4 +143,40 @@ describe("results RunsTable sorting", () => {
       expect(order(names, true)).toEqual(["Beta", "alpha", "Unnamed run", "Unnamed run"]);
     });
   });
+
+  describe("created_at sorts by instant, missing dates last", () => {
+    // Each run is named strat-a, strat-b, ... so the rendered row order identifies it.
+    const dateOrder = (dates: (string | null)[], desc: boolean) => {
+      const runs = dates.map((created_at, i) =>
+        run({ run_id: i + 1, strategy_name: `strat-${"abcdefgh"[i]}`, created_at }),
+      );
+      return rowOrder([{ id: "created_at", desc }], runs);
+    };
+
+    it("orders offset timestamps by the instant they name", () => {
+      // 2026-01-02 00:30 at +02:00 is 2026-01-01 22:30Z, earlier than 23:00Z
+      const dates = ["2026-01-02T00:30:00+02:00", "2026-01-01T23:00:00Z"];
+      expect(dateOrder(dates, false)).toEqual(["strat-a", "strat-b"]);
+      expect(dateOrder(dates, true)).toEqual(["strat-b", "strat-a"]);
+    });
+
+    it("orders fractional seconds by time, not by character", () => {
+      const dates = ["2026-01-01T10:00:00.5Z", "2026-01-01T10:00:00Z"];
+      expect(dateOrder(dates, false)).toEqual(["strat-b", "strat-a"]);
+      expect(dateOrder(dates, true)).toEqual(["strat-a", "strat-b"]);
+    });
+
+    it("reads SQLite datetime('now') text as UTC", () => {
+      // No zone in the text means UTC: 23:00 is later than 22:30Z
+      const dates = ["2026-01-01 23:00:00", "2026-01-01T22:30:00Z"];
+      expect(dateOrder(dates, false)).toEqual(["strat-b", "strat-a"]);
+      expect(dateOrder(dates, true)).toEqual(["strat-a", "strat-b"]);
+    });
+
+    it("keeps null and empty dates last in both directions", () => {
+      const dates = [null, "2026-01-01T00:00:00Z", "", "2026-01-02T00:00:00Z"];
+      expect(dateOrder(dates, false)).toEqual(["strat-b", "strat-d", "strat-a", "strat-c"]);
+      expect(dateOrder(dates, true)).toEqual(["strat-d", "strat-b", "strat-a", "strat-c"]);
+    });
+  });
 });

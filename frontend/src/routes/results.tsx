@@ -7,6 +7,7 @@ import {
   rowSortingFeature,
   type SortingState,
   sortFn_alphanumeric,
+  sortFn_basic,
   tableFeatures,
   useTable,
 } from "@tanstack/react-table";
@@ -57,6 +58,17 @@ function formatDate(d: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/**
+ * Epoch ms of a run timestamp. SQLite datetime('now') text has no zone and is UTC, but
+ * Date.parse reads a zone-less string as local time, so the zone is added here.
+ */
+const ZONELESS_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+function runInstant(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const ms = Date.parse(ZONELESS_DATETIME.test(value) ? `${value.replace(" ", "T")}Z` : value);
+  return Number.isNaN(ms) ? undefined : ms;
 }
 
 function statusVariant(status: string): "default" | "destructive" | "secondary" | "outline" {
@@ -117,7 +129,7 @@ function columnClass(meta: ColumnMetaWithClass | undefined): string | undefined 
 const features = tableFeatures({
   rowSortingFeature,
   sortedRowModel: createSortedRowModel(),
-  sortFns: { alphanumeric: sortFn_alphanumeric },
+  sortFns: { alphanumeric: sortFn_alphanumeric, basic: sortFn_basic },
   columnMeta: {} as ColumnMetaWithClass,
 });
 
@@ -271,8 +283,10 @@ const columns: ColumnDef<typeof features, RunSummaryItem>[] = [
   },
   {
     id: "created_at",
-    accessorFn: (row) => row.created_at || undefined,
-    sortFn: "alphanumeric",
+    // Sorts by instant, not text: text order breaks on mixed UTC offsets and fractional digits.
+    // Missing or unparseable dates map to undefined so sortUndefined keeps them last.
+    accessorFn: (row) => runInstant(row.created_at),
+    sortFn: "basic",
     sortUndefined: "last",
     header: ({ column }) => <SortHeader column={column}>Date</SortHeader>,
     cell: ({ row }) => (
