@@ -1,5 +1,5 @@
 /** YAML text <-> editor model, shared by the YAML tab and its tests. */
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
 import type { DslConfig } from "./types";
 import { parseDslConfig } from "./types";
 
@@ -14,7 +14,9 @@ export function serializeConfig(config: DslConfig): string {
 
 export function parseYamlToDsl(text: string): { config: DslConfig; error: YamlError | null } {
   try {
-    const parsed = yaml.load(text);
+    // js-yaml 5 throws on empty input; keep the "must be a mapping" message for it.
+    // js-yaml 5 throws on empty input; keep the "must be a mapping" message for it.
+    const parsed = text.trim() === "" ? null : yaml.load(text);
     if (parsed === null || parsed === undefined || typeof parsed !== "object") {
       return {
         config: {} as DslConfig,

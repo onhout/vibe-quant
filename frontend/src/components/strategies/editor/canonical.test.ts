@@ -393,3 +393,12 @@ describe("generic entry/exit conditions (non-split condition view)", () => {
     expect(exit.short).toEqual(asDict(raw.exit_conditions).short);
   });
 });
+
+describe("parseYamlToDsl edge input", () => {
+  it("reports empty or blank YAML as 'must be a mapping', not a parser exception", () => {
+    for (const text of ["", "   \n"]) {
+      const { error } = parseYamlToDsl(text);
+      expect(error?.message).toBe("YAML must be a mapping (object), not a scalar or array");
+    }
+  });
+});
