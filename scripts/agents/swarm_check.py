@@ -31,6 +31,11 @@ writing.
 Known limit (accepted): the reflog guard cannot see an edit + revert of the working tree
 with no commit - the tree and HEAD return to their start state and no reflog entry is added,
 so such a run is still stamped.
+Known limit (accepted): with core.logAllRefUpdates=false and no HEAD reflog file, git writes
+no reflog, so head_reflog_count is 0 before and after (0 == 0) and the reflog guard is blind:
+a commit + reset --hard made mid-run is stamped (the pre-N1 behaviour). Measured on a fresh
+repo with the setting off: count stays 0 across commit, commit, reset --hard. Git's default
+(true) keeps the guard working.
 NOT in the key (known gaps; --no-cache to force): the main checkout's .venv (tool
 versions), data/catalog (exactness inputs), the frontend lint baseline in main's
 working tree and any uncommitted edit in main other than the keyed files; and any

@@ -946,6 +946,17 @@ class TestPassCache:
             "detail": "1 passed in 0.01s | 1 passed in 0.01s",
         }
 
+    def test_untampered_stamped_template_is_reused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Positive control for the not-reused tests below: if _stamped_template's key ever
+        diverged from main()'s key, they would all pass without proving anything."""
+        repo = self._pass_repo(tmp_path)
+        runner = self._runner()
+        assert self._main(repo, runner) == 0
+        assert "PASS cache: reused" in capsys.readouterr().out
+        assert not _called_with(runner, "pytest")
+
     def test_new_head_no_reuse(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         repo = self._pass_repo(tmp_path)  # already stamped at the feature HEAD
         (repo / "vibe_quant" / "foo.py").write_text("def foo() -> int:\n    return 3\n")
