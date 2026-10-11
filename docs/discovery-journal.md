@@ -4,6 +4,30 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: PRE-REGISTRATION H-11 — cross-sectional funding carry on the out-of-universe coins
+
+Committed before the script exists. Mechanism: perp funding pays the side opposite to crowded leverage; a dollar-neutral book short the highest-funding and long the lowest-funding coins collects the funding differential while hedging market direction (crypto carry, Schmeling/Schrimpf/Todorov, BIS 2023). Motivated by the audit finding that H-10's shorts collected ≈3.6%/yr funding on the 66-coin universe — so H-11 is tested ONLY on the H-10b universe (189 coins listed 2020-11..2023-12), where no carry ranking has been computed. Known risk (H-3, 2026-10-08): high-funding coins kept rallying — that is exactly what the test prices in.
+
+**Spec (frozen):** data = `data/swarm/20261011-h10b-raw` (1d klines) + `data/swarm/20261011-h11-funding-b` (Binance Vision monthly fundingRate files, calc_time / last_funding_rate). Window 2022-06-01..2026-09-30; calendar from 2022-05-01. A coin-day with zero volume counts as no data (audit fix: delisted coins publish frozen bars). Every Monday close: signal = Σ last_funding_rate over settlements with calc_time in [Monday−6d 00:00, Tuesday 00:00) UTC (7-day cumulative funding; handles 4h/8h intervals). Rankable only if 7 days of klines and prior-7-day mean quote volume ≥ 10,000,000 USDT. Long the bottom third (lowest funding), short the top third, 0.5 / 0.5 equal weight, constant weights for 7 days, close-to-close price returns; funding cashflow on the day of calc_time = −held_weight × rate (held weight = decided at the previous close); costs 0.05% × turnover; a coin whose data ends is closed.
+
+**PASS only if all:** (1) net Sharpe (price + funding − costs, √365) ≥ 1.0 over 2022-06-01..2026-09-30; (2) the same with each funding settlement capped to ±0.1% ≥ 0.8 (fragility guard); (3) |beta| to the equal-weight buy-and-hold of the universe < 0.3; (4) mean rankable coins ≥ 30. Otherwise REJECT; no variants. Secondary (not decision): same spec on the 66-coin H-9 universe; price-only and funding-only components.
+
+PASS → propose an engine build (portfolio-level funding-carry strategy; the engine already models funding in screening and validation) with full-fidelity validation before any paper step.
+
+---
+
+## 2026-10-11: INDEPENDENT VERIFICATION of H-8/H-9/H-10/H-10b — verdicts stand; H-9 corrected; funding note
+
+Two independent agents (orchestrated): (1) a blind re-implementation from the spec only (never saw the scripts) reproduced H-9 FULL 0.2627 / A 1.2887 / B −0.3252 and H-10b net −0.9423 / gross −0.8071 / 79.23 eligible (max |Δ Sharpe| 0.0038); (2) a code audit (`/tmp/audit_h/`) found no look-ahead (truncation test), no sign/column error, universes reproduced from an independent S3 listing.
+
+**Corrections (audit findings):**
+- **MAJOR, H-9:** Binance Vision keeps publishing frozen-close, zero-volume daily bars for delisted perps (WAVES 841 d, BLZ 646, FTM 632, OMG 607, SRM 560); `h9_xs_momentum.py` treated them as alive (ranked with 0 momentum, held at 0 return). Masking zero-volume days as data end: H-9 FULL 0.04369258835270506, A 1.288767161256503, B −0.7684380839923833 — **worse**, verdict REJECT unchanged; "60 coins alive at the end" is really 49. H-10 / H-10b unaffected (signal needs volume; H-10b liquidity filter).
+- **Spec reading:** the scripts hold constant weights (implicit free daily rebalance) where "held 7 days" suggests drifting weights. Drift version: H-9 0.2454 / 1.2852 / −0.3663, H-10 0.8247 / 1.2261 / 0.6066, H-10b −0.5800 — no verdict changes.
+- **LIT "+513% on 2025-12-23"** (H-10b entry) is a ticker reuse (Litentry stopped 2025-02; a different token relisted under LITUSDT), joined across 325 zero-volume days — not a real move; never held.
+- **Funding (excluded by every pre-registration):** with Binance funding charged on held weights, H-10 would read FULL 1.0527 / A 1.2148 / B 0.9989 (would pass) but fragile (±0.1% funding cap → 0.9423); H-10b with funding −0.4895 still fails; H-8 with funding 0.6366. H-10's verdict stays REJECT as registered. The funding contribution (shorts of high-funding coins collected ≈3.6%/yr) motivates H-11 below.
+
+---
+
 ## 2026-10-11: RESULT H-10b — REJECTED (taker flow does not replicate out-of-universe; it reverses)
 
 Spec 000c7d8, `h10b_download.py` + `h10b_taker_flow_oou.py`, run once. Universe rule → 194 USDT-M perps first listed 2020-11..2023-12 (from 1,056 symbols in the Binance Vision bucket; 834 USDT non-delivery non-H10); 189 have data in the window (5 delisted before 2022-05); index perps (BTCDOM, BLUEBIRD, FOOTBALL) kept as the rule did not exclude them. Rankable (≥ 10M USDT 7d avg quote volume) per rebalance: mean 79.2, min 24, max 173. Annual turnover 58.9×.
