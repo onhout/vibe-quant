@@ -82,7 +82,16 @@ def compute_wma(df: pd.DataFrame, params: dict[str, object]) -> pd.Series:
 
 
 def compute_dema(df: pd.DataFrame, params: dict[str, object]) -> pd.Series:
-    return cast("pd.Series", _ta().dema(df["close"], length=int_param(params, "period", 14)))
+    """DEMA — all-NaN below ``2 * period - 1`` rows (the first valid bar).
+
+    pandas-ta returns None there (after logging an inner-EMA "Series has N rows"
+    warning at ``n == period``); the guard gives the same NaN without the call.
+    """
+    period = int_param(params, "period", 14)
+    if len(df) < 2 * (period if period > 0 else 10) - 1:  # pandas-ta: length<=0 -> 10
+        return nan_like(df)
+    result = _ta().dema(df["close"], length=period)
+    return nan_like(df) if result is None else cast("pd.Series", result)
 
 
 def compute_tema(df: pd.DataFrame, params: dict[str, object]) -> pd.Series:
@@ -514,6 +523,13 @@ def compute_stoch(df: pd.DataFrame, params: dict[str, object]) -> dict[str, pd.S
     """
     k_period = int_param(params, "period", int_param(params, "period_k", 14))
     d_period = int_param(params, "d_period", int_param(params, "period_d", 3))
+    # First valid %D is at ``k + smooth_k + d - 2`` rows (smooth_k fixed at
+    # pandas-ta's 3); below that pandas-ta returns None after logging an inner
+    # "Series has N rows" warning. Same NaN result, no call (pandas-ta:
+    # k<=0 -> 14, d<=0 -> 3).
+    if len(df) < (k_period if k_period > 0 else 14) + 3 + (d_period if d_period > 0 else 3) - 2:
+        empty = nan_like(df)
+        return {"k": empty, "d": empty}
     result = _ta().stoch(df["high"], df["low"], df["close"], k=k_period, d=d_period)
     if result is None:
         empty = nan_like(df)
@@ -552,6 +568,13 @@ def compute_kc(df: pd.DataFrame, params: dict[str, object]) -> dict[str, pd.Seri
     """Keltner Channel — ``{"lower", "middle", "upper"}`` keyed series."""
     period = int_param(params, "period", 20)
     scalar = float_param(params, "atr_multiplier", 2.0)
+    # True range loses the first bar, so the first valid bar is ``period + 1``;
+    # at ``n <= period`` pandas-ta returns None or raises IndexError (ema seed
+    # past the end). Same NaN result, no call. pandas-ta: length<=0 -> 20;
+    # length 1 is exempt (it already returns the 1-bar basis at n == 1).
+    if 1 < (period if period > 0 else 20) >= len(df):
+        empty = nan_like(df)
+        return {"lower": empty, "middle": empty, "upper": empty}
     result = _ta().kc(df["high"], df["low"], df["close"], length=period, scalar=scalar)
     if result is None:
         empty = nan_like(df)
