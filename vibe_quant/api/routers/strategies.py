@@ -17,6 +17,7 @@ from vibe_quant.api.schemas.strategy import (
     ValidationResult,
 )
 from vibe_quant.db.state_manager import StateManager
+from vibe_quant.strategies.templates._metadata import list_template_payloads
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,9 @@ async def list_strategies(
 
 
 @router.get("/templates")
-async def list_templates() -> list[dict[str, object]]:
-    # TODO: wire up DSL template registry when available
-    return []
+def list_templates() -> list[dict[str, object]]:
+    # Plain def: reads + parses the bundled YAML files, which must not block the event loop.
+    return list_template_payloads()
 
 
 @router.get("/{strategy_id}", response_model=StrategyResponse)

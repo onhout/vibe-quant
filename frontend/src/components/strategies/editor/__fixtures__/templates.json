@@ -1,0 +1,874 @@
+[
+  {
+    "name": "rsi_mean_reversion",
+    "description": "Buy oversold (RSI < 30), sell overbought (RSI > 70). Simple mean reversion with ATR trailing stops.",
+    "strategy_type": "mean_reversion",
+    "dsl_config": {
+      "name": "rsi_mean_reversion",
+      "description": "RSI mean reversion: buy oversold, sell overbought with ATR trailing stops",
+      "version": 1,
+      "timeframe": "1h",
+      "additional_timeframes": [],
+      "indicators": {
+        "rsi": {
+          "type": "RSI",
+          "period": 14,
+          "source": "close"
+        },
+        "ema_filter": {
+          "type": "EMA",
+          "period": 50,
+          "source": "close"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        }
+      },
+      "entry_conditions": {
+        "long": ["rsi < 30", "close > ema_filter"],
+        "short": ["rsi > 70", "close < ema_filter"]
+      },
+      "exit_conditions": {
+        "long": ["rsi > 60"],
+        "short": ["rsi < 40"]
+      },
+      "time_filters": {
+        "allowed_sessions": [],
+        "blocked_days": ["Saturday", "Sunday"],
+        "avoid_around_funding": {
+          "enabled": true,
+          "minutes_before": 5,
+          "minutes_after": 5
+        }
+      },
+      "stop_loss": {
+        "type": "atr_trailing",
+        "atr_multiplier": 2.0,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "risk_reward",
+        "risk_reward_ratio": 2.0
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "rsi.period": [10, 14, 21],
+        "ema_filter.period": [20, 50, 100]
+      }
+    }
+  },
+  {
+    "name": "rsi_divergence",
+    "description": "Detects when price makes new lows but RSI makes higher lows (bullish divergence) using EMA trend filter.",
+    "strategy_type": "momentum",
+    "dsl_config": {
+      "name": "rsi_divergence",
+      "description": "RSI divergence detector with EMA trend filter and ATR stops",
+      "version": 1,
+      "timeframe": "15m",
+      "additional_timeframes": ["1h"],
+      "indicators": {
+        "rsi": {
+          "type": "RSI",
+          "period": 14,
+          "source": "close"
+        },
+        "ema_fast": {
+          "type": "EMA",
+          "period": 9,
+          "source": "close"
+        },
+        "ema_slow": {
+          "type": "EMA",
+          "period": 21,
+          "source": "close"
+        },
+        "ema_trend": {
+          "type": "EMA",
+          "period": 50,
+          "source": "close",
+          "timeframe": "1h"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        }
+      },
+      "entry_conditions": {
+        "long": ["rsi < 35", "close > ema_trend", "ema_fast > ema_slow"],
+        "short": ["rsi > 65", "close < ema_trend", "ema_fast < ema_slow"]
+      },
+      "exit_conditions": {
+        "long": ["rsi > 65"],
+        "short": ["rsi < 35"]
+      },
+      "time_filters": {
+        "allowed_sessions": [],
+        "blocked_days": ["Saturday", "Sunday"],
+        "avoid_around_funding": {
+          "enabled": true,
+          "minutes_before": 5,
+          "minutes_after": 5
+        }
+      },
+      "stop_loss": {
+        "type": "atr_trailing",
+        "atr_multiplier": 2.5,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "risk_reward",
+        "risk_reward_ratio": 2.5
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "rsi.period": [10, 14, 21],
+        "ema_fast.period": [5, 9, 13],
+        "ema_slow.period": [15, 21, 30]
+      }
+    }
+  },
+  {
+    "name": "macd_crossover",
+    "description": "Enter when MACD crosses signal line with EMA trend confirmation. Classic momentum strategy with session filters.",
+    "strategy_type": "momentum",
+    "dsl_config": {
+      "name": "macd_crossover",
+      "description": "MACD signal line crossover with EMA trend filter and session restrictions",
+      "version": 1,
+      "timeframe": "15m",
+      "additional_timeframes": [],
+      "indicators": {
+        "macd": {
+          "type": "MACD",
+          "fast_period": 12,
+          "slow_period": 26,
+          "signal_period": 9,
+          "source": "close"
+        },
+        "ema_fast": {
+          "type": "EMA",
+          "period": 9,
+          "source": "close"
+        },
+        "ema_slow": {
+          "type": "EMA",
+          "period": 21,
+          "source": "close"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        }
+      },
+      "entry_conditions": {
+        "long": ["ema_fast crosses_above ema_slow", "macd > 0"],
+        "short": ["ema_fast crosses_below ema_slow", "macd < 0"]
+      },
+      "exit_conditions": {
+        "long": ["ema_fast crosses_below ema_slow"],
+        "short": ["ema_fast crosses_above ema_slow"]
+      },
+      "time_filters": {
+        "allowed_sessions": [
+          {
+            "start": "00:00",
+            "end": "08:00",
+            "timezone": "UTC"
+          },
+          {
+            "start": "08:00",
+            "end": "16:00",
+            "timezone": "UTC"
+          }
+        ],
+        "blocked_days": ["Saturday", "Sunday"],
+        "avoid_around_funding": {
+          "enabled": true,
+          "minutes_before": 5,
+          "minutes_after": 5
+        }
+      },
+      "stop_loss": {
+        "type": "atr_fixed",
+        "atr_multiplier": 1.5,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "atr_fixed",
+        "atr_multiplier": 3.0,
+        "indicator": "atr"
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "macd.fast_period": [8, 12, 16],
+        "macd.slow_period": [21, 26, 34],
+        "ema_fast.period": [5, 9, 13]
+      }
+    }
+  },
+  {
+    "name": "stochastic_reversal",
+    "description": "Stochastic oscillator overbought/oversold strategy with EMA filter to trade only in the direction of the trend.",
+    "strategy_type": "mean_reversion",
+    "dsl_config": {
+      "name": "stochastic_reversal",
+      "description": "Stochastic oscillator reversals filtered by EMA trend direction",
+      "version": 1,
+      "timeframe": "1h",
+      "additional_timeframes": [],
+      "indicators": {
+        "stoch": {
+          "type": "STOCH",
+          "period": 14,
+          "source": "close"
+        },
+        "ema_trend": {
+          "type": "EMA",
+          "period": 50,
+          "source": "close"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        }
+      },
+      "entry_conditions": {
+        "long": ["stoch < 20", "close > ema_trend"],
+        "short": ["stoch > 80", "close < ema_trend"]
+      },
+      "exit_conditions": {
+        "long": ["stoch > 75"],
+        "short": ["stoch < 25"]
+      },
+      "time_filters": {
+        "allowed_sessions": [],
+        "blocked_days": ["Saturday", "Sunday"],
+        "avoid_around_funding": {
+          "enabled": true,
+          "minutes_before": 5,
+          "minutes_after": 5
+        }
+      },
+      "stop_loss": {
+        "type": "atr_trailing",
+        "atr_multiplier": 2.0,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "risk_reward",
+        "risk_reward_ratio": 2.0
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "stoch.period_k": [10, 14, 21],
+        "ema_trend.period": [30, 50, 100]
+      }
+    }
+  },
+  {
+    "name": "ema_ribbon",
+    "description": "Three EMAs (fast/medium/slow) forming a ribbon. Enter when all three align in order. Strong trend confirmation.",
+    "strategy_type": "trend_following",
+    "dsl_config": {
+      "name": "ema_ribbon",
+      "description": "Triple EMA ribbon trend-following: enter when fast > mid > slow alignment",
+      "version": 1,
+      "timeframe": "1h",
+      "additional_timeframes": [],
+      "indicators": {
+        "ema_fast": {
+          "type": "EMA",
+          "period": 9,
+          "source": "close"
+        },
+        "ema_mid": {
+          "type": "EMA",
+          "period": 21,
+          "source": "close"
+        },
+        "ema_slow": {
+          "type": "EMA",
+          "period": 55,
+          "source": "close"
+        },
+        "rsi": {
+          "type": "RSI",
+          "period": 14,
+          "source": "close"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        }
+      },
+      "entry_conditions": {
+        "long": ["ema_fast > ema_mid", "ema_mid > ema_slow", "rsi > 50"],
+        "short": ["ema_fast < ema_mid", "ema_mid < ema_slow", "rsi < 50"]
+      },
+      "exit_conditions": {
+        "long": ["ema_fast crosses_below ema_mid"],
+        "short": ["ema_fast crosses_above ema_mid"]
+      },
+      "time_filters": {
+        "allowed_sessions": [],
+        "blocked_days": ["Saturday", "Sunday"],
+        "avoid_around_funding": {
+          "enabled": true,
+          "minutes_before": 5,
+          "minutes_after": 5
+        }
+      },
+      "stop_loss": {
+        "type": "atr_trailing",
+        "atr_multiplier": 2.5,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "risk_reward",
+        "risk_reward_ratio": 2.0
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "ema_fast.period": [5, 9, 13],
+        "ema_mid.period": [15, 21, 30],
+        "ema_slow.period": [40, 55, 80]
+      }
+    }
+  },
+  {
+    "name": "donchian_breakout",
+    "description": "Classic turtle trading: enter on N-period high/low breakout. Donchian channel with ATR-based stops.",
+    "strategy_type": "breakout",
+    "dsl_config": {
+      "name": "donchian_breakout",
+      "description": "Donchian channel breakout (turtle trading) with ATR trailing stops",
+      "version": 1,
+      "timeframe": "4h",
+      "additional_timeframes": [],
+      "indicators": {
+        "donchian": {
+          "type": "DONCHIAN",
+          "period": 20
+        },
+        "ema_trend": {
+          "type": "EMA",
+          "period": 50,
+          "source": "close"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        }
+      },
+      "entry_conditions": {
+        "long": ["close crosses_above donchian.upper_prev", "close > ema_trend"],
+        "short": ["close crosses_below donchian.lower_prev", "close < ema_trend"]
+      },
+      "exit_conditions": {
+        "long": ["close crosses_below donchian.lower_prev"],
+        "short": ["close crosses_above donchian.upper_prev"]
+      },
+      "time_filters": {
+        "allowed_sessions": [],
+        "blocked_days": [],
+        "avoid_around_funding": {
+          "enabled": true,
+          "minutes_before": 5,
+          "minutes_after": 5
+        }
+      },
+      "stop_loss": {
+        "type": "atr_trailing",
+        "atr_multiplier": 3.0,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "risk_reward",
+        "risk_reward_ratio": 2.0
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "donchian.period": [10, 20, 40],
+        "ema_trend.period": [30, 50, 100]
+      }
+    }
+  },
+  {
+    "name": "dual_ema_crossover",
+    "description": "Fast EMA crosses slow EMA for entry. The simplest possible trend-following strategy. Good starting point.",
+    "strategy_type": "trend_following",
+    "dsl_config": {
+      "name": "dual_ema_crossover",
+      "description": "Simple dual EMA crossover: fast EMA crosses slow EMA for trend entries",
+      "version": 1,
+      "timeframe": "1h",
+      "additional_timeframes": [],
+      "indicators": {
+        "ema_fast": {
+          "type": "EMA",
+          "period": 12,
+          "source": "close"
+        },
+        "ema_slow": {
+          "type": "EMA",
+          "period": 26,
+          "source": "close"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        }
+      },
+      "entry_conditions": {
+        "long": ["ema_fast crosses_above ema_slow"],
+        "short": ["ema_fast crosses_below ema_slow"]
+      },
+      "exit_conditions": {
+        "long": ["ema_fast crosses_below ema_slow"],
+        "short": ["ema_fast crosses_above ema_slow"]
+      },
+      "time_filters": {
+        "allowed_sessions": [],
+        "blocked_days": [],
+        "avoid_around_funding": {
+          "enabled": false
+        }
+      },
+      "stop_loss": {
+        "type": "atr_fixed",
+        "atr_multiplier": 2.0,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "risk_reward",
+        "risk_reward_ratio": 2.0
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "ema_fast.period": [8, 12, 16, 20],
+        "ema_slow.period": [20, 26, 34, 50]
+      }
+    }
+  },
+  {
+    "name": "bollinger_squeeze",
+    "description": "Enter when Bollinger Bands contract (low volatility) then expand. RSI confirms direction. Captures volatility breakouts.",
+    "strategy_type": "volatility",
+    "dsl_config": {
+      "name": "bollinger_squeeze",
+      "description": "Bollinger Band squeeze breakout with RSI direction confirmation",
+      "version": 1,
+      "timeframe": "1h",
+      "additional_timeframes": [],
+      "indicators": {
+        "bbands": {
+          "type": "BBANDS",
+          "period": 20,
+          "std_dev": 2.0,
+          "source": "close"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        },
+        "rsi": {
+          "type": "RSI",
+          "period": 14,
+          "source": "close"
+        },
+        "ema": {
+          "type": "EMA",
+          "period": 20,
+          "source": "close"
+        }
+      },
+      "entry_conditions": {
+        "long": ["close > ema", "rsi between 50 70"],
+        "short": ["close < ema", "rsi between 30 50"]
+      },
+      "exit_conditions": {
+        "long": ["close crosses_below ema"],
+        "short": ["close crosses_above ema"]
+      },
+      "time_filters": {
+        "allowed_sessions": [],
+        "blocked_days": ["Saturday", "Sunday"],
+        "avoid_around_funding": {
+          "enabled": true,
+          "minutes_before": 5,
+          "minutes_after": 5
+        }
+      },
+      "stop_loss": {
+        "type": "atr_trailing",
+        "atr_multiplier": 2.5,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "risk_reward",
+        "risk_reward_ratio": 2.5
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "bbands.period": [15, 20, 25],
+        "bbands.std_dev": [1.5, 2.0, 2.5],
+        "rsi.period": [10, 14, 21]
+      }
+    }
+  },
+  {
+    "name": "keltner_trend",
+    "description": "Trade in the direction of Keltner Channel breakouts. More stable than Bollinger Bands due to ATR-based width.",
+    "strategy_type": "volatility",
+    "dsl_config": {
+      "name": "keltner_trend",
+      "description": "Keltner Channel trend-following with RSI momentum confirmation",
+      "version": 1,
+      "timeframe": "1h",
+      "additional_timeframes": [],
+      "indicators": {
+        "kc": {
+          "type": "KC",
+          "period": 20,
+          "atr_multiplier": 1.5,
+          "source": "close"
+        },
+        "rsi": {
+          "type": "RSI",
+          "period": 14,
+          "source": "close"
+        },
+        "ema": {
+          "type": "EMA",
+          "period": 50,
+          "source": "close"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        }
+      },
+      "entry_conditions": {
+        "long": ["close > kc", "rsi > 50", "close > ema"],
+        "short": ["close < kc", "rsi < 50", "close < ema"]
+      },
+      "exit_conditions": {
+        "long": ["rsi < 40"],
+        "short": ["rsi > 60"]
+      },
+      "time_filters": {
+        "allowed_sessions": [],
+        "blocked_days": ["Saturday", "Sunday"],
+        "avoid_around_funding": {
+          "enabled": true,
+          "minutes_before": 5,
+          "minutes_after": 5
+        }
+      },
+      "stop_loss": {
+        "type": "atr_trailing",
+        "atr_multiplier": 2.0,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "risk_reward",
+        "risk_reward_ratio": 2.0
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "kc.period": [15, 20, 30],
+        "kc.atr_multiplier": [1.0, 1.5, 2.0],
+        "rsi.period": [10, 14, 21]
+      }
+    }
+  },
+  {
+    "name": "mtf_trend_scalp",
+    "description": "Uses 1h and 4h EMA for trend direction, enters on 5m RSI oversold/overbought aligned with higher TF trend.",
+    "strategy_type": "trend_following",
+    "dsl_config": {
+      "name": "mtf_trend_scalp",
+      "description": "Multi-TF trend scalper: 1h/4h EMA trend, 5m RSI entry timing",
+      "version": 1,
+      "timeframe": "5m",
+      "additional_timeframes": ["1h", "4h"],
+      "indicators": {
+        "rsi": {
+          "type": "RSI",
+          "period": 14,
+          "source": "close"
+        },
+        "ema_trend_1h": {
+          "type": "EMA",
+          "period": 50,
+          "source": "close",
+          "timeframe": "1h"
+        },
+        "ema_trend_4h": {
+          "type": "EMA",
+          "period": 50,
+          "source": "close",
+          "timeframe": "4h"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        }
+      },
+      "entry_conditions": {
+        "long": ["rsi < 30", "close > ema_trend_1h", "close > ema_trend_4h"],
+        "short": ["rsi > 70", "close < ema_trend_1h", "close < ema_trend_4h"]
+      },
+      "exit_conditions": {
+        "long": ["rsi > 50"],
+        "short": ["rsi < 50"]
+      },
+      "time_filters": {
+        "allowed_sessions": [],
+        "blocked_days": ["Saturday", "Sunday"],
+        "avoid_around_funding": {
+          "enabled": true,
+          "minutes_before": 5,
+          "minutes_after": 5
+        }
+      },
+      "stop_loss": {
+        "type": "atr_trailing",
+        "atr_multiplier": 2.0,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "risk_reward",
+        "risk_reward_ratio": 2.0
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "rsi.period": [10, 14, 21],
+        "ema_trend_1h.period": [20, 50, 100]
+      }
+    }
+  },
+  {
+    "name": "mtf_momentum_filter",
+    "description": "MACD on 1h for momentum direction, EMA on 4h for trend, RSI on 15m for precise entries. Triple confirmation.",
+    "strategy_type": "trend_following",
+    "dsl_config": {
+      "name": "mtf_momentum_filter",
+      "description": "Triple-confirmation: 4h EMA trend, 1h MACD momentum, 15m RSI entry",
+      "version": 1,
+      "timeframe": "15m",
+      "additional_timeframes": ["1h", "4h"],
+      "indicators": {
+        "rsi": {
+          "type": "RSI",
+          "period": 14,
+          "source": "close"
+        },
+        "macd": {
+          "type": "MACD",
+          "fast_period": 12,
+          "slow_period": 26,
+          "signal_period": 9,
+          "source": "close",
+          "timeframe": "1h"
+        },
+        "ema_trend": {
+          "type": "EMA",
+          "period": 50,
+          "source": "close",
+          "timeframe": "4h"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        }
+      },
+      "entry_conditions": {
+        "long": ["rsi < 35", "macd > 0", "close > ema_trend"],
+        "short": ["rsi > 65", "macd < 0", "close < ema_trend"]
+      },
+      "exit_conditions": {
+        "long": ["rsi > 60"],
+        "short": ["rsi < 40"]
+      },
+      "time_filters": {
+        "allowed_sessions": [],
+        "blocked_days": ["Saturday", "Sunday"],
+        "avoid_around_funding": {
+          "enabled": true,
+          "minutes_before": 5,
+          "minutes_after": 5
+        }
+      },
+      "stop_loss": {
+        "type": "atr_trailing",
+        "atr_multiplier": 2.5,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "risk_reward",
+        "risk_reward_ratio": 2.5
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "rsi.period": [10, 14, 21],
+        "macd.fast_period": [8, 12, 16],
+        "macd.slow_period": [21, 26, 34]
+      }
+    }
+  },
+  {
+    "name": "vwap_intraday",
+    "description": "Trade mean reversion to VWAP with RSI confirmation. Price below VWAP + oversold RSI = long.",
+    "strategy_type": "mean_reversion",
+    "dsl_config": {
+      "name": "vwap_intraday",
+      "description": "VWAP intraday mean reversion with RSI confirmation",
+      "version": 1,
+      "timeframe": "5m",
+      "additional_timeframes": [],
+      "indicators": {
+        "vwap": {
+          "type": "VWAP"
+        },
+        "rsi": {
+          "type": "RSI",
+          "period": 14,
+          "source": "close"
+        },
+        "ema": {
+          "type": "EMA",
+          "period": 20,
+          "source": "close"
+        },
+        "atr": {
+          "type": "ATR",
+          "period": 14
+        }
+      },
+      "entry_conditions": {
+        "long": ["close < vwap", "rsi < 35"],
+        "short": ["close > vwap", "rsi > 65"]
+      },
+      "exit_conditions": {
+        "long": ["close > vwap"],
+        "short": ["close < vwap"]
+      },
+      "time_filters": {
+        "allowed_sessions": [
+          {
+            "start": "01:00",
+            "end": "21:00",
+            "timezone": "UTC"
+          }
+        ],
+        "blocked_days": ["Saturday", "Sunday"],
+        "avoid_around_funding": {
+          "enabled": true,
+          "minutes_before": 5,
+          "minutes_after": 5
+        }
+      },
+      "stop_loss": {
+        "type": "atr_fixed",
+        "atr_multiplier": 1.5,
+        "indicator": "atr"
+      },
+      "take_profit": {
+        "type": "risk_reward",
+        "risk_reward_ratio": 1.5
+      },
+      "position_management": {
+        "scale_in": {
+          "enabled": false
+        },
+        "partial_exit": {
+          "enabled": false
+        }
+      },
+      "sweep": {
+        "rsi.period": [10, 14, 21],
+        "ema.period": [10, 20, 30]
+      }
+    }
+  }
+]

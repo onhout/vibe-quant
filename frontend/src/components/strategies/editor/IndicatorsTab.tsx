@@ -262,7 +262,7 @@ export function IndicatorsTab({ config, onConfigChange }: IndicatorsTabProps) {
     const entry = catalog.find((c) => c.type === type);
     const defaults = entry?.defaultParams ?? {};
     const updated = [...config.indicators];
-    updated[idx] = { type, params: defaults };
+    updated[idx] = { type, params: defaults, name: updated[idx]?.name };
     updateIndicators(updated);
   };
 

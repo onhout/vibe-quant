@@ -10,22 +10,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { DslConfig } from "./types";
+import { type DslConfig, STOP_LOSS_TYPES, TAKE_PROFIT_TYPES } from "./types";
 
 interface RiskTabProps {
   config: DslConfig;
   onConfigChange: (config: DslConfig) => void;
 }
-
-const STOP_LOSS_TYPES = [
-  { value: "fixed_pct", label: "Fixed %" },
-  { value: "atr_based", label: "ATR-based" },
-] as const;
-
-const TAKE_PROFIT_TYPES = [
-  { value: "fixed_pct", label: "Fixed %" },
-  { value: "rr_ratio", label: "R:R Ratio" },
-] as const;
 
 const POSITION_SIZING_TYPES = [
   { value: "fixed", label: "Fixed Size" },
@@ -187,9 +177,10 @@ export function RiskTab({ config, onConfigChange }: RiskTabProps) {
             />
           </div>
         </div>
-        {config.risk.stop_loss.type === "atr_based" && (
+        {config.risk.stop_loss.type.startsWith("atr") && (
           <p className="text-[10px] text-muted-foreground">
-            Stop loss = ATR(14) x {config.risk.stop_loss.value}. Ensure ATR indicator is configured.
+            Stop distance = ATR x {config.risk.stop_loss.value}. Needs an ATR indicator (Indicators
+            tab).
           </p>
         )}
       </div>
@@ -220,7 +211,12 @@ export function RiskTab({ config, onConfigChange }: RiskTabProps) {
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">
-              Value {config.risk.take_profit.type === "fixed_pct" ? "(%)" : "(R:R)"}
+              Value{" "}
+              {config.risk.take_profit.type === "fixed_pct"
+                ? "(%)"
+                : config.risk.take_profit.type === "atr_fixed"
+                  ? "(ATR multiplier)"
+                  : "(R:R)"}
             </Label>
             <Input
               type="number"

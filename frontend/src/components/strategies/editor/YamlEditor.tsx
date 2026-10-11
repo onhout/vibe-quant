@@ -1,49 +1,13 @@
-import yaml from "js-yaml";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import type { DslConfig } from "./types";
-import { parseDslConfig } from "./types";
+import { parseYamlToDsl, serializeConfig, type YamlError } from "./yamlConfig";
 
 interface YamlEditorProps {
   config: DslConfig;
   onConfigChange: (config: DslConfig) => void;
-}
-
-interface YamlError {
-  message: string;
-  line?: number | undefined;
-}
-
-function serializeConfig(config: DslConfig): string {
-  return yaml.dump(config, { indent: 2, lineWidth: 120, noRefs: true });
-}
-
-function parseYamlToDsl(text: string): { config: DslConfig; error: YamlError | null } {
-  try {
-    const parsed = yaml.load(text);
-    if (parsed === null || parsed === undefined || typeof parsed !== "object") {
-      return {
-        config: {} as DslConfig,
-        error: { message: "YAML must be a mapping (object), not a scalar or array" },
-      };
-    }
-    const config = parseDslConfig(parsed as Record<string, unknown>);
-    return { config, error: null };
-  } catch (e: unknown) {
-    if (e instanceof yaml.YAMLException) {
-      return {
-        config: {} as DslConfig,
-        error: {
-          message: e.message,
-          line: e.mark?.line !== undefined ? e.mark.line + 1 : undefined,
-        },
-      };
-    }
-    const msg = e instanceof Error ? e.message : "Unknown parse error";
-    return { config: {} as DslConfig, error: { message: msg } };
-  }
 }
 
 export function YamlEditor({ config, onConfigChange }: YamlEditorProps) {

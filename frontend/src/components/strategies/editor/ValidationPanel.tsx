@@ -45,10 +45,10 @@ function computeWarnings(config: DslConfig): Warning[] {
     warnings.push({ message: "No symbols configured" });
   }
   if (
-    config.risk.stop_loss.type === "atr_based" &&
+    config.risk.stop_loss.type.startsWith("atr") &&
     !config.indicators.some((i) => i.type === "ATR")
   ) {
-    warnings.push({ message: "ATR-based stop loss requires ATR indicator" });
+    warnings.push({ message: "ATR stop loss requires an ATR indicator" });
   }
   return warnings;
 }

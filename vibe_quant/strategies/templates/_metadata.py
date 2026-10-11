@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 _TEMPLATE_DIR = Path(__file__).parent
 
@@ -231,3 +234,56 @@ def get_templates_by_category() -> dict[str, list[TemplateMeta]]:
         result[cat] = [t for t in TEMPLATES if t.category == cat]
     # Only include non-empty categories
     return {k: v for k, v in result.items() if v}
+
+
+# Create-Strategy dialog `strategy_type` values (frontend STRATEGY_TYPES) per category.
+_STRATEGY_TYPE_BY_CATEGORY: dict[str, str] = {
+    "Momentum": "momentum",
+    "Trend": "trend_following",
+    "Volatility": "volatility",
+    "Multi-Timeframe": "trend_following",
+    "Volume": "mean_reversion",
+}
+
+
+def _strategy_type(meta: TemplateMeta) -> str:
+    if "mean-reversion" in meta.tags:
+        return "mean_reversion"
+    if "breakout" in meta.tags:
+        return "breakout"
+    return _STRATEGY_TYPE_BY_CATEGORY[meta.category]
+
+
+def list_template_payloads() -> list[dict[str, object]]:
+    """Return every valid template as an API payload for the Create Strategy dialog.
+
+    ``name``/``description``/``strategy_type``/``dsl_config`` are what the dialog posts to
+    ``POST /api/strategies``; ``dsl_config`` is the canonical StrategyDSL dict (the backtest
+    translator passes it through unchanged, so sweeps and ATR stops survive). A template
+    that fails the DSL parser is skipped with a logged reason instead of being offered.
+    """
+    from vibe_quant.dsl.parser import DSLParseError, parse_strategy_string
+
+    payloads: list[dict[str, object]] = []
+    for meta in TEMPLATES:
+        try:
+            parse_strategy_string(meta.load_yaml(), file_path=meta.path)
+            dsl_config = meta.load_dict()
+        except (DSLParseError, OSError, ValueError) as exc:
+            logger.warning("Skipping invalid strategy template %s: %s", meta.file_name, exc)
+            continue
+        payloads.append(
+            {
+                "name": meta.file_name.removesuffix(".yaml"),
+                "display_name": meta.display_name,
+                "description": meta.description,
+                "strategy_type": _strategy_type(meta),
+                "category": meta.category,
+                "difficulty": meta.difficulty,
+                "market_conditions": meta.market_conditions,
+                "instruments": meta.instruments,
+                "tags": list(meta.tags),
+                "dsl_config": dsl_config,
+            }
+        )
+    return payloads

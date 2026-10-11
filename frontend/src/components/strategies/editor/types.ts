@@ -1,6 +1,9 @@
 /** Local form shape for the strategy DSL config editor */
+import { canonicalToUi, isCanonicalDsl } from "./canonical";
 
 export interface DslIndicator {
+  /** Canonical StrategyDSL indicator key; set only for strategies read from canonical DSL. */
+  name?: string | undefined;
   type: string;
   params: Record<string, number>;
   timeframe_override?: string | undefined;
@@ -95,6 +98,19 @@ export const DAYS_OF_WEEK = [
   "Sunday",
 ] as const;
 
+/** Stop/take-profit types the backend accepts (vibe_quant/dsl/schema.py VALID_*_TYPES). */
+export const STOP_LOSS_TYPES = [
+  { value: "fixed_pct", label: "Fixed %" },
+  { value: "atr_fixed", label: "ATR (fixed distance)" },
+  { value: "atr_trailing", label: "ATR (trailing)" },
+] as const;
+
+export const TAKE_PROFIT_TYPES = [
+  { value: "fixed_pct", label: "Fixed %" },
+  { value: "atr_fixed", label: "ATR multiple" },
+  { value: "risk_reward", label: "R:R Ratio" },
+] as const;
+
 export const SESSIONS = ["Asian", "European", "US"] as const;
 
 /** Build operand options from configured indicators */
@@ -126,6 +142,8 @@ export function emptyDslConfig(): DslConfig {
 /** Parse unknown dsl_config from API into typed DslConfig */
 export function parseDslConfig(raw: Record<string, unknown>): DslConfig {
   const base = emptyDslConfig();
+  // Templates / discovery champions are stored as canonical StrategyDSL, not the editor format.
+  if (isCanonicalDsl(raw)) return canonicalToUi(raw, base);
 
   const general = raw.general as Record<string, unknown> | undefined;
   if (general) {
@@ -136,10 +154,17 @@ export function parseDslConfig(raw: Record<string, unknown>): DslConfig {
   }
 
   if (Array.isArray(raw.indicators)) {
-    base.indicators = (raw.indicators as Array<Record<string, unknown>>).map((ind) => ({
-      type: typeof ind.type === "string" ? ind.type : "SMA",
-      params: (ind.params as Record<string, number>) ?? {},
-    }));
+    // The YAML tab dumps the editor model, so `name` (canonical key) and `timeframe_override`
+    // must survive a round trip or the save would rename indicators / drop the timeframe.
+    base.indicators = (raw.indicators as Array<Record<string, unknown>>).map((ind) => {
+      const out: DslIndicator = {
+        type: typeof ind.type === "string" ? ind.type : "SMA",
+        params: (ind.params as Record<string, number>) ?? {},
+      };
+      if (typeof ind.name === "string") out.name = ind.name;
+      if (typeof ind.timeframe_override === "string") out.timeframe_override = ind.timeframe_override;
+      return out;
+    });
   }
 
   const conds = raw.conditions as Record<string, unknown> | undefined;

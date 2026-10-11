@@ -55,5 +55,5 @@ position_management:
     enabled: false
 
 sweep:
-  stoch.period: [10, 14, 21]
+  stoch.period_k: [10, 14, 21]
   ema_trend.period: [30, 50, 100]

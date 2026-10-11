@@ -30,6 +30,12 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { ConditionsTab } from "./editor/ConditionsTab";
+import {
+  isCanonicalDsl,
+  saveGuardMessage,
+  sessionReplaceWarning,
+  toCanonicalDsl,
+} from "./editor/canonical";
 import { GeneralTab } from "./editor/GeneralTab";
 import { IndicatorsTab } from "./editor/IndicatorsTab";
 import { RiskTab } from "./editor/RiskTab";
@@ -124,24 +130,56 @@ export function StrategyEditor({ strategy }: StrategyEditorProps) {
   const [showValidationPanel, setShowValidationPanel] = useState(false);
   const [editorMode, setEditorMode] = useState<EditorMode>("visual");
   const [confirmTemplateReplace, setConfirmTemplateReplace] = useState<TemplateItem | null>(null);
+  // Canonical StrategyDSL strategies (templates, discovery champions): saves merge the editor's
+  // changes into the stored dict so sweeps / ATR stop refs the editor cannot show survive.
+  const storedDsl = strategy.dsl_config as Record<string, unknown>;
+  const [canonicalBase, setCanonicalBase] = useState<Record<string, unknown> | null>(
+    isCanonicalDsl(storedDsl) ? storedDsl : null,
+  );
+  const [baseline, setBaseline] = useState<DslConfig>(initialConfig);
+  const [templateLoaded, setTemplateLoaded] = useState(false);
 
   const updateMutation = useUpdateStrategyApiStrategiesStrategyIdPut();
   const validateMutation = useValidateStrategyApiStrategiesStrategyIdValidatePost();
   const templatesQuery = useListTemplatesApiStrategiesTemplatesGet();
   const templates = (templatesQuery.data?.data ?? []) as TemplateItem[];
 
+  /** The dsl_config to persist, or null (after an error toast) when saving must not proceed. */
+  const buildDslConfig = (): Record<string, unknown> | null => {
+    const blocked = saveGuardMessage(storedDsl, initialConfig, config, templateLoaded);
+    if (blocked) {
+      toast.error(blocked);
+      return null;
+    }
+    if (!canonicalBase) return config as unknown as Record<string, unknown>;
+    try {
+      return toCanonicalDsl(config, canonicalBase, baseline);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Cannot save this configuration");
+      return null;
+    }
+  };
+
+  const replaceWarning = canonicalBase
+    ? sessionReplaceWarning(canonicalBase, config, baseline)
+    : null;
+
+  const markSaved = (saved: Record<string, unknown>) => {
+    if (canonicalBase) setCanonicalBase(saved);
+    setBaseline(config);
+  };
+
   const handleSave = () => {
+    const dslConfig = buildDslConfig();
+    if (!dslConfig) return;
     updateMutation.mutate(
       {
         strategyId: strategy.id,
-        data: {
-          name,
-          description: description || null,
-          dsl_config: config as unknown as Record<string, unknown>,
-        },
+        data: { name, description: description || null, dsl_config: dslConfig },
       },
       {
         onSuccess: () => {
+          markSaved(dslConfig);
           queryClient.invalidateQueries({
             queryKey: getGetStrategyApiStrategiesStrategyIdGetQueryKey(strategy.id),
           });
@@ -156,17 +194,16 @@ export function StrategyEditor({ strategy }: StrategyEditorProps) {
   };
 
   const handleValidate = () => {
+    const dslConfig = buildDslConfig();
+    if (!dslConfig) return;
     updateMutation.mutate(
       {
         strategyId: strategy.id,
-        data: {
-          name,
-          description: description || null,
-          dsl_config: config as unknown as Record<string, unknown>,
-        },
+        data: { name, description: description || null, dsl_config: dslConfig },
       },
       {
         onSuccess: () => {
+          markSaved(dslConfig);
           queryClient.invalidateQueries({
             queryKey: getGetStrategyApiStrategiesStrategyIdGetQueryKey(strategy.id),
           });
@@ -174,7 +211,11 @@ export function StrategyEditor({ strategy }: StrategyEditorProps) {
             { strategyId: strategy.id },
             {
               onSuccess: (res) => {
-                const result = res.data as { valid: boolean; errors: string[]; warnings?: string[] };
+                const result = res.data as {
+                  valid: boolean;
+                  errors: string[];
+                  warnings?: string[];
+                };
                 setValidation(result);
                 setShowValidationPanel(true);
                 if (result.valid) {
@@ -200,13 +241,21 @@ export function StrategyEditor({ strategy }: StrategyEditorProps) {
     if (!confirmTemplateReplace?.dsl_config) return;
     const parsed = parseDslConfig(confirmTemplateReplace.dsl_config);
     setConfig(parsed);
+    // The template becomes the new stored shape: canonical templates save as canonical.
+    setCanonicalBase(
+      isCanonicalDsl(confirmTemplateReplace.dsl_config) ? confirmTemplateReplace.dsl_config : null,
+    );
+    setBaseline(parsed);
+    setTemplateLoaded(true);
     setConfirmTemplateReplace(null);
     toast.success(`Template "${confirmTemplateReplace.name}" loaded`);
   };
 
   const handleExportTemplate = () => {
-    // Copy current config as JSON to clipboard
-    const json = JSON.stringify(config, null, 2);
+    // Copy what Save would store (canonical strategies export their canonical dict)
+    const exported = canonicalBase ? buildDslConfig() : config;
+    if (!exported) return;
+    const json = JSON.stringify(exported, null, 2);
     navigator.clipboard.writeText(json).then(
       () => toast.success("Config copied to clipboard as JSON template"),
       () => toast.error("Failed to copy to clipboard"),
@@ -271,6 +320,19 @@ export function StrategyEditor({ strategy }: StrategyEditorProps) {
           </Button>
         </div>
       </div>
+
+      {canonicalBase && (
+        <div className="mb-4 rounded-lg border border-border bg-muted/50 p-3 text-xs text-muted-foreground">
+          Canonical DSL strategy: sweeps, ATR stop indicator, price source and multi-session filters
+          are kept as stored unless you edit them here; symbols are chosen when launching a
+          backtest.
+        </div>
+      )}
+      {canonicalBase && replaceWarning && (
+        <div className="mb-4 rounded-lg border border-yellow-500/50 bg-yellow-500/10 p-3 text-xs text-yellow-600">
+          {replaceWarning}
+        </div>
+      )}
 
       {/* Validation results */}
       {validation && !validation.valid && (
