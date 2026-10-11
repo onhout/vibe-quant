@@ -1,6 +1,59 @@
-import { expect, type Page, test } from "@playwright/test";
+import { type APIRequestContext, expect, type Page, test } from "@playwright/test";
+
+// 127.0.0.1, not localhost: uvicorn binds IPv4 only (see discovery-flow.spec.ts).
+const API = process.env.E2E_API_URL ?? "http://127.0.0.1:8001";
+
+/**
+ * A canonical StrategyDSL with EMA periods, so `sweepableParamsFor` yields
+ * ema_fast_period / ema_slow_period and the sweep toggle renders. Created via the API
+ * in beforeAll so these tests do not depend on any strategy already in the DB copy.
+ */
+const SWEEPABLE_DSL = {
+  name: "e2e_sweep",
+  timeframe: "1h",
+  indicators: {
+    ema_fast: { type: "EMA", period: 12, source: "close" },
+    ema_slow: { type: "EMA", period: 26, source: "close" },
+  },
+  entry_conditions: {
+    long: ["ema_fast crosses_above ema_slow"],
+    short: ["ema_fast crosses_below ema_slow"],
+  },
+  exit_conditions: {
+    long: ["ema_fast crosses_below ema_slow"],
+    short: ["ema_fast crosses_above ema_slow"],
+  },
+  stop_loss: { type: "fixed_pct", percent: 2.0 },
+  take_profit: { type: "risk_reward", risk_reward_ratio: 2.0 },
+};
+
+/** Created once per worker; selected by its unique name, deleted in afterAll. */
+let sweepStrategyId = 0;
+let sweepStrategyName = "";
+
+async function createSweepableStrategy(request: APIRequestContext): Promise<void> {
+  sweepStrategyName = `e2e-sweep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const resp = await request.post(`${API}/api/strategies`, {
+    data: {
+      name: sweepStrategyName,
+      dsl_config: SWEEPABLE_DSL,
+      strategy_type: "trend_following",
+    },
+  });
+  const body = await resp.text();
+  expect(resp.status(), body).toBe(201);
+  sweepStrategyId = (JSON.parse(body) as { id: number }).id;
+}
 
 test.describe("Backtest Launch page", () => {
+  test.beforeAll(async ({ request }) => {
+    await createSweepableStrategy(request);
+  });
+
+  test.afterAll(async ({ request }) => {
+    if (sweepStrategyId) await request.delete(`${API}/api/strategies/${sweepStrategyId}`);
+  });
+
   test.beforeEach(async ({ page }) => {
     await page.goto("/backtest");
   });
@@ -75,10 +128,11 @@ test.describe("Backtest Launch page", () => {
     await expect(leverageInput).toHaveValue("10");
   });
 
-  // The sweep toggle appears only for a strategy with sweepable params (ga_macd_willr_bidir).
+  // The sweep toggle appears only for a strategy with sweepable params (EMA periods here).
   async function selectSweepableStrategy(page: Page) {
+    const name = new RegExp(`^${sweepStrategyName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(v`);
     await page.locator("#strategy-select").click();
-    await page.getByRole("option", { name: /^ga_macd_willr_bidir \(v/ }).click();
+    await page.getByRole("option", { name }).click();
   }
 
   test("sweep toggle is disabled with a failure note when the indicator catalog fails", async ({
@@ -104,7 +158,11 @@ test.describe("Backtest Launch page", () => {
   test("sweep toggle is enabled once the indicator catalog loads", async ({ page }) => {
     await selectSweepableStrategy(page);
 
-    await expect(page.getByRole("button", { name: "Disabled", exact: true })).toBeEnabled();
+    const toggle = page.getByRole("button", { name: "Disabled", exact: true });
+    // Wait for the catalog to load (toggle enables) BEFORE asserting absence of the notes,
+    // otherwise the count-0 assertion can pass while the catalog is still loading.
+    await expect(toggle).toBeEnabled();
+    await expect(page.getByText("Loading indicator catalog...")).toHaveCount(0);
     await expect(page.getByText("Indicator catalog failed to load")).toHaveCount(0);
   });
 });
