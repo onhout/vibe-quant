@@ -600,23 +600,36 @@ def test_cancel_running_job_requeued_by_worker_reports_cancelled(
     sm.claim_next_extraction_job()
     assert sm.get_extraction_job(job_id)["status"] == "running"  # type: ignore[index]
 
+    requeue_ran: list[bool] = []
+
     def _requeue() -> None:
-        time.sleep(0.15)
+        # Ordering handshake: requeue only after the endpoint stamped
+        # cancel_requested_at. A fixed sleep let the requeue land first, so the
+        # POST cancelled the queued job inline and the requeue branch never ran.
+        # Bounded: a missing stamp leaves requeue_ran empty and the test fails.
+        deadline = time.monotonic() + 10.0
+        while not sm.extraction_job_cancel_requested(job_id):
+            if time.monotonic() > deadline:
+                return
+            time.sleep(0.01)
         # attempts 1 < max_attempts 3 -> back to 'queued' (cancel flag survives).
         sm.fail_extraction_job(job_id, "boom")
+        requeue_ran.append(True)
 
     th = threading.Thread(target=_requeue)
     th.start()
     try:
         resp = client.post(f"/api/research/extraction-jobs/{job_id}/cancel")
     finally:
-        th.join(timeout=5.0)
+        th.join(timeout=15.0)
 
+    assert requeue_ran == [True], "worker never requeued the job after the cancel stamp"
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "cancelled"
     row = sm.get_extraction_job(job_id)
     assert row is not None
     assert row["status"] == "cancelled"
+    assert row["attempts"] == 1  # the requeue actually incremented attempts
 
 
 def test_re_extract_after_cancel_enqueues_again(
