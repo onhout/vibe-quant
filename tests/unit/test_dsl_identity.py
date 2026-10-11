@@ -81,7 +81,10 @@ def test_both_modules_use_the_shared_function_object(monkeypatch) -> None:
             return iter(())
 
     class _StubState:
-        conn = _StubConn()
+        conn = _StubConn()  # discovery._find_strategy_by_dsl still reads state.conn
+
+        def list_completed_discovery_notes(self, notes_like: str | None = None) -> list[object]:
+            return []
 
     monkeypatch.setattr(consistency, "dsl_body_key", record)
     monkeypatch.setattr(discovery, "dsl_body_key", record)

@@ -14,9 +14,13 @@ serialized by ``with self._write_lock:``.
 from __future__ import annotations
 
 import ast
+import json
+import sqlite3
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import pytest
 
 import vibe_quant.db.state_manager as _state_manager_module
 
@@ -237,3 +241,287 @@ def test_concurrent_readers_and_writer_do_not_corrupt_connection(
     assert errors == [], errors
     assert sm.count_active_extraction_jobs() == 0
     assert len(sm.list_extraction_jobs(status="done")) == n_jobs
+
+
+# --- Modules that used to reach into ``state.conn`` from outside StateManager ---
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_EXTERNAL_MODULES = (
+    "vibe_quant/screening/replay_drift.py",
+    "vibe_quant/validation/consistency.py",
+)
+
+
+def _conn_attribute_lines(source: str) -> list[int]:
+    """Line numbers of every ``<anything>.conn`` / ``<anything>._conn`` access."""
+    return [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Attribute) and node.attr in {"conn", "_conn"}
+    ]
+
+
+def test_state_consumers_never_touch_the_shared_connection() -> None:
+    offenders = {
+        rel: lines
+        for rel in _EXTERNAL_MODULES
+        if (lines := _conn_attribute_lines((_REPO_ROOT / rel).read_text()))
+    }
+    assert offenders == {}, (
+        "these modules read/write StateManager's shared sqlite connection outside "
+        f"its write lock; add a locked StateManager method instead: {offenders}"
+    )
+
+
+def test_conn_attribute_scanner_flags_external_access() -> None:
+    assert _conn_attribute_lines("def f(state):\n    return state.conn.execute('x')\n") == [2]
+    assert _conn_attribute_lines("def f(state):\n    return state.get_strategy(1)\n") == []
+
+
+# --- New locked methods return exactly what the old inline queries did ---
+
+
+def _seed_screening_run(sm: StateManager, strategy_id: int, status: str, rows: int) -> int:
+    run_id = sm.create_backtest_run(
+        strategy_id=strategy_id,
+        run_mode="screening",
+        symbols=["BTCUSDT"],
+        timeframe="4h",
+        start_date="2024-01-01",
+        end_date="2025-01-01",
+        parameters={},
+    )
+    sm.update_backtest_run_status(run_id, status)
+    for i in range(rows):
+        sm.conn.execute(
+            "INSERT INTO sweep_results (run_id, parameters, sharpe_ratio, total_trades)"
+            " VALUES (?, ?, ?, ?)",
+            (run_id, f'{{"p": {i}}}', 1.0 + i, 10 + i),
+        )
+    sm.conn.commit()
+    return run_id
+
+
+def test_latest_screening_run_matches_old_inline_query(tmp_state_manager: StateManager) -> None:
+    sm = tmp_state_manager
+    sid = sm.create_strategy("s1", {"name": "s1"})
+    other = sm.create_strategy("s2", {"name": "s2"})
+    _seed_screening_run(sm, sid, "completed", 1)
+    newest = _seed_screening_run(sm, sid, "completed", 2)
+    _seed_screening_run(sm, sid, "failed", 3)  # newer but not completed
+    _seed_screening_run(sm, sid, "completed", 0)  # newer, completed, no sweep rows
+    _seed_screening_run(sm, other, "completed", 1)
+
+    old = sm.conn.execute(
+        """
+        SELECT br.id, br.start_date, br.end_date FROM backtest_runs br
+        WHERE br.strategy_id = ? AND br.run_mode = 'screening'
+              AND br.status = 'completed'
+              AND EXISTS (SELECT 1 FROM sweep_results sr WHERE sr.run_id = br.id)
+        ORDER BY br.id DESC LIMIT 1
+        """,
+        (sid,),
+    ).fetchone()
+    new = sm.get_latest_screening_run_with_sweeps(sid)
+    assert new == (newest, "2024-01-01", "2025-01-01")
+    assert new == tuple(old)
+    assert sm.get_latest_screening_run_with_sweeps(9999) is None
+
+
+def test_sweep_reference_rows_match_old_inline_query(tmp_state_manager: StateManager) -> None:
+    sm = tmp_state_manager
+    sid = sm.create_strategy("s1", {"name": "s1"})
+    run_id = _seed_screening_run(sm, sid, "completed", 3)
+    sm.conn.execute(
+        "INSERT INTO sweep_results (run_id, parameters, sharpe_ratio, total_trades)"
+        " VALUES (?, '{}', NULL, NULL)",
+        (run_id,),
+    )
+    sm.conn.commit()
+    old = [
+        tuple(r)
+        for r in sm.conn.execute(
+            "SELECT parameters, sharpe_ratio, total_trades FROM sweep_results "
+            "WHERE run_id = ? ORDER BY id",
+            (run_id,),
+        ).fetchall()
+    ]
+    new = sm.list_sweep_reference_rows(run_id)
+    assert new == old
+    assert new[0] == ('{"p": 0}', 1.0, 10)
+    assert new[-1] == ("{}", None, None)
+    assert sm.list_sweep_reference_rows(9999) == []
+
+
+def test_strategy_dsl_config_raw_returns_stored_column(tmp_state_manager: StateManager) -> None:
+    sm = tmp_state_manager
+    sid = sm.create_strategy("s1", {"name": "s1", "size": 0.5})
+    assert sm.get_strategy_dsl_config_raw(sid) == '{"name": "s1", "size": 0.5}'
+    assert sm.get_strategy_dsl_config_raw(9999) is None
+
+
+def _seed_discovery_run(sm: StateManager, notes: str | None, status: str = "completed") -> int:
+    run_id = sm.create_backtest_run(
+        strategy_id=None,
+        run_mode="discovery",
+        symbols=["BTCUSDT"],
+        timeframe="1h",
+        start_date="2025-01-01",
+        end_date="2025-06-01",
+        parameters={},
+    )
+    sm.update_backtest_run_status(run_id, status)
+    if notes is not None:
+        sm.conn.execute(
+            "INSERT INTO backtest_results (run_id, notes) VALUES (?, ?)", (run_id, notes)
+        )
+        sm.conn.commit()
+    return run_id
+
+
+def test_completed_discovery_notes_match_old_inline_query(
+    tmp_state_manager: StateManager,
+) -> None:
+    sm = tmp_state_manager
+    first = _seed_discovery_run(sm, '{"top_strategies": ["abc123"]}')
+    _seed_discovery_run(sm, '{"top_strategies": ["zzz"]}', status="failed")
+    _seed_discovery_run(sm, None)  # completed but no result row
+    last = _seed_discovery_run(sm, '{"top_strategies": ["abc123", "other"]}')
+
+    base = """
+        SELECT br.id, res.notes, br.start_date, br.end_date, br.symbols
+        FROM backtest_runs br
+        JOIN backtest_results res ON res.run_id = br.id
+        WHERE br.run_mode = 'discovery' AND br.status = 'completed'
+    """
+    old_all = [tuple(r) for r in sm.conn.execute(base + " ORDER BY br.id DESC")]
+    new_all = sm.list_completed_discovery_notes()
+    assert new_all == old_all
+    assert [r[0] for r in new_all] == [last, first]
+
+    old_like = [
+        tuple(r)
+        for r in sm.conn.execute(
+            base + " AND res.notes LIKE ? ORDER BY br.id DESC", ("%other%",)
+        )
+    ]
+    new_like = sm.list_completed_discovery_notes("%other%")
+    assert new_like == old_like
+    assert [r[0] for r in new_like] == [last]
+
+
+def _drift_payload() -> dict[str, object]:
+    return {"flagged": True, "trade_ratio": 0.5}
+
+
+def test_merge_replay_drift_payload_prefers_result_notes(
+    tmp_state_manager: StateManager,
+) -> None:
+    sm = tmp_state_manager
+    run_id = sm.create_backtest_run(
+        strategy_id=None, run_mode="screening", symbols=["BTCUSDT"], timeframe="1h",
+        start_date="2025-01-01", end_date="2025-06-01", parameters={"keep": 1},
+    )
+    sm.conn.execute(
+        "INSERT INTO backtest_results (run_id, notes) VALUES (?, ?)",
+        (run_id, '{"data_window": "x"}'),
+    )
+    sm.conn.commit()
+    sm.merge_replay_drift_payload(run_id, _drift_payload())
+    notes = json.loads(sm.get_backtest_result(run_id)["notes"])  # type: ignore[index]
+    assert notes == {"data_window": "x", "replay_drift": _drift_payload()}
+    # parameters untouched when the notes row took the payload
+    assert sm.get_backtest_run(run_id)["parameters"] == {"keep": 1}  # type: ignore[index]
+
+
+def test_merge_replay_drift_payload_falls_back_to_run_parameters(
+    tmp_state_manager: StateManager,
+) -> None:
+    sm = tmp_state_manager
+    run_id = sm.create_backtest_run(
+        strategy_id=None, run_mode="screening", symbols=["BTCUSDT"], timeframe="1h",
+        start_date="2025-01-01", end_date="2025-06-01", parameters={"keep": 1},
+    )
+    sm.merge_replay_drift_payload(run_id, _drift_payload())
+    assert sm.get_backtest_run(run_id)["parameters"] == {  # type: ignore[index]
+        "keep": 1,
+        "replay_drift": _drift_payload(),
+    }
+
+
+def test_merge_replay_drift_payload_replaces_garbage_notes(
+    tmp_state_manager: StateManager,
+) -> None:
+    sm = tmp_state_manager
+    run_id = sm.create_backtest_run(
+        strategy_id=None, run_mode="screening", symbols=["BTCUSDT"], timeframe="1h",
+        start_date="2025-01-01", end_date="2025-06-01", parameters={},
+    )
+    sm.conn.execute("INSERT INTO backtest_results (run_id, notes) VALUES (?, ?)", (run_id, "[1]"))
+    sm.conn.commit()
+    sm.merge_replay_drift_payload(run_id, _drift_payload())
+    notes = json.loads(sm.get_backtest_result(run_id)["notes"])  # type: ignore[index]
+    assert notes == {"replay_drift": _drift_payload()}
+
+
+def _screening_run(sm: StateManager) -> int:
+    return sm.create_backtest_run(
+        strategy_id=None, run_mode="screening", symbols=["BTCUSDT"], timeframe="1h",
+        start_date="2025-01-01", end_date="2025-06-01", parameters={"keep": 1},
+    )
+
+
+def _read_committed(db_path: Path, sql: str, run_id: int) -> str:
+    """Read through an independent connection: sees only committed data."""
+    other = sqlite3.connect(db_path)
+    try:
+        return str(other.execute(sql, (run_id,)).fetchone()[0])
+    finally:
+        other.close()
+
+
+def test_merge_replay_drift_payload_notes_branch_is_committed(
+    tmp_state_manager: StateManager, tmp_path: Path
+) -> None:
+    sm = tmp_state_manager
+    run_id = _screening_run(sm)
+    sm.conn.execute(
+        "INSERT INTO backtest_results (run_id, notes) VALUES (?, ?)",
+        (run_id, '{"data_window": "x"}'),
+    )
+    sm.conn.commit()
+    sm.merge_replay_drift_payload(run_id, _drift_payload())
+    raw = _read_committed(
+        tmp_path / "state.db", "SELECT notes FROM backtest_results WHERE run_id = ?", run_id
+    )
+    assert json.loads(raw) == {"data_window": "x", "replay_drift": _drift_payload()}
+
+
+def test_merge_replay_drift_payload_parameters_branch_is_committed(
+    tmp_state_manager: StateManager, tmp_path: Path
+) -> None:
+    sm = tmp_state_manager
+    run_id = _screening_run(sm)
+    sm.merge_replay_drift_payload(run_id, _drift_payload())
+    raw = _read_committed(
+        tmp_path / "state.db", "SELECT parameters FROM backtest_runs WHERE id = ?", run_id
+    )
+    assert json.loads(raw) == {"keep": 1, "replay_drift": _drift_payload()}
+
+
+@pytest.mark.parametrize("empty_notes", [None, ""])
+def test_merge_replay_drift_payload_empty_result_notes_fall_back_to_parameters(
+    tmp_state_manager: StateManager, empty_notes: str | None
+) -> None:
+    sm = tmp_state_manager
+    run_id = _screening_run(sm)
+    sm.conn.execute(
+        "INSERT INTO backtest_results (run_id, notes) VALUES (?, ?)", (run_id, empty_notes)
+    )
+    sm.conn.commit()
+    sm.merge_replay_drift_payload(run_id, _drift_payload())
+    assert sm.get_backtest_run(run_id)["parameters"] == {  # type: ignore[index]
+        "keep": 1,
+        "replay_drift": _drift_payload(),
+    }
+    assert sm.get_backtest_result(run_id)["notes"] == empty_notes  # type: ignore[index]

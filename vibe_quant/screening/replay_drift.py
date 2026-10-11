@@ -179,42 +179,7 @@ def _store_drift_payload(
     state: StateManager, run_id: int, payload: dict[str, object]
 ) -> None:
     """Persist drift payload in backtest_results.notes if present, else in parameters."""
-    conn = state.conn
-    row = conn.execute(
-        "SELECT notes FROM backtest_results WHERE run_id = ?", (run_id,)
-    ).fetchone()
-    if row is not None and row[0]:
-        try:
-            notes = json.loads(row[0])
-        except (json.JSONDecodeError, TypeError):
-            notes = {}
-        if not isinstance(notes, dict):
-            notes = {}
-        notes["replay_drift"] = payload
-        conn.execute(
-            "UPDATE backtest_results SET notes = ? WHERE run_id = ?",
-            (json.dumps(notes), run_id),
-        )
-        conn.commit()
-        return
-
-    row2 = conn.execute(
-        "SELECT parameters FROM backtest_runs WHERE id = ?", (run_id,)
-    ).fetchone()
-    params: dict[str, object] = {}
-    if row2 and row2[0]:
-        try:
-            parsed = json.loads(row2[0])
-        except (json.JSONDecodeError, TypeError):
-            parsed = {}
-        if isinstance(parsed, dict):
-            params = parsed
-    params["replay_drift"] = payload
-    conn.execute(
-        "UPDATE backtest_runs SET parameters = ? WHERE id = ?",
-        (json.dumps(params), run_id),
-    )
-    conn.commit()
+    state.merge_replay_drift_payload(run_id, payload)
 
 
 def check_replay_drift(state: StateManager, run_id: int) -> dict[str, object] | None:

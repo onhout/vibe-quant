@@ -721,6 +721,105 @@ class StateManager:
             ).fetchone()
         return dict(row) if row else None
 
+    def merge_replay_drift_payload(self, run_id: int, payload: JsonDict) -> None:
+        """Persist a replay-drift payload: into the result's notes JSON if it has
+        notes, else into ``backtest_runs.parameters``."""
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT notes FROM backtest_results WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is not None and row[0]:
+                try:
+                    notes = json.loads(row[0])
+                except (json.JSONDecodeError, TypeError):
+                    notes = {}
+                if not isinstance(notes, dict):
+                    notes = {}
+                notes["replay_drift"] = payload
+                self.conn.execute(
+                    "UPDATE backtest_results SET notes = ? WHERE run_id = ?",
+                    (json.dumps(notes), run_id),
+                )
+                self.conn.commit()
+                return
+
+            row2 = self.conn.execute(
+                "SELECT parameters FROM backtest_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            params: JsonDict = {}
+            if row2 and row2[0]:
+                try:
+                    parsed = json.loads(row2[0])
+                except (json.JSONDecodeError, TypeError):
+                    parsed = {}
+                if isinstance(parsed, dict):
+                    params = parsed
+            params["replay_drift"] = payload
+            self.conn.execute(
+                "UPDATE backtest_runs SET parameters = ? WHERE id = ?",
+                (json.dumps(params), run_id),
+            )
+            self.conn.commit()
+
+    def get_latest_screening_run_with_sweeps(
+        self, strategy_id: int
+    ) -> tuple[int, str, str] | None:
+        """Newest completed screening run of a strategy that has sweep rows.
+
+        Returns ``(id, start_date, end_date)`` or None.
+        """
+        with self._write_lock:
+            row = self.conn.execute(
+                """
+                SELECT br.id, br.start_date, br.end_date FROM backtest_runs br
+                WHERE br.strategy_id = ? AND br.run_mode = 'screening'
+                      AND br.status = 'completed'
+                      AND EXISTS (SELECT 1 FROM sweep_results sr WHERE sr.run_id = br.id)
+                ORDER BY br.id DESC LIMIT 1
+                """,
+                (strategy_id,),
+            ).fetchone()
+            return None if row is None else (row[0], row[1], row[2])
+
+    def list_sweep_reference_rows(
+        self, run_id: int
+    ) -> list[tuple[str, float | None, int | None]]:
+        """``(parameters, sharpe_ratio, total_trades)`` of a run's sweep rows, by id."""
+        with self._write_lock:
+            rows = self.conn.execute(
+                "SELECT parameters, sharpe_ratio, total_trades FROM sweep_results "
+                "WHERE run_id = ? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+            return [(r[0], r[1], r[2]) for r in rows]
+
+    def get_strategy_dsl_config_raw(self, strategy_id: int) -> object:
+        """Stored ``strategies.dsl_config`` column as-is (unparsed); None if no such row."""
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT dsl_config FROM strategies WHERE id = ?", (strategy_id,)
+            ).fetchone()
+            return None if row is None else row[0]
+
+    def list_completed_discovery_notes(
+        self, notes_like: str | None = None
+    ) -> list[tuple[int, str, str, str, str]]:
+        """``(run_id, notes, start_date, end_date, symbols)`` of completed discovery
+        runs that have a result row, newest first; optionally ``notes LIKE`` a pattern."""
+        sql = """
+            SELECT br.id, res.notes, br.start_date, br.end_date, br.symbols
+            FROM backtest_runs br
+            JOIN backtest_results res ON res.run_id = br.id
+            WHERE br.run_mode = 'discovery' AND br.status = 'completed'
+        """
+        params: tuple[str, ...] = ()
+        if notes_like is not None:
+            sql += " AND res.notes LIKE ?"
+            params = (notes_like,)
+        with self._write_lock:
+            rows = self.conn.execute(sql + " ORDER BY br.id DESC", params).fetchall()
+            return [(r[0], r[1], r[2], r[3], r[4]) for r in rows]
+
     def list_backtest_results(
         self, strategy_id: int | None = None, limit: int | None = None
     ) -> list[JsonDict]:

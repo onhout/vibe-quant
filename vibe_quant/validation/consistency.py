@@ -224,22 +224,9 @@ def find_screening_reference(
             a discovery run's holdout window is compared against the
             champion's holdout metrics (same window).
     """
-    run_row = state.conn.execute(
-        """
-        SELECT br.id, br.start_date, br.end_date FROM backtest_runs br
-        WHERE br.strategy_id = ? AND br.run_mode = 'screening'
-              AND br.status = 'completed'
-              AND EXISTS (SELECT 1 FROM sweep_results sr WHERE sr.run_id = br.id)
-        ORDER BY br.id DESC LIMIT 1
-        """,
-        (strategy_id,),
-    ).fetchone()
+    run_row = state.get_latest_screening_run_with_sweeps(strategy_id)
     if run_row is not None:
-        rows = state.conn.execute(
-            "SELECT parameters, sharpe_ratio, total_trades FROM sweep_results "
-            "WHERE run_id = ? ORDER BY id",
-            (run_row[0],),
-        ).fetchall()
+        rows = state.list_sweep_reference_rows(run_row[0])
         usable = [
             (params, float(sharpe), int(trades or 0))
             for params, sharpe, trades in rows
@@ -271,13 +258,11 @@ def find_screening_reference(
 
 
 def _strategy_dsl(state: StateManager, strategy_id: int) -> dict[str, object] | None:
-    row = state.conn.execute(
-        "SELECT dsl_config FROM strategies WHERE id = ?", (strategy_id,)
-    ).fetchone()
-    if row is None:
+    raw = state.get_strategy_dsl_config_raw(strategy_id)
+    if raw is None:
         return None
     try:
-        dsl = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        dsl = json.loads(raw) if isinstance(raw, str) else raw
     except (TypeError, json.JSONDecodeError):
         return None
     return dsl if isinstance(dsl, dict) else None
@@ -298,19 +283,12 @@ def _reference_from_discovery_notes(
     first match wins.
     """
     wanted_body = dsl_body_key(strategy_dsl) if strategy_dsl else None
-    sql = """
-        SELECT br.id, res.notes, br.start_date, br.end_date, br.symbols
-        FROM backtest_runs br
-        JOIN backtest_results res ON res.run_id = br.id
-        WHERE br.run_mode = 'discovery' AND br.status = 'completed'
-    """
-    params: tuple[str, ...] = ()
-    if wanted_body is None:
-        sql += " AND res.notes LIKE ?"
-        params = (f'%{strategy_name.removeprefix("genome_")}%',)
+    notes_like = (
+        None if wanted_body is not None else f'%{strategy_name.removeprefix("genome_")}%'
+    )
     # DSL-known path scans every completed run: no sound SQL prefilter exists
     # for a renamed strategy (hundreds of runs; JSON parse stops at first hit).
-    rows = state.conn.execute(sql + " ORDER BY br.id DESC", params)
+    rows = state.list_completed_discovery_notes(notes_like)
     for run_id, notes, run_start, run_end, run_symbols in rows:
         try:
             payload = json.loads(notes)
