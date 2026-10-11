@@ -7,12 +7,26 @@ description: Run a full discovery cycle — parallel GA discoveries (CPU-scaled)
 
 Full-cycle automated discovery: journal review, 5 parallel discoveries, monitoring, overfitting checks, backtesting, summary, and journal entry.
 
+## Verified state (2026-10-11, runs 880–888) — overrides older text below
+
+- **Port 8000 may be someone else's server** (a `python -m http.server` held it). `lsof` is not proof: probe `curl -s localhost:8000/api/discovery/results/1` for JSON; if not ours, run the backend on another port (e.g. 8010). A backend started with Bash `run_in_background` is killed at the background time limit (default 30 min) — pass a long `timeout`. Discovery subprocesses outlive it.
+- **`GET /jobs/{id}/progress` can show a STALE progress file** from another DB (ui-check/test copies share `logs/`, run ids collide; bead filed 2026-10-11). Before launch: `ls logs/discovery_<next ids>_progress.json` and delete leftovers; trust `=== GEN n/m ===` lines in `logs/discovery_<id>_<ts>.log` over the API.
+- **Watch progress with Monitor**, not `sleep` (foreground `sleep N &&` is blocked). One `tail -n0 -F | rg --line-buffered "=== GEN|DISCOVERY COMPLETE|Gate FAIL|No champion|Traceback|\[ERROR\]"` per log file with an id prefix; a glob is expanded once, so re-arm after launching new runs.
+- **API hardcodes `--max-workers 4`.** 4 parallel runs = 16 workers → load ≈ 29 on 10 cores; backtests slowed from ~1.5–3 s to 20–60 s each. Size from MEASURED rates below, assuming ~3× slowdown under 4-way contention.
+- **Measured backtest times (4h, ~2.75 y, idle → contended):** single-symbol pool backtest 1.5–3 s → 20–30 s; TREND_ENSEMBLE 20–65 s (slowest indicator); `symbol_agg=worst` on 3 symbols ≈ 3 backtests per genome; 1h single-symbol ~25–55 s contended. pop 10–12 × 4 gens finishes in 1–6 min; pop 30 × 12 (SOL 4h, 4.3 y) took 473 s.
+- **50-trade hard gate kills the gradient:** 4h single-symbol on ~2.2 y train gives 17–48 trades → zero_score 12/12 every gen (run 882). 1h BTC 2025-01..2026-09 with eval_windows 3: every ≥50-trade genome had a negative window → all 0 (run 887). Use ≥4 y windows on 4h or multi-symbol portfolio.
+- **DSR gate N is cumulative across ALL prior same-timeframe runs with an overlapping train window** (any symbol, back to run 7): 4h N ≈ 21 500 (127 prior runs) → DSR p ≈ 0.99+ for every candidate. Read `notes.dsr_trials` (`gate_n`, `prior_n`, `prior_run_ids`). Expect 0 champions on 4h until that changes; a new timeframe/window has a smaller N.
+- **Gate-rejected candidates keep no DSL** (`guardrail_rejections` has uid + reasons only; log has indicator names, not params). 0 champions ⇒ nothing to promote/validate; say so instead of rebuilding genomes.
+- **Dates bug is FIXED:** launch persists `start_date`/`end_date`; skip the date-fix steps. Promote supports `mode=validation` (holdout range by default, `validation_range=full` for the whole range).
+- **`convergence_generations` 3** stops small runs after 3 flat gens (most runs here stopped at gen 4).
+- Launch fields worth exercising: `symbol_agg` (`portfolio|worst`), `eval_windows`, `seed` (replay), `cross_window_months`, `wfa_oos_step_days`, `train_test_split` (holdout default 0.8). Cross-window/WFA only run when a candidate survives the guardrails.
+
 ## Shell Gotchas (CRITICAL — read before writing any bash)
 
 1. **`status` is read-only in zsh** — never use `status` as a variable name. Use `st`, `stat`, or `run_status` instead.
 2. **Always use `rg` (ripgrep) instead of `grep`** — faster, no `|` escaping. `rg "ERROR|Exception" file` not `grep "ERROR\|Exception" file`.
 3. **Don't embed `$rid` inside python3 heredocs** — shell expands it before python sees it. Use the python3 `-c` approach where `$rid` stays in the shell layer, not inside python strings.
-4. **USE `sleep N &&` for polling waits** — combine `sleep 180 && <poll_command>` in a single Bash tool call with `timeout: 300000`. This prevents spamming the user with rapid tool calls. Each poll should wait 3 minutes via sleep before checking.
+4. **Don't poll with `sleep N &&`** (blocked by the harness) — use Monitor on the discovery logs or a `run_in_background` `until` loop (see Verified state).
 5. **Parallel background commands**: use `cmd1 & cmd2 & wait` pattern. Check exit codes after `wait`.
 6. **ALWAYS use `dangerouslyDisableSandbox: true`** for ALL Bash tool calls that use `curl` to localhost or run `python3 -c` with sqlite3. The sandbox blocks localhost network connections and may block DB file access. This applies to discovery launch, progress polling, results fetching, promote calls, and any sqlite3 queries. Without this flag, curl returns empty responses causing JSON parse errors.
 
@@ -43,24 +57,10 @@ done
 
 ### Currently in Discovery Genome Pool
 
-These can be used directly in discovery (`vibe_quant/discovery/genome.py`):
-
-| Indicator | Category   | Speed              | Param Ranges                                | Threshold Range |
-| --------- | ---------- | ------------------ | ------------------------------------------- | --------------- |
-| RSI       | Momentum   | Rust-native (fast) | period: [5, 50]                             | [25.0, 75.0]    |
-| MACD      | Momentum   | pandas-ta (slow)   | fast: [8,21], slow: [21,50], signal: [5,13] | [-0.005, 0.005] |
-| ATR       | Volatility | Rust-native (fast) | period: [5, 30]                             | [0.001, 0.03]   |
-| STOCH     | Momentum   | Rust-native (fast) | k_period: [5,21], d_period: [3,9]           | [20.0, 80.0]    |
-| MFI       | Volume     | Rust-native (fast) | period: [5, 30]                             | [20.0, 80.0]    |
-| ADX       | Trend      | Rust-native (fast) | period: [7, 30]                             | [15.0, 60.0]    |
-| CCI       | Momentum   | Rust-native (fast) | period: [10, 50]                            | [-200.0, 200.0] |
-| WILLR     | Momentum   | pandas-ta (slow)   | period: [5, 30]                             | [-100.0, 0.0]   |
-| ROC       | Momentum   | Rust-native (fast) | period: [5, 30]                             | [-10.0, 10.0]   |
-
-**IMPORTANT:** Always verify the genome pool is current before launching. Run:
+The pool is built from the indicator registry + plugins (17 entries on 2026-10-11: ADAPTIVE_RSI, ADX, BBANDS, CCI, DONCHIAN, MACD, MFI, NATR, PRICE_POSITION, RAMS, ROC, RSI, SQUEEZE_MOM, SQUEEZE_RATIO, STOCH, TREND_ENSEMBLE, WILLR). Print the live pool before launching:
 
 ```bash
-rg "INDICATOR_POOL" vibe_quant/discovery/genome.py -A 3 | head -40
+.venv/bin/python -c "from vibe_quant.discovery.genome import INDICATOR_POOL as P; [print(k, v.param_ranges) for k, v in P.items()]" 2>/dev/null
 ```
 
 If a needed indicator is missing, add it before discovery.
@@ -126,8 +126,7 @@ GET  /api/strategies/{id}                               → {id, name, dsl_confi
 
 - `sharpe_ratio`, `total_trades`, `total_return`, `profit_factor`, `max_drawdown`, `win_rate`, `total_fees`
 
-**Known bug — discovery launch missing dates:**
-Discovery launch API doesn't save `start_date`/`end_date` to `backtest_runs`. This causes screening to fail with 0 trades.
+**FIXED (verified 2026-10-11) — discovery launch missing dates:** launch now saves `start_date`/`end_date`; the date-fix steps below are historical — check the run row and skip them when dates are set.
 
 **CRITICAL ORDERING:** You MUST fix dates BEFORE promoting. The promote endpoint auto-runs screening immediately. If dates are empty when you promote, screening produces 0 trades and you must re-run.
 

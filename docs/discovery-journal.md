@@ -4,6 +4,25 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: Post-upgrade shakedown — 4 configs exercising the last days' changes (runs 880–888, 0 champions)
+
+Goal: full-flow smoke of the 2026-10-10/11 changes (per-instrument fill release + multi-symbol portfolio, worst-of-symbols soft score with eval_windows>1, pandas-ta-classic 0.8.32 ADX/RSI path, BBANDS typical price, cumulative DSR N, seeds, cross-window + WFA). Backend on :8010 (:8000 held by an unrelated http.server). All 4h unless noted, holdout 20%, default gates. Compiler hash in run notes.
+
+| Run | Config | Pop×Gen (ran) | Wall | Best score | Outcome |
+|---|---|---|---|---|---|
+| 880 | BTC+ETH portfolio, TREND_ENSEMBLE/DONCHIAN/SQUEEZE_RATIO/ROC, ew 1, seed 20261011, 2024-01..2026-09 | 10×4 (4) | 327 s | 0.4644 | 3 rejected: DSR p 0.9938–0.9998 (N 21541), bootstrap lower −0.33…−1.47 |
+| 885 | SOL, BBANDS/MACD/WILLR/PRICE_POSITION, ew 3, cross-window [1,2], WFA 120d, seed 20261024, 2022-06..2026-09 | 30×12 (10) | 473 s | 0.4485 | 5 rejected: DSR p 0.9948–0.9992 (N 21747), bootstrap lower −0.25…−0.66; cross-window/WFA never ran |
+| 887 | BTC **1h**, ADX/RSI/STOCH/CCI/MFI, ew 3, seed 20261023, 2025-01..2026-09 | 12×4 (4) | 213 s | 0 | zero_score 12/12 every gen (≥50-trade genomes all had a negative window) |
+| 888 | ETH/SOL/BNB worst, SQUEEZE_MOM/SQUEEZE_RATIO/DONCHIAN/NATR/ROC, ew 2, seed 20261022, 2024-01..2026-09 | 10×4 (4) | 161 s | 0.1619 | worst_symbol_train FAIL (SOL return ≤ 0) |
+
+Calibration runs 881–883 (smaller/shorter variants of the same configs) ended the same way: 881 worst-symbol FAIL (SOL), 882 zero 12/12 (4h single-symbol BTC, 17–48 trades per genome < 50-trade gate), 883 DSR p 0.9979 (N 21546). 884/886 killed (oversized for the 30-min budget under contention). No champion → nothing promoted or validated.
+
+**Findings:** (1) DSR gate N is ~21 500 on 4h because the cumulative rule counts 127 prior runs (all symbols, back to run 7, across comparability breaks) — every 4h candidate fails DSR at p > 0.99 regardless of quality. Bootstrap CI also failed every candidate, so the conclusion "no edge" holds even without DSR. (2) 4 parallel API runs × 4 hardcoded workers → load ≈ 29 on 10 cores, backtests ~10× slower than idle (1.5–3 s → 20–60 s). (3) Stale `discovery_<id>_progress.json` from another DB shows wrong progress for colliding run ids (bead filed). (4) All new code paths ran without errors: multi-symbol portfolio, worst-mode + eval_windows 2, cumulative DSR, 1h ADX path.
+
+**Next:** decide the DSR N scope (same symbol? since last comparability break?) before more 4h discovery; use ≥4 y windows or portfolio mode to clear the 50-trade gate.
+
+---
+
 ## 2026-10-10: Semantics break — per-instrument fill release, Binance specs, multi-symbol validation fix (job 20261010-edge-engine)
 
 Screening/discovery no longer fill one strategy bar late: each strategy queues orders in a per-instrument outbox and releases them on its own next price update (screening: two synthetic 1m fill ticks per bar, `command_release="trade_tick"`; validation: its own next 1m detail bar). Open screening positions are now marked at run end, symbols are sorted, and instrument specs match Binance (BTC min_notional 50, ETH 20, SOL size step 0.01) with a rebuilt catalog. NT's `LatencyModel` is gone from bar data — it released orders venue-wide, so in multi-symbol runs the 2nd symbol filled at the signal-bar close.
