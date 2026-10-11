@@ -237,11 +237,12 @@ def _compute_single(
         outputs = []
         for col in cols:
             col_lower = col.lower()
-            if "lower" in col_lower or "dcl" in col_lower:
+            # pandas-ta-classic names: KCL*/KCB*/KCU* (lower/basis/upper), DCL*/DCM*/DCU*
+            if col_lower.startswith(("kcl", "dcl")):
                 outputs.append(("lower", result[col]))
-            elif "upper" in col_lower or "dcu" in col_lower:
+            elif col_lower.startswith(("kcu", "dcu")):
                 outputs.append(("upper", result[col]))
-            elif "mid" in col_lower or "basis" in col_lower or "dcm" in col_lower:
+            elif col_lower.startswith(("kcb", "dcm")):
                 outputs.append(("middle", result[col]))
         return outputs
 
