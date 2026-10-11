@@ -762,24 +762,37 @@ class StateManager:
             self.conn.commit()
 
     def get_latest_screening_run_with_sweeps(
-        self, strategy_id: int
+        self,
+        strategy_id: int,
+        *,
+        window: tuple[str, str] | None = None,
+        symbols: list[str] | None = None,
     ) -> tuple[int, str, str] | None:
         """Newest completed screening run of a strategy that has sweep rows.
+
+        ``window`` / ``symbols`` (order-insensitive), when given, restrict it to
+        runs over exactly that date range / symbol set.
 
         Returns ``(id, start_date, end_date)`` or None.
         """
         with self._write_lock:
-            row = self.conn.execute(
+            rows = self.conn.execute(
                 """
-                SELECT br.id, br.start_date, br.end_date FROM backtest_runs br
+                SELECT br.id, br.start_date, br.end_date, br.symbols FROM backtest_runs br
                 WHERE br.strategy_id = ? AND br.run_mode = 'screening'
                       AND br.status = 'completed'
                       AND EXISTS (SELECT 1 FROM sweep_results sr WHERE sr.run_id = br.id)
-                ORDER BY br.id DESC LIMIT 1
+                ORDER BY br.id DESC
                 """,
                 (strategy_id,),
-            ).fetchone()
-            return None if row is None else (row[0], row[1], row[2])
+            ).fetchall()
+        for run_id, start, end, run_symbols in rows:
+            if window is not None and (start, end) != tuple(window):
+                continue
+            if symbols is not None and sorted(json.loads(run_symbols or "[]")) != sorted(symbols):
+                continue
+            return (run_id, start, end)
+        return None
 
     def list_sweep_reference_rows(
         self, run_id: int

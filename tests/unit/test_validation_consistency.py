@@ -222,3 +222,67 @@ class TestFindScreeningReference:
         sid = state.create_strategy("lonely", {"name": "lonely"})
         assert find_screening_reference(state, sid, "lonely") is None
         state.close()
+
+
+class TestScreeningReferenceMatchesValidationScope:
+    """A screening run only references a validation over the same window AND
+    the same symbol set: run 901 (BTC alone, 2020-10..2022-05) was flagged as a
+    collapse against run 897 (4-coin portfolio), and run 899 (2022-06..2026-09)
+    against a 2020-10..2022-05 screening."""
+
+    @staticmethod
+    def _screening(
+        state: StateManager, sid: int, symbols: list[str], start: str, end: str, sharpe: float
+    ) -> int:
+        run_id = state.create_backtest_run(
+            strategy_id=sid, run_mode="screening", symbols=symbols, timeframe="4h",
+            start_date=start, end_date=end, parameters={},
+        )
+        state.update_backtest_run_status(run_id, "completed")
+        state.conn.execute(
+            "INSERT INTO sweep_results (run_id, parameters, sharpe_ratio, total_trades)"
+            " VALUES (?, '{}', ?, 273)",
+            (run_id, sharpe),
+        )
+        state.conn.commit()
+        return run_id
+
+    PORTFOLIO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+
+    def test_other_symbol_set_is_not_a_reference(self, tmp_path: Path) -> None:
+        state = StateManager(db_path=tmp_path / "t.db")
+        sid = state.create_strategy("h2b", {"name": "h2b"})
+        self._screening(state, sid, self.PORTFOLIO, "2020-10-01", "2022-05-31", 1.81)
+        ref = find_screening_reference(
+            state, sid, "h2b", val_window=("2020-10-01", "2022-05-31"), val_symbols=["BTCUSDT"]
+        )
+        assert ref is None
+        state.close()
+
+    def test_other_window_is_not_a_reference(self, tmp_path: Path) -> None:
+        state = StateManager(db_path=tmp_path / "t.db")
+        sid = state.create_strategy("h2b", {"name": "h2b"})
+        self._screening(state, sid, self.PORTFOLIO, "2020-10-01", "2022-05-31", 1.81)
+        ref = find_screening_reference(
+            state, sid, "h2b", val_window=("2022-06-01", "2026-09-30"), val_symbols=self.PORTFOLIO
+        )
+        assert ref is None
+        state.close()
+
+    def test_same_scope_older_run_beats_newer_other_scope(self, tmp_path: Path) -> None:
+        state = StateManager(db_path=tmp_path / "t.db")
+        sid = state.create_strategy("h2b", {"name": "h2b"})
+        same = self._screening(state, sid, self.PORTFOLIO, "2020-10-01", "2022-05-31", 1.81)
+        self._screening(state, sid, ["BTCUSDT"], "2020-10-01", "2022-05-31", 0.9)
+        ref = find_screening_reference(
+            state, sid, "h2b",
+            val_window=("2020-10-01", "2022-05-31"),
+            val_symbols=list(reversed(self.PORTFOLIO)),  # symbol order is irrelevant
+        )
+        assert ref is not None
+        assert ref.source == f"screening_run:{same}"
+        assert ref.sharpe == 1.81
+        report = assess_consistency(ref, val_sharpe=1.78, val_trades=273,
+                                    val_window=("2020-10-01", "2022-05-31"))
+        assert not report.is_flagged
+        state.close()

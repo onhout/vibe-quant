@@ -1605,6 +1605,7 @@ class ValidationRunner:
                 strategy_name,
                 validated_params=self._build_strategy_params(cfg),
                 val_window=val_window,
+                val_symbols=[str(x) for x in syms] if isinstance(syms := cfg.get("symbols"), list) else None,
             )
             if reference is None:
                 return None

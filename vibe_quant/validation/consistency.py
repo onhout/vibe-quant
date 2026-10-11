@@ -213,6 +213,7 @@ def find_screening_reference(
     strategy_name: str,
     validated_params: dict[str, object] | None = None,
     val_window: tuple[str, str] | None = None,
+    val_symbols: list[str] | None = None,
 ) -> ScreeningReference | None:
     """Locate screening-tier metrics for a strategy, if any exist.
 
@@ -223,8 +224,14 @@ def find_screening_reference(
         val_window: The validation run's (start, end) dates. A validation on
             a discovery run's holdout window is compared against the
             champion's holdout metrics (same window).
+        val_symbols: The validation run's symbols. Together with
+            ``val_window`` it restricts the reference to a screening run over
+            the same window and symbol set — a Sharpe from another window or
+            portfolio is not a like-for-like reference.
     """
-    run_row = state.get_latest_screening_run_with_sweeps(strategy_id)
+    run_row = state.get_latest_screening_run_with_sweeps(
+        strategy_id, window=val_window, symbols=val_symbols
+    )
     if run_row is not None:
         rows = state.list_sweep_reference_rows(run_row[0])
         usable = [
