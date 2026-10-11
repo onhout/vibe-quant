@@ -4,6 +4,30 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: PRE-REGISTRATION H-11F — FORWARD test of funding carry on established coins (clock starts 2026-10-12)
+
+The established-coin carry lead (H-11 secondary: 66 coins, net 1.50; 2022-06..2026-09 net 1.24, capped 1.05) cannot be confirmed on any historical data without forking paths. Forward data is the only clean evidence, and it accrues by itself once the spec is frozen — no orders, no money, no infrastructure.
+
+**Frozen artifacts (committed with this entry; SHA-256):**
+- `scripts/research/h11f/h11_funding_carry.py` — ad5b812d7fe54aebf06f1ba8aa077259530447cf5a18889ce6d22d7dd9f6e2b2 (identical to the H-11 script)
+- `scripts/research/h11f/h11f_fetch.py` — acd00e5b9a81c538e7ed290776807a612b329e57e911ba7adc02a33f3d84d987 (Binance public REST → Vision-format CSVs; cross-checked against Vision files for 2026-08..09: 58 symbol-months, max diff 0.0 in klines and funding)
+- `scripts/research/h11f/h11f_universe.txt` — bf6146a2dd777956bc8479fa01f3d4dce5f3c26d31827eb1c326089255d2ddec: the 29 H-9 coins alive and ≥ 10M USDT 7d avg quote volume on 2026-09-24..30: BTC ETH BCH XRP LTC TRX ETC LINK XLM ADA XMR DASH ZEC BNB ATOM IOTA VET ALGO COMP DOGE DOT CRV TRB SOL UNI AVAX NEAR AAVE FIL (USDT)
+
+**Spec:** H-11 unchanged (Monday-close 7-day cumulative funding rank; long lowest third, short highest third, 0.5/0.5, 7-day hold, 0.05% costs, ≥ 10M liquidity filter, zero-volume = no data, funding cashflows on held weights). First positions at the 2026-10-12 (Monday) close; evaluation window starts 2026-10-13.
+
+**Evaluate (anyone, any date E):**
+```
+.venv/bin/python scripts/research/h11f/h11f_fetch.py /tmp/h11f/k /tmp/h11f/f 2026-10-01 E scripts/research/h11f/h11f_universe.txt
+.venv/bin/python scripts/research/h11f/h11_funding_carry.py /tmp/h11f/k /tmp/h11f/f 2026-10-01 2026-10-13 E
+```
+**Decision rules (frozen):**
+- ≥ 26 weeks (E ≥ 2027-04-13): **futility** — shelve if NET Sharpe < 0.
+- ≥ 52 weeks (E ≥ 2027-10-12): **candidate** — if NET ≥ 1.0 AND capped-funding NET ≥ 0.8 AND |beta| < 0.3, propose to the user an engine build (portfolio-level carry strategy) + full-fidelity validation + paper trading (risk check and explicit approval required).
+- 104 weeks (E ≥ 2028-10-09): final verdict on the same three thresholds.
+- Any change to the files, universe or rules = a new pre-registration with a new start date; the hashes above make edits detectable.
+
+---
+
 ## 2026-10-11: RESULT H-11 — REJECTED on the decision universe; carry on the 66 established coins is the strongest (in-sample) lead
 
 `h11_funding_carry.py` (spec ee9f376), run once on the decision universe. Funding files: `data/swarm/20261011-h11-funding-b` (189 coins), `-a` (66 coins), downloaded by the audit agent from Binance Vision.
