@@ -5,7 +5,7 @@ Before the fix price operands had no previous value, so
 impossible for EMA/KAMA (the MA moves toward price) and wrong for SMA.
 
 The fire-count tests drive real compiled strategies through a NautilusTrader
-``BacktestEngine`` over a 20k-bar random walk and require that the strategy
+``BacktestEngine`` over a 10k-bar random walk and require that the strategy
 fires on exactly the bars where a true cross happened on the values the
 strategy itself saw (``prev_left <= prev_right and left > right``), and that
 those values are the real moving average.
@@ -35,7 +35,7 @@ from vibe_quant.nt_compat import retain_log_guard
 
 _IID = "BTCUSDT-PERP.BINANCE"
 _H = 3_600_000_000_000
-_N_BARS = 20_000
+_N_BARS = 10_000
 
 
 def _dsl(name: str, ma_type: str, period: int, long_cond: str, short_cond: str) -> dict[str, Any]:

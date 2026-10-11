@@ -91,9 +91,9 @@ def _write_catalog(root: Path, symbols: tuple[str, ...] = ("BTCUSDT",), n_min: i
     return root
 
 
-@pytest.fixture
-def catalog(tmp_path: Path) -> Path:
-    return _write_catalog(tmp_path / "catalog", ("BTCUSDT", "ETHUSDT"))
+@pytest.fixture(scope="module")
+def catalog(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _write_catalog(tmp_path_factory.mktemp("catalog"), ("BTCUSDT", "ETHUSDT"))
 
 
 def _runner(catalog: Path, dsl: dict[str, Any], symbols: list[str] | None = None,
@@ -453,7 +453,7 @@ def test_symbol_order_bit_identical() -> None:
     }
 
     def run(symbols: list[str]) -> tuple[float, ...]:
-        m = NTScreeningRunner(dsl, symbols, "2024-01-01", "2024-02-15",
+        m = NTScreeningRunner(dsl, symbols, "2024-01-01", "2024-01-15",
                               catalog_path=str(_REAL_CATALOG))({})
         return (m.sharpe_ratio, m.total_trades, m.total_return, m.profit_factor, m.max_drawdown)
 

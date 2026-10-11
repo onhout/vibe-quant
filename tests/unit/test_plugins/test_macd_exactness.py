@@ -134,7 +134,10 @@ def test_macd_stream_matches_ta_across_buffer_trims(monkeypatch: pytest.MonkeyPa
     _, cls = compile_indicators(
         {"macd_1h": {"type": "MACD", "fast_period": 10, "slow_period": 24, "signal_period": 8}}
     )
-    bars = random_walk_bars(1500, seed=21)
+    # cap=400 with 25% slack: the buffer trims at bars 501, 602 and 703, so 720
+    # bars cross THREE trims (600 crossed only the first). A memo bug that only
+    # mis-handles a 2nd+ restart is exercised here and was not before.
+    bars = random_walk_bars(720, seed=21)
     cb._macd_port_ok.cache_clear()
     on = run_stream(cls, bars, True, specs=specs)
     assert MEMO.hits > 1000  # memo engaged (3 EMAs per bar)

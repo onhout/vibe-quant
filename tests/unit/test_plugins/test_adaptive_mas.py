@@ -323,11 +323,16 @@ def test_frama_memo_stream_bitwise() -> None:
             "frama_b": {"type": "FRAMA", "period": 10},
         }
     )
-    bars = list(random_walk_bars(1500, seed=13))
-    flat = bars[700][1:5]
-    for i in range(700, 740):  # flat windows
+    # cap=400 with 25% slack: the buffer trims at bars 501 and 602. The flat
+    # window (110-149) and the NaN (160) sit early so both LEAVE the buffer at
+    # the 602 trim -- the scenario "NaN/flat exits through a trim" that the old
+    # layout lost. 700 bars (not 1500) because 2 trims are enough to exercise a
+    # 2nd+ restart while keeping the stream short.
+    bars = list(random_walk_bars(700, seed=13))
+    flat = bars[110][1:5]
+    for i in range(110, 150):  # flat windows
         bars[i] = ("1h", *flat, 1.0)
-    bars[900] = ("1h", bars[900][1], float("nan"), bars[900][3], bars[900][4], 1.0)  # NaN high
+    bars[160] = ("1h", bars[160][1], float("nan"), bars[160][3], bars[160][4], 1.0)  # NaN high
     on = run_stream(cls, bars, True, specs=specs)
     hits = MEMO.hits
     off = run_stream(cls, bars, False, specs=specs)

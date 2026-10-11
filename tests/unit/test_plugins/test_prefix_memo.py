@@ -71,7 +71,7 @@ def _assert_stream_matches_pandas(df: pd.DataFrame, period: int, cap: int) -> in
 @pytest.mark.parametrize(("period", "cap"), [(12, 400), (12, 1330), (26, 400)])
 def test_full_array_bitwise_over_buffer_schedule(period: int, cap: int) -> None:
     # crosses at least two trims (cap//4 slack) and every cut re-seeds the series
-    assert _assert_stream_matches_pandas(_ohlc(cap + 3 * (cap // 4) + 50), period, cap) > 0
+    assert _assert_stream_matches_pandas(_ohlc(cap + 2 * (cap // 4) + 10), period, cap) > 0
 
 
 def test_eps_flip_mid_segment() -> None:
@@ -193,7 +193,7 @@ def test_two_timeframe_adx_value_stream_identical_memo_on_off() -> None:
         },
         additional_timeframes=["4h"],
     )
-    base = random_walk_bars(2000, seed=11, tf="1h")
+    base = random_walk_bars(900, seed=11, tf="1h")
     events = []
     for i, ev in enumerate(base):
         events.append(ev)

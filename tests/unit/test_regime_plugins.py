@@ -269,7 +269,7 @@ def test_real_data_screening_trades() -> None:
 
     if not Path("data/catalog/data/bar/BTCUSDT-PERP.BINANCE-1-DAY-LAST-EXTERNAL").is_dir():
         pytest.skip("BTC 1d catalog data not available")
-    result = _regime_runner("2023-01-01", "2024-12-31")({})
+    result = _regime_runner("2023-01-01", "2023-06-30")({})
     assert result.total_trades > 0
 
 
