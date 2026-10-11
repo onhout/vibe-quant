@@ -441,6 +441,11 @@ class StrategyCompiler:
                 has_pta = True
                 fn = info.spec.compute_fn
                 compute_fn_imports.setdefault(fn.__module__, set()).add(fn.__name__)
+                # computed_outputs the compute_fn does not return are derived
+                # at read time from its raw outputs (see _pta_computed_lines).
+                if info.spec.computed_outputs:
+                    derived_helpers.add("PtaOutputs")
+                    derived_helpers.update(info.spec.computed_outputs.values())
 
         # Add indicator imports
         if nt_classes:
@@ -1235,13 +1240,13 @@ class StrategyCompiler:
                 lines.append(f'        return self._pta_values.get("{info.name}", 0.0)')
                 if spec.output_names != ("value",):
                     for output_name in spec.output_names:
-                        # Derived outputs are computed at read time by the
-                        # compute_fn already (see compute_bbands), so they
-                        # live in _pta_values under the sub-key too.
                         lines.append(f'    if name == "{info.name}_{output_name}":')
-                        lines.append(
-                            f'        return self._pta_values.get("{info.name}_{output_name}", 0.0)'
-                        )
+                        if output_name in spec.computed_outputs:
+                            lines.extend(self._pta_computed_lines(info, output_name))
+                        else:
+                            lines.append(
+                                f'        return self._pta_values.get("{info.name}_{output_name}", 0.0)'
+                            )
                 continue
 
             # NT path
@@ -1288,6 +1293,32 @@ class StrategyCompiler:
 
         lines.append('    raise ValueError(f"Unknown indicator: {name}")')
         return lines
+
+    @staticmethod
+    def _pta_computed_lines(info: IndicatorInfo, output_name: str) -> list[str]:
+        """Body of the ``_get_indicator_value`` branch for a computed output on
+        the compute_fn path.
+
+        A compute_fn may return the output itself (BBANDS, DONCHIAN): that value
+        wins. Otherwise (a spec forced onto this path whose compute_fn returns
+        only the raw outputs, or a NaN row that was never stored) it is derived
+        at read time by the same ``derived.py`` helper the NT path uses, from
+        the raw outputs in ``_pta_values``. While a raw output is missing
+        (warm-up, indicator not ready) it reads 0.0, as any unfilled output does.
+        """
+        spec = info.spec
+        key = f"{info.name}_{output_name}"
+        raw = [o for o in spec.output_names if o not in spec.computed_outputs]
+        raw_items = ", ".join(f'"{o}": self._pta_values.get("{info.name}_{o}")' for o in raw)
+        return [
+            f'        _v = self._pta_values.get("{key}")',
+            "        if _v is not None:",
+            "            return _v",
+            f"        _raw = {{{raw_items}}}",
+            "        if any(_x is None for _x in _raw.values()):",
+            "            return 0.0",
+            f"        return {spec.computed_outputs[output_name]}(PtaOutputs(**_raw), self._last_close)",
+        ]
 
     @staticmethod
     def _prev_price_key(price: str) -> str:
@@ -1381,6 +1412,13 @@ class StrategyCompiler:
                 )
                 if spec.output_names != ("value",):
                     for output_name in spec.output_names:
+                        if output_name in spec.computed_outputs:
+                            # Same derivation as _get_indicator_value.
+                            lines.append(
+                                f'    self._prev_values["{info.name}_{output_name}"] = '
+                                f'self._get_indicator_value("{info.name}_{output_name}")'
+                            )
+                            continue
                         lines.append(
                             f'    self._prev_values["{info.name}_{output_name}"] = self._pta_values.get("{info.name}_{output_name}", 0.0)'
                         )

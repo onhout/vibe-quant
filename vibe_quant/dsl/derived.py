@@ -26,6 +26,18 @@ if TYPE_CHECKING:
     from nautilus_trader.indicators.base import Indicator  # noqa: F401
 
 
+class PtaOutputs:
+    """Attribute view over raw compute_fn outputs, e.g. ``PtaOutputs(upper=1.0)``.
+
+    Lets the derived helpers (duck-typed on ``.upper`` / ``.middle`` / ``.lower``)
+    run for an indicator on the compute_fn path, where the bands live in a dict
+    instead of an NT indicator object.
+    """
+
+    def __init__(self, **values: float) -> None:
+        self.__dict__.update(values)
+
+
 def compute_percent_b(ind_obj: object, close: float) -> float:
     """Compute Bollinger %B = (close - lower) / (upper - lower).
 
