@@ -4,6 +4,22 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-12: RESULT H-12 — REJECTED (vol management lowers drawdown but not Sharpe in crypto)
+
+`h12_vol_managed.py` (spec aede438), run once:
+
+| Window | H-12 Sharpe | Base Sharpe | ΔSharpe | H-12 max DD | Base max DD | H-12 return | Base return | mean exposure |
+|---|---|---|---|---|---|---|---|---|
+| FULL | 1.1347425896658776 | 1.1552092340658984 | -0.020466644400020773 | 0.7310815334918267 | 0.8104741220909607 | 13.826251340746365 | 28.381903746860115 | 0.809 |
+| A 2020-10..2022-05 | 1.809269660878772 | 1.9768972260555844 | -0.16762756517681243 | 0.5749059470920848 | 0.6639245233778039 | 3.0984705535232546 | 9.384094742762791 | 0.638 |
+| B 2022-06..2026-09 | 0.8472554936654454 | 0.7030473622869144 | 0.14420813137853095 | 0.5810870443391583 | 0.6160356026898102 | 2.6175083234405543 | 1.8295103689551593 | 0.875 |
+
+ΔSharpe ≥ 0.10 in all windows: FAIL (FULL −0.02, A −0.17); DD lower in all: PASS → **REJECT.** In crypto the high-volatility stretches (2021) were the best-returning ones, so de-risking them cost more than it saved; the equity-market effect does not transfer to these 4 coins on this sample.
+
+**Day close-out:** seven pre-registered mechanisms (H-2b, H-8, H-9, H-10, H-10b, H-11, H-12) + 17 GA runs, two independent verifications. On BTC/ETH/SOL/BNB nothing beats equal-weight buy-and-hold risk-adjusted; drawdown control (H-2b ≈ ½ DD, H-12 ≈ −8 pts DD) is available at a cost in return. H-11F4 (4-coin funding carry) runs forward from 2026-10-12.
+
+---
+
 ## 2026-10-12: PRE-REGISTRATION H-12 — volatility-managed buy-and-hold of BTC/ETH/SOL/BNB (beat buy-and-hold risk-adjusted)
 
 Committed before the script exists. Every price-based hypothesis today failed the same bar: not better than buy-and-hold risk-adjusted on the user's 4 coins (H-2b 1.78 vs 1.996; 0.51 vs 0.74). Volatility-managed exposure (Moreira & Muir 2017; volatility clusters, high-vol periods have worse risk-adjusted returns) is the documented single mechanism aimed exactly at that bar. Not alpha — a better way to hold the same coins. No leverage.
