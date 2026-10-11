@@ -19,10 +19,85 @@ import pytest
 from vibe_quant.data import catalog as catalog_module
 from vibe_quant.data import ingest
 from vibe_quant.data.archive import RawDataArchive
-from vibe_quant.data.catalog import CatalogManager
+from vibe_quant.data.catalog import CatalogManager, create_instrument
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+class _ResetRecordingCatalogManager(CatalogManager):
+    """Records, for every ``_catalog`` reset to None, whether _catalog_lock was held."""
+
+    def __init__(self, catalog_path: Path) -> None:
+        self.resets_locked: list[bool] = []
+        super().__init__(catalog_path)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        # __init__ assigns _catalog before the lock exists; skip that first assignment.
+        if name == "_catalog" and value is None and "_catalog_lock" in self.__dict__:
+            self.resets_locked.append(self._catalog_lock.locked())
+        super().__setattr__(name, value)
+
+
+class TestCatalogResetUnderLock:
+    """Cache resets race the lazy getter unless they take _catalog_lock (vibe-quant-gq9i6)."""
+
+    def test_clear_bar_data_resets_cache_under_lock(self, tmp_path: Path) -> None:
+        manager = _ResetRecordingCatalogManager(tmp_path / "catalog")
+
+        manager.clear_bar_data("BTCUSDT", "1m")
+
+        assert manager.resets_locked == [True]
+
+    def test_write_instrument_reset_under_lock(self, tmp_path: Path) -> None:
+        """A changed definition rmtrees the instrument dir and resets the cache."""
+        new = create_instrument("SOLUSDT")
+        old = type(new).from_dict(
+            {
+                **type(new).to_dict(new),
+                "size_increment": "1",
+                "size_precision": 0,
+                "min_quantity": None,
+            }
+        )
+        manager = _ResetRecordingCatalogManager(tmp_path / "catalog")
+        manager.write_instrument(old)
+        manager.write_instrument(new)
+
+        assert manager.resets_locked == [True]
+
+
+class _ResetAfterFirstRead(CatalogManager):
+    """Built catalog on the first read of ``_catalog``; None on every later read.
+
+    Forces the interleaving where a locked reset lands between the getter's
+    check and its return (vibe-quant-gq9i6 review finding).
+    """
+
+    def __init__(self, catalog_path: Path) -> None:
+        self._reads = 0
+        self._built = object()
+        super().__init__(catalog_path)
+
+    @property  # type: ignore[misc]
+    def _catalog(self) -> object:
+        self._reads += 1
+        return self._built if self._reads == 1 else None
+
+    @_catalog.setter
+    def _catalog(self, value: object) -> None:
+        pass  # the forced sequence ignores writes; the getter never builds here
+
+
+class TestCatalogGetterReturnsLocalRef:
+    """The catalog getter returns the reference it checked, not a re-read of the cache."""
+
+    def test_reset_between_check_and_return_does_not_yield_none(self, tmp_path: Path) -> None:
+        manager = _ResetAfterFirstRead(tmp_path / "catalog")
+
+        got = manager.catalog
+
+        assert got is manager._built
 
 
 class TestCatalogLazyInit:

@@ -416,13 +416,17 @@ class CatalogManager:
 
         Lock-guarded so concurrent first use (threadpool GET handlers) builds one catalog.
         """
-        if self._catalog is None:
+        cat = self._catalog
+        if cat is None:
             with self._catalog_lock:
-                if self._catalog is None:
+                cat = self._catalog
+                if cat is None:
                     self._catalog_path.mkdir(parents=True, exist_ok=True)
                     self._cleanup_epoch_parquet()
-                    self._catalog = ParquetDataCatalog(str(self._catalog_path))
-        return self._catalog
+                    cat = ParquetDataCatalog(str(self._catalog_path))
+                    self._catalog = cat
+        # Return the local ref: a locked reset may null self._catalog after the check.
+        return cat
 
     def _cleanup_epoch_parquet(self) -> None:
         """Remove corrupt epoch-timestamp parquet files from catalog.
@@ -464,7 +468,8 @@ class CatalogManager:
             if existing is not None and type(existing).to_dict(existing) == type(instrument).to_dict(instrument):
                 return  # unchanged: no churn (validation runner calls this per run)
             shutil.rmtree(inst_dir)
-            self._catalog = None  # re-read from disk
+            with self._catalog_lock:
+                self._catalog = None  # re-read from disk
         self.catalog.write_data([instrument])
 
     def clear_bar_data(self, symbol: str, interval: str) -> None:
@@ -484,7 +489,8 @@ class CatalogManager:
         if bar_dir.exists():
             shutil.rmtree(bar_dir)
         # Reset catalog cache so it re-reads from disk
-        self._catalog = None
+        with self._catalog_lock:
+            self._catalog = None
 
     def write_bars(self, bars: list[Bar]) -> None:
         """Write bars to catalog.
