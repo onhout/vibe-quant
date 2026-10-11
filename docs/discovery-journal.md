@@ -4,6 +4,34 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: PRE-REGISTRATION H-2b — long-only TREND_ENSEMBLE on never-seen 2020-10..2022-05 data
+
+Written and committed BEFORE the 2020–2021 data was in the catalog (ingest started 22:22). Results go in a separate entry; this text is not edited afterwards.
+
+**Why this test:** 17 GA runs today plateau at pooled ann Sharpe ≈0.6 and inflate the trial count. H-2 (2026-10-08) was the only family positive untuned on 3/4 coins, but it was tested symmetric long/short (the paper is long-only) and its own falsifier fired (Sharpe < 0.7 on 2 assets, 2022-06..2026-09). Every hypothesis and GA run so far used data from 2022-01 onward, so 2020-10..2022-05 is genuinely out-of-sample for the whole family.
+
+**Strategy (frozen):** `data/swarm/20261011-h2b/h2b_trend_ensemble_long_4h.yaml` = H2_trend_ensemble_4h.yaml with exactly two paper-driven changes: short side removed; `atr_fixed` → `atr_trailing`. Unchanged: 4h, TREND_ENSEMBLE max_lookback 250, entry `te > 0.5`, exit `te < 0`, ATR(14) × 2.5 stop, TP fixed 20%.
+
+```yaml
+name: h2b_trend_ensemble_long_4h
+timeframe: 4h
+indicators: {te: {type: TREND_ENSEMBLE, max_lookback: 250}, atr: {type: ATR, period: 14}}
+entry_conditions: {long: ["te > 0.5"]}
+exit_conditions: {long: ["te < 0"]}
+stop_loss: {type: atr_trailing, atr_multiplier: 2.5, indicator: atr}
+take_profit: {type: fixed_pct, percent: 20}
+```
+
+**Universe (frozen):** BTCUSDT+ETHUSDT+SOLUSDT+BNBUSDT as ONE multi-symbol portfolio (BTC kept in to avoid selecting the 3 coins that looked good). SOL perps list 2020-09-14, so its signal warms up inside the window.
+
+**Primary test:** VALIDATION (full fidelity, 1m fills) on 2020-10-01..2022-05-31. **REJECT if any of:** (a) validation Sharpe < 0.7; (b) validation Sharpe ≤ Sharpe of an equal-weight, daily-rebalanced buy-and-hold of the same 4 perps over the same window (daily closes from the catalog, ann √365); (c) screening→validation consistency flagged as collapse.
+
+**Promotion bar (only if not rejected):** full history 2020-10-01..2026-09-30 validation DSR p < 0.05 with N = 10 (conservative count of hand-tested variants of this family: H-2 × 4 symbols + H-7 × 6) before any paper-trading proposal; paper/live still need a risk check and the user's approval.
+
+**Secondary (reported, not decision criteria):** per-symbol results, screening metrics, 2022-06..2026-09 in-sample comparison.
+
+---
+
 ## 2026-10-11: Pre-registered follow-ups — SOL 15m lead + first context-feature discoveries (runs 894–896, 0 champions)
 
 **Falsifier stated before launch (all three):** reject the family if the best pooled ann Sharpe < 1.0 or no candidate reaches DSR p < 0.5. Gates unchanged; bootstrap floors kept (vibe-quant-fen0o closed won't-do: floors are deliberate per vibe-quant-gds1c).
