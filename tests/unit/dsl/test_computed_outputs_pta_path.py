@@ -213,9 +213,8 @@ def test_stored_computed_output_wins_over_helper(
     """A value compute_fn stored under the computed key is returned as is, by the
     accessor and by ``_update_prev_values``; the helper is only the fallback.
 
-    The stored value deliberately differs from the helper result (pandas-ta BBB is
-    in percent, ``compute_bandwidth`` a fraction), so deriving always would flip
-    ``bandwidth > 0.5``.
+    The stored value deliberately differs from the helper result, so deriving
+    always would flip ``bandwidth > 0.5``.
     """
     variant = pta_variant("BBANDS")
     cls = _generated_strategy_cls(variant.name, ["ind.bandwidth > 0.5"])
@@ -239,11 +238,10 @@ def test_stored_computed_output_wins_over_helper(
 
 
 def test_kc_bandwidth_is_not_referenceable() -> None:
-    """KC lists ``bandwidth`` in computed_outputs but not in output_names, so the
-    sweep cannot cover it; pin that referencing it is rejected, not read as 0.0."""
+    """KC has no ``bandwidth`` output; pin that referencing it is rejected, not
+    read as 0.0."""
     kc = indicator_registry.get("KC")
     assert kc is not None
-    assert "bandwidth" in kc.computed_outputs
     assert "bandwidth" not in kc.output_names
     with pytest.raises(DSLValidationError, match="Unknown indicator 'ind.bandwidth'"):
         _generated_strategy_cls("KC", ["ind.bandwidth > 0.1"])

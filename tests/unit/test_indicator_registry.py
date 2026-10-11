@@ -731,6 +731,15 @@ class TestBuiltinSpecsBackwardCompat:
             "bandwidth",
         )
 
+    def test_every_computed_output_is_a_declared_output(self) -> None:
+        """A computed_outputs key outside output_names is unreferenceable dead config."""
+        dead = {
+            spec.name: sorted(set(spec.computed_outputs) - set(spec.output_names))
+            for spec in indicator_registry.all_specs()
+            if set(spec.computed_outputs) - set(spec.output_names)
+        }
+        assert dead == {}
+
 
 def _ohlcv_frame(n: int) -> pd.DataFrame:
     idx = pd.date_range("2024-01-01", periods=n, freq="1h")

@@ -975,7 +975,6 @@ def _kc_spec() -> IndicatorSpec:
         nt_kwargs_fn=_kc_kwargs,
         nt_codegen_kwargs=(("period", "period"), ("k_multiplier", "atr_multiplier")),
         nt_output_attrs={"upper": "upper", "middle": "middle", "lower": "lower"},
-        computed_outputs={"bandwidth": "compute_bandwidth"},
         primary_output="middle",
         requires_high_low=True,
         display_name="Keltner Channel",
