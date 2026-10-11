@@ -83,8 +83,7 @@ async def kill(
 
     # Fast-path cascade. Never raise here — the persisted flag is the source
     # of truth and every node polls it independently.
-    db_row = state.conn.execute("PRAGMA database_list").fetchone()
-    db_file = db_row["file"] if db_row is not None else ""
+    db_file = state.get_database_file()
     queue = PaperCommandQueue(Path(db_file) if db_file else None)
     try:
         for job in jobs.list_active_jobs():

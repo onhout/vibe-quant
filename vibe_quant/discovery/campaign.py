@@ -262,13 +262,11 @@ def extract_top_chromosomes(
     (JSON). Each entry has ``dsl``, ``chromosome``, and fitness fields.
     Returns the first ``top_k`` entries as-is.
     """
-    row = state.conn.execute(
-        "SELECT notes FROM backtest_results WHERE run_id = ?", (run_id,)
-    ).fetchone()
-    if row is None or not row[0]:
+    raw_notes = state.get_result_notes_raw(run_id)
+    if not raw_notes:
         return []
     try:
-        notes = json.loads(row[0])
+        notes = json.loads(raw_notes)
     except json.JSONDecodeError:
         logger.warning("malformed notes JSON for run_id=%d", run_id)
         return []
@@ -315,12 +313,10 @@ def plan_oos_validations(
                 logger.info(
                     "strategy %s already exists, reusing (%s)", strategy_name, exc
                 )
-                existing = state.conn.execute(
-                    "SELECT id FROM strategies WHERE name = ?", (strategy_name,)
-                ).fetchone()
-                if existing is None:
+                existing_id = state.get_strategy_id_by_name(strategy_name)
+                if existing_id is None:
                     continue
-                strategy_id = int(existing[0])
+                strategy_id = existing_id
 
             for oos in plan.config.oos_windows:
                 key = (tw.label, idx, oos.label)
@@ -417,10 +413,7 @@ def run_campaign(
 
 
 def _run_completed(run_id: int, state: StateManager) -> bool:
-    row = state.conn.execute(
-        "SELECT status FROM backtest_runs WHERE id = ?", (run_id,)
-    ).fetchone()
-    return row is not None and row[0] == "completed"
+    return state.get_backtest_run_status(run_id) == "completed"
 
 
 @dataclass(slots=True)
@@ -476,18 +469,7 @@ class MatrixReport:
 
 def build_matrix_report(campaign_id: str, state: StateManager) -> MatrixReport:
     """Query all OOS rows for a campaign and assemble the matrix."""
-    rows = state.conn.execute(
-        """
-        SELECT br.id, br.parameters, r.sharpe_ratio, r.total_return,
-               r.max_drawdown, r.total_trades
-        FROM backtest_runs br
-        LEFT JOIN backtest_results r ON r.run_id = br.id
-        WHERE br.run_mode = ?
-          AND json_extract(br.parameters, '$.campaign_id') = ?
-        ORDER BY br.id
-        """,
-        (RUN_MODE_OOS, campaign_id),
-    ).fetchall()
+    rows = state.list_campaign_oos_rows(RUN_MODE_OOS, campaign_id)
 
     cells: list[MatrixCell] = []
     campaign_name = ""

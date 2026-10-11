@@ -2202,3 +2202,135 @@ class StateManager:
                     (status, limit),
                 ).fetchall()
         return [dict(r) for r in rows]
+
+    # --- Locked queries for API routers / discovery (bd vibe-quant-w55cl) ---
+    # These used to be inline ``state.conn.execute(...)`` calls outside
+    # ``_write_lock``; rows are materialised inside the lock.
+
+    def get_database_file(self) -> str:
+        """Filesystem path of the main database (``""`` for in-memory)."""
+        with self._write_lock:
+            row = self.conn.execute("PRAGMA database_list").fetchone()
+            return str(row["file"]) if row is not None else ""
+
+    def list_table_names(self) -> list[str]:
+        """Names of all tables in ``sqlite_master`` (storage order)."""
+        with self._write_lock:
+            cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            return [row[0] for row in cursor]
+
+    def count_table_rows(self, known_tables: frozenset[str]) -> dict[str, int]:
+        """Row count per existing table whose name is in ``known_tables``.
+
+        ``known_tables`` is a hard allow-list: names are interpolated into SQL.
+        """
+        with self._write_lock:
+            cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in cursor if row[0] in known_tables]
+            counts: dict[str, int] = {}
+            for table in tables:
+                count_cursor = self.conn.execute(f"SELECT COUNT(*) FROM [{table}]")  # noqa: S608
+                counts[table] = count_cursor.fetchone()[0]
+            return counts
+
+    def list_recent_discovery_result_notes(self, limit: int = 10) -> list[str]:
+        """``backtest_results.notes`` of the newest completed discovery runs.
+
+        Skips NULL/empty notes; newest run first.
+        """
+        with self._write_lock:
+            rows = self.conn.execute(
+                """SELECT br.notes FROM backtest_runs r
+                   JOIN backtest_results br ON br.run_id = r.id
+                   WHERE r.run_mode='discovery' AND r.status='completed'
+                     AND br.notes IS NOT NULL AND br.notes != ''
+                   ORDER BY r.id DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            return [row[0] for row in rows]
+
+    def list_active_strategy_dsl_rows(self) -> list[tuple[int, str, object]]:
+        """``(id, name, dsl_config)`` of active strategies (raw column), by id."""
+        with self._write_lock:
+            rows = self.conn.execute(
+                "SELECT id, name, dsl_config FROM strategies "
+                "WHERE is_active IS NULL OR is_active = 1 ORDER BY id"
+            ).fetchall()
+            return [(row[0], row[1], row[2]) for row in rows]
+
+    def strategy_name_exists(self, name: str) -> bool:
+        """True if any strategy row (active or not) already uses ``name``."""
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT 1 FROM strategies WHERE name = ?", (name,)
+            ).fetchone()
+            return row is not None
+
+    def get_strategy_id_by_name(self, name: str) -> int | None:
+        """Id of the strategy named ``name``, else None."""
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT id FROM strategies WHERE name = ?", (name,)
+            ).fetchone()
+            return None if row is None else int(row[0])
+
+    def get_latest_extraction_job_for_item(self, item_id: int) -> JsonDict | None:
+        """Most recent ``research_extraction_jobs`` row for a research item."""
+        with self._write_lock:
+            row = self.conn.execute(
+                """SELECT * FROM research_extraction_jobs
+                   WHERE research_item_id = ?
+                   ORDER BY id DESC LIMIT 1""",
+                (item_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_result_notes_raw(self, run_id: int) -> str | None:
+        """Raw ``backtest_results.notes`` of a run; None if no result row."""
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT notes FROM backtest_results WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            return None if row is None else row[0]
+
+    def get_backtest_run_status(self, run_id: int) -> str | None:
+        """``backtest_runs.status`` of a run; None if no such run."""
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT status FROM backtest_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            return None if row is None else row[0]
+
+    def list_campaign_oos_rows(
+        self, run_mode: str, campaign_id: str
+    ) -> list[tuple[int, str | None, float | None, float | None, float | None, int | None]]:
+        """``(run_id, parameters, sharpe, total_return, max_drawdown, total_trades)``
+        of a campaign's runs in ``run_mode`` (left-joined result), by run id."""
+        with self._write_lock:
+            rows = self.conn.execute(
+                """
+                SELECT br.id, br.parameters, r.sharpe_ratio, r.total_return,
+                       r.max_drawdown, r.total_trades
+                FROM backtest_runs br
+                LEFT JOIN backtest_results r ON r.run_id = br.id
+                WHERE br.run_mode = ?
+                  AND json_extract(br.parameters, '$.campaign_id') = ?
+                ORDER BY br.id
+                """,
+                (run_mode, campaign_id),
+            ).fetchall()
+            return [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows]
+
+    def list_prior_discovery_notes(
+        self, before_run_id: int, timeframe: str
+    ) -> list[tuple[int, str | None, str, str]]:
+        """``(run_id, notes, start_date, end_date)`` of discovery runs with a result
+        row, ``run_id < before_run_id`` and the same ``timeframe``."""
+        with self._write_lock:
+            rows = self.conn.execute(
+                "SELECT b.id, r.notes, b.start_date, b.end_date "
+                "FROM backtest_results r JOIN backtest_runs b ON b.id = r.run_id "
+                "WHERE b.run_mode = ? AND b.id < ? AND b.timeframe = ?",
+                ("discovery", before_run_id, timeframe),
+            ).fetchall()
+            return [(r[0], r[1], r[2], r[3]) for r in rows]

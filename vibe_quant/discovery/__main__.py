@@ -657,12 +657,7 @@ def _prior_discovery_trials(
         logger.warning("Unusable train window %r; cannot count prior trials", train_window)
         return None, []
     try:
-        rows = state.conn.execute(
-            "SELECT b.id, r.notes, b.start_date, b.end_date "
-            "FROM backtest_results r JOIN backtest_runs b ON b.id = r.run_id "
-            "WHERE b.run_mode = ? AND b.id < ? AND b.timeframe = ?",
-            ("discovery", run_id, timeframe),
-        ).fetchall()
+        rows = state.list_prior_discovery_notes(run_id, timeframe)
     except Exception:
         logger.warning("Could not count prior discovery trials", exc_info=True)
         return None, []

@@ -654,17 +654,10 @@ async def get_latest_results(state: StateMgr) -> DiscoveryResultResponse:
     import json as _json
 
     # Single query: join runs with results, get notes directly
-    conn = state.conn
-    rows = conn.execute(
-        """SELECT br.notes FROM backtest_runs r
-           JOIN backtest_results br ON br.run_id = r.id
-           WHERE r.run_mode='discovery' AND r.status='completed'
-             AND br.notes IS NOT NULL AND br.notes != ''
-           ORDER BY r.id DESC LIMIT 10"""
-    ).fetchall()
-    for row in rows:
+    notes_rows = state.list_recent_discovery_result_notes(limit=10)
+    for raw in notes_rows:
         try:
-            data = _json.loads(row[0])
+            data = _json.loads(raw)
             if isinstance(data, dict) and "top_strategies" in data:
                 strategies = data["top_strategies"]
                 if strategies and any(s.get("trades", 0) > 0 for s in strategies):
@@ -672,9 +665,9 @@ async def get_latest_results(state: StateMgr) -> DiscoveryResultResponse:
         except (ValueError, TypeError):
             continue
     # Fallback: return first valid result even if 0 trades
-    for row in rows:
+    for raw in notes_rows:
         try:
-            data = _json.loads(row[0])
+            data = _json.loads(raw)
             if isinstance(data, dict) and "top_strategies" in data:
                 return DiscoveryResultResponse(strategies=data["top_strategies"])
         except (ValueError, TypeError):
@@ -725,33 +718,23 @@ def _find_strategy_by_dsl(
     import json
 
     key = dsl_body_key(dsl)
-    rows = state.conn.execute(
-        "SELECT id, name, dsl_config FROM strategies "
-        "WHERE is_active IS NULL OR is_active = 1 ORDER BY id"
-    ).fetchall()
-    for row in rows:
+    for strategy_id, name, dsl_config in state.list_active_strategy_dsl_rows():
         try:
-            stored = json.loads(row[2]) if isinstance(row[2], str) else row[2]
+            stored = json.loads(dsl_config) if isinstance(dsl_config, str) else dsl_config
         except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(stored, dict) and dsl_body_key(stored) == key:
-            return int(row[0]), str(row[1])
+            return int(strategy_id), str(name)
     return None
 
 
 def _unique_strategy_name(state: StateManager, base: str) -> str:
     """``base`` if unused, else ``base_2``, ``base_3``, ... (names are UNIQUE)."""
 
-    def _taken(name: str) -> bool:
-        return (
-            state.conn.execute("SELECT 1 FROM strategies WHERE name = ?", (name,)).fetchone()
-            is not None
-        )
-
-    if not _taken(base):
+    if not state.strategy_name_exists(base):
         return base
     k = 2
-    while _taken(f"{base}_{k}"):
+    while state.strategy_name_exists(f"{base}_{k}"):
         k += 1
     return f"{base}_{k}"
 
@@ -773,8 +756,6 @@ def _find_or_create_discovered_strategy(
     Returns:
         (strategy_id, name, created).
     """
-    import json
-
     dsl_raw = entry.get("dsl", {})
     dsl: dict[str, object] = dict(dsl_raw) if isinstance(dsl_raw, dict) else {}
     if not dsl:
@@ -790,17 +771,14 @@ def _find_or_create_discovered_strategy(
 
     _score_raw = entry.get("score", 0)
     _score: float = _score_raw if isinstance(_score_raw, (int, float)) else 0.0
-    cursor = state.conn.execute(
-        "INSERT INTO strategies (name, description, dsl_config, strategy_type) VALUES (?, ?, ?, ?)",
-        (
-            name,
-            f"Discovered via GA run {run_id} #{strategy_index} (score={_score:.4f})",
-            json.dumps(dsl),
-            dsl.get("strategy_type", "momentum"),
-        ),
+    strategy_type = dsl.get("strategy_type", "momentum")
+    strategy_id = state.create_strategy(
+        name,
+        dsl,
+        description=f"Discovered via GA run {run_id} #{strategy_index} (score={_score:.4f})",
+        strategy_type=strategy_type if isinstance(strategy_type, str) else None,
     )
-    state.conn.commit()
-    return int(cursor.lastrowid or 0), name, True
+    return strategy_id, name, True
 
 
 # --- Promote & Replay ---

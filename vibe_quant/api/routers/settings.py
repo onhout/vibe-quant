@@ -213,13 +213,7 @@ _KNOWN_TABLES: frozenset[str] = frozenset({
 
 
 def _get_table_counts(mgr: StateManager) -> dict[str, int]:
-    cursor = mgr.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    tables = [row[0] for row in cursor if row[0] in _KNOWN_TABLES]
-    counts: dict[str, int] = {}
-    for table in tables:
-        count_cursor = mgr.conn.execute(f"SELECT COUNT(*) FROM [{table}]")  # noqa: S608
-        counts[table] = count_cursor.fetchone()[0]
-    return counts
+    return mgr.count_table_rows(_KNOWN_TABLES)
 
 
 def _file_size(path: str | Path) -> int:
@@ -263,6 +257,4 @@ async def get_database_info(mgr: StateMgr) -> DatabaseInfoResponse:
     (runs and results split across two DBs). Choose the DB at backend start
     with ``VIBE_QUANT_DB=path``.
     """
-    cursor = mgr.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    tables = [row[0] for row in cursor]
-    return DatabaseInfoResponse(path=str(_db_path(mgr)), tables=tables)
+    return DatabaseInfoResponse(path=str(_db_path(mgr)), tables=mgr.list_table_names())

@@ -388,15 +388,10 @@ def _job_to_response(r: dict[str, Any]) -> ExtractionJobResponse:
 
 def _latest_job_for_item(sm: StateMgr, item_id: int) -> ExtractionJobResponse | None:
     """Pull the most recent extraction job row for an item, if any."""
-    rows = sm.conn.execute(
-        """SELECT * FROM research_extraction_jobs
-           WHERE research_item_id = ?
-           ORDER BY id DESC LIMIT 1""",
-        (item_id,),
-    ).fetchone()
-    if not rows:
+    row = sm.get_latest_extraction_job_for_item(item_id)
+    if not row:
         return None
-    return _job_to_response(dict(rows))
+    return _job_to_response(row)
 
 
 @router.post(

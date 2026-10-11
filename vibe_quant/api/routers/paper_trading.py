@@ -57,8 +57,7 @@ CLOSE_ALL_WAIT_SECS = 10.0
 
 
 def _state_db_path(state: StateManager) -> Path | None:
-    row = state.conn.execute("PRAGMA database_list").fetchone()
-    file = row["file"] if row is not None else ""
+    file = state.get_database_file()
     return Path(file) if file else None
 
 

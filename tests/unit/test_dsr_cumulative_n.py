@@ -16,7 +16,6 @@ import json
 import math
 import sqlite3
 from array import array
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -101,8 +100,12 @@ def _conn(rows: list[tuple[Any, ...]]) -> sqlite3.Connection:
 
 
 def _state(conn: sqlite3.Connection) -> Any:
-    """Duck-typed StateManager: the prior-trial query only touches ``.conn``."""
-    return SimpleNamespace(conn=conn)
+    """Real StateManager (locked query methods) over the pre-built ``conn``."""
+    from vibe_quant.db.state_manager import StateManager
+
+    mgr = StateManager()
+    mgr._conn = conn  # noqa: SLF001 -- skip get_connection/init_schema
+    return mgr
 
 
 # ---------------------------------------------------------------------------

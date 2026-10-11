@@ -86,6 +86,9 @@ def test_both_modules_use_the_shared_function_object(monkeypatch) -> None:
         def list_completed_discovery_notes(self, notes_like: str | None = None) -> list[object]:
             return []
 
+        def list_active_strategy_dsl_rows(self) -> list[object]:
+            return []
+
     monkeypatch.setattr(consistency, "dsl_body_key", record)
     monkeypatch.setattr(discovery, "dsl_body_key", record)
 

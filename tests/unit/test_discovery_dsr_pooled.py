@@ -455,8 +455,8 @@ def test_dsr_trials_recorded_not_used() -> None:
 def test_prior_trials_sum_earlier_real_discovery_runs() -> None:
     import json
     import sqlite3
-    from types import SimpleNamespace
 
+    from vibe_quant.db.state_manager import StateManager
     from vibe_quant.discovery.__main__ import _prior_discovery_trials
 
     conn = sqlite3.connect(":memory:")
@@ -477,7 +477,7 @@ def test_prior_trials_sum_earlier_real_discovery_runs() -> None:
         conn.execute("INSERT INTO backtest_runs VALUES (?, ?, ?, ?, ?)", (rid, mode, tf, sd, ed))
         conn.execute("INSERT INTO backtest_results VALUES (?, ?)", (rid, json.dumps(notes)))
     conn.execute("INSERT INTO backtest_results VALUES (?, ?)", (4, "not json"))
-    n, ids = _prior_discovery_trials(
-        SimpleNamespace(conn=conn), 5, "4h", ("2024-03-01", "2024-09-01")  # type: ignore[arg-type]
-    )
+    state = StateManager()
+    state._conn = conn  # noqa: SLF001 -- skip get_connection/init_schema
+    n, ids = _prior_discovery_trials(state, 5, "4h", ("2024-03-01", "2024-09-01"))
     assert n == 100 and ids == [1, 4]
