@@ -4,6 +4,18 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-11: PRE-REGISTRATION H-10 — cross-sectional taker-flow imbalance (new information, off-engine)
+
+Committed before the script exists. First test of order-flow information (no strategy in this project has used taker buy volume). Data already on disk: Binance Vision 1d klines for the H-9 universe (66 coins, `data/swarm/20261011-h9-raw`, column 10 = taker buy base volume).
+
+**Mechanism:** aggressive (taker) buying concentrated in a coin signals informed/persistent demand not yet in price (order-flow continuation); measured cross-sectionally it is orthogonal to the price momentum that died in H-8/H-9.
+
+**Spec (frozen):** every Monday close, for each coin with 7 full days of data: imb = Σ7d taker_buy_base_volume / Σ7d volume − 0.5. Rank; long the top third, short the bottom third, equal weight, dollar-neutral (long book 0.5, short book 0.5); held 7 days close-to-close; a coin whose data ends is closed at its last close. Costs 0.05% per unit notional traded; funding not modelled.
+
+**PASS only if all:** FULL 2020-10-01..2026-09-30 net Sharpe ≥ 1.0; net Sharpe > 0.5 in both halves (A 2020-10-01..2022-05-31, B 2022-06-01..2026-09-30); |beta| to equal-weight universe buy-and-hold < 0.3. Otherwise REJECT; no variants (lookback, holding, reversal sign) on this data. PASS → propose the engine/data build (taker-flow context indicator + portfolio strategy) to the user.
+
+---
+
 ## 2026-10-11: RESULT H-9 — REJECTED; conclusion of the day: price momentum in crypto perps decayed after mid-2022
 
 H-9 (spec cb51c36, run once): `data/swarm/20261011-h2b/h9_xs_momentum.py` on Binance Vision 1d klines (`h9_download.py`). Universe by the pre-registered rule: 66 of 74 candidates had a 2020-10 file (missing: OCEAN CVC BEL CTK AXS ALPHA ZEN SKL); delisted coins (SRM, TOMO, BLZ, YFII, …) included until their data ends; 57 coins alive at 2020-10-01, 60 at the end. Largest daily return 3.898 (DOGE 2021-01-28, the real WSB pump). Annual turnover 34.3×.
