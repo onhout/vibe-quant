@@ -49,7 +49,7 @@ test.describe("Paper Trading page", () => {
   });
 
   test("renders page heading", async ({ page }) => {
-    await expect(page.getByRole("heading", { name: "Paper Trading" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Paper Trading", exact: true })).toBeVisible();
   });
 
   test("renders start paper trading form when idle", async ({ page }) => {
