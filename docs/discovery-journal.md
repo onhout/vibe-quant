@@ -16,6 +16,8 @@ Committed before any evaluator exists and before anyone has looked at metrics va
 
 **Decision window B = 2022-06-01..2026-09-30. PASS only if all:** (1) n ≥ 40 events in B; (2) mean net return per event (3-day basket − 0.10% − funding) ≥ +0.50%; (3) down-day-null p ≤ 0.05; (4) Sharpe of the sparse daily series ≥ 0.5; (5) window A (2020-10-01..2022-05-31) mean net per event > 0. Otherwise REJECT; no change of q, hold, percentile window or the R_t filter on this data. PASS → propose to the user an OI context indicator + engine strategy and full-fidelity validation; paper still needs a risk check and the user's approval.
 
+**Amendment 2026-10-12 (before any evaluator exists; coverage facts only, no values analysed):** Binance Vision metrics for ETH/SOL/BNB start 2021-12-01 (BTC 2020-09-01; earlier days 404). With the ≥ 3-of-4 rule, D_t exists only from 2021-12-02, so window A has (almost) no evaluable days: condition (5) is NOT evaluable and is dropped — this removes a check, stated openly; the decision rests on (1)–(4) in B. B is unaffected (≥ 180 percentile observations exist by ~2022-06-01; any B day lacking 180 observations simply cannot signal). Early BTC zips repeat each day twice (lossless dedupe by ts); short days exist (BTC 71, others 9–11), handled by the 23:00–23:55 snapshot fallback.
+
 **Process:** evaluator written from this entry by one agent, run once; an independent agent re-implements it blind from this entry and must agree on n and the mean to 1e-9 before the result is journaled.
 
 ---
