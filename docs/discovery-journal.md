@@ -4,6 +4,33 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-12: Full-flow batch on the last days' features + hand validation of near-misses (runs 910–918, 0 champions)
+
+User request: 4 discoveries exercising the 2026-10-10..12 changes, then full backtests, all CPUs, ≤ 30 min. 4 runs in parallel via the API (16 workers on 10 cores, load ≈ 21–27), default gates, seeds 20261201–04. Discovery 17:56:28 → 18:15:48 (19.3 min); validations finished 18:14. To have something to validate with 0 champions, rejected candidates now persist their DSL (c695f78, vibe-quant-6vf6b); validations below are of **gate-rejected** genomes, not champions.
+
+| Run | Exercises | Config | Pop×Gen | Wall | Best score | Gates |
+|---|---|---|---|---|---|---|
+| 910 | 2020–21 history + 4-coin portfolio + cross-window/WFA | BTC/ETH/SOL/BNB 4h portfolio, 2020-10..2026-09, long, ROC/DONCHIAN/CCI/RSI/NATR, ew 2, cw [1,2], WFA 120 d | 12×5 (4) | 529 s | 0.3817 | 2 rejected: 3b9cd86806e2 DSR p 0.9999 (pooled ann SR 0.085, N 21870) + bootstrap lower −1.50; 960e9476c36e DSR p 0.9889 (SR 0.666) |
+| 911 | `symbol_agg=worst` + BTC_TREND context | ETH/SOL/BNB 4h worst, 2021-01..2026-09, long, BTC_TREND/DONCHIAN/ROC/STOCH, ew 1 | 12×5 | 263 s | 0.4478 | 5 rejected: 4 DSR p 0.8822–0.9884 (pooled ann SR 0.687–1.104, N 21880), 1 worst-symbol train return ≤ 0 (ETH) |
+| 912 | 15m (least-mined TF) | ETH 15m, 2024-01..2026-09, both, ROC/CCI/RSI/NATR, ew 2 | 14×4 | 637 s | 0 | zero_score 14/14 every gen: 6 of 56 sub-window backtests ≥ 50 trades and profitable (best sharpe 0.46), never both windows |
+| 913 | BBANDS typical price + pta-0.8.32 ADX + FUNDING_Z | BTC+SOL 1h portfolio, 2022-06..2026-09, BBANDS/ADX/MACD/FUNDING_Z, ew 2 | 10×4 | 1157 s | 0 | zero_score 10/10 every gen: 0 of 32 sub-window backtests ≥ 50 trades and profitable; 10 had ≥ 1000 trades |
+
+**Validation (full fidelity, full window = train + holdout) vs equal-weight buy-and-hold (`buyhold.py`, same window):**
+
+| Val run | Genome (strategy) | Scope | Sharpe | Trades | Return | PF | Max DD | Buy-and-hold Sharpe |
+|---|---|---|---|---|---|---|---|---|
+| 914 | 911 1674c6e02db6 (243) | ETH 2021-01..2026-09 | 0.45910823780040444 | 113 | 0.45633587274472165 | 1.2470522465017093 | 0.21733600076599846 | 0.6787332274832686 |
+| 915 | 〃 | SOL | 0.5458003816047998 | 249 | 0.8951827444364597 | 1.1858388319536308 | 0.27300825201607265 | 1.181868180485242 |
+| 916 | 〃 | BNB | 0.7537396948152041 | 128 | 1.0401460492005388 | 1.4584255345259454 | 0.15393110522371445 | 1.0343560782901227 |
+| 917 | 910 3b9cd86806e2 (244) | 4-coin portfolio 2020-10..2026-09 | 0.3826576038762234 | 88 | 0.26074923444191667 | 1.3903140910201637 | 0.1410265708568771 | 1.1618708287163733 |
+| 918 | 910 960e9476c36e (245) | 4-coin portfolio 2020-10..2026-09 | 0.5670605086443273 | 479 | 1.6900047192925198 | 1.1893775210565811 | 0.3934231253203412 | 1.1618708287163733 |
+
+911's best genome (long when BTC_TREND(59) ≥ 0.0716 and STOCH(9) ≥ 53.5; exit BTC_TREND(105) crosses below 0.062; SL 6.51% TP 13.64%) is positive on all three coins at full fidelity but below buy-and-hold on each — the same de-risked-beta pattern as H-2b.
+
+**Findings:** (1) All new paths ran end to end with 0 errors in 4 discovery + 5 validation logs: 2020-start 4-symbol portfolio, worst-mode with a context indicator, 15m, FUNDING_Z/BBANDS/ADX on 1h, cross-window/WFA config, hand validation from persisted rejection DSL. (2) BTC_TREND as a long regime filter (911) reached pooled ann SR 1.104 (cf. 892's 1.129, which was window luck) but DSR p 0.88 at N 21880 and it loses to holding. (3) 912/913 got no gradient at all — 15m oscillators and 1h BBANDS/ADX/MACD/FUNDING_Z either overtrade into fees or lose in one window. (4) 910/912/913 logs have 14k `notional … below minimum 50 USDT -- entry skipped` warnings (BTC min qty 0.001 ≈ $49.9 in early 2024); Likely: drained accounts of blown-up genomes (sizing only falls below 0.001 BTC when equity is tiny), all zero-scored — not filed. (5) 4 parallel runs: 911 finished in 4.4 min, 913 took 19.3 min (FUNDING_Z/BBANDS 1h, 289 s/gen).
+
+---
+
 ## 2026-10-12: 1m short-term discovery, 2026-05-01..2026-10-08 (runs 907–909, 0 champions)
 
 User request: short-term strategies on 1m candles from 2026-05 (catalog ends 2026-10-08 18:57 UTC). Rust-native pool per the 1m journal (STOCH/CCI/ROC/NATR; SOL without NATR), pop 16 × 6 gens, eval_windows 2, default gates; train windows do not overlap prior 1m runs (those end 2026-03), so the DSR prior-trial count starts small. Runs 905/906 failed at start: `ATR` is not a genome-pool name (NATR is) — the API accepted the launch (bead vibe-quant-l42df); relaunched as 908/909. The machine slept overnight; processes resumed on wake (caffeinate added).
