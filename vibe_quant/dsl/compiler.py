@@ -535,6 +535,18 @@ class StrategyCompiler:
             '    command_release_bar_type: str = ""  '
             '# Own detail bar type releasing the outbox when command_release="bar"'
         )
+        lines.append(
+            '    entry_order: str = "market"  '
+            '# "post_only": validation-only maker entries (limit priced at the outbox release)'
+        )
+        lines.append(
+            "    maker_offset_ticks: int = 1  "
+            "# post_only: ticks inside the releasing price (0 would be rejected as marketable)"
+        )
+        lines.append(
+            "    maker_entry_timeout_bars: int = 3  "
+            "# post_only: primary bars a resting entry may rest before it is cancelled"
+        )
         lines.append("")
 
         # Add indicator parameters
@@ -704,6 +716,10 @@ class StrategyCompiler:
             "        # Command outbox: (queue ts, fn, args) awaiting this instrument's next datum",
             "        self._outbox: list = []",
             "        self._command_release_bar_type: BarType | None = None",
+            "        # Post-only maker entries: mode flag, releasing datum price, resting age",
+            "        self._post_only = getattr(config, 'entry_order', 'market') == 'post_only'",
+            "        self._release_px: float | None = None",
+            "        self._maker_bars = 0",
             "        # Seeded RNG for the probabilistic execution-delay path so",
             "        # identical validation replays are byte-reproducible.",
             "        self._delay_rng = random.Random(",
@@ -943,7 +959,7 @@ class StrategyCompiler:
             [
                 "    # Command outbox: this instrument's own detail bar releases queued commands",
                 "    if self._command_release_bar_type is not None and bar.bar_type == self._command_release_bar_type:",
-                "        self._flush_outbox(bar.ts_init)",
+                "        self._flush_outbox(bar.ts_init, float(bar.close))",
                 "",
                 "    # Only process primary timeframe bars",
                 "    if bar.bar_type != self.primary_bar_type:",
@@ -964,6 +980,9 @@ class StrategyCompiler:
                 "    # Restart recovery: protect a position adopted in on_start",
                 "    if self._rearm_protection:",
                 "        self._ensure_protection()",
+                "",
+                "    # Post-only maker entries: age a resting entry, cancel it at the timeout",
+                "    self._maker_entry_bar()",
                 "",
                 "    # Execute any validation-only delayed action before new signals",
                 "    if self._dispatch_pending_validation_action(bar):",
@@ -993,6 +1012,28 @@ class StrategyCompiler:
             lines.append(f"    _entries_allowed = {' and '.join(checks)}")
             lines.append("")
             entry_gate = " and _entries_allowed"
+
+        # Post-only maker entries: an exit signal withdraws a resting/queued entry
+        # (no position yet, so the exit block below never runs for it) and the bar
+        # is skipped: the same pass must not re-queue the entry it just withdrew.
+        if dsl.exit_conditions.long or dsl.exit_conditions.short:
+            lines.append("    # Post-only maker entry pending: an exit signal withdraws it")
+            lines.append("    _maker_side = self._pending_maker_side()")
+            lines.append("    if _maker_side is not None and not self._position_open:")
+            if dsl.exit_conditions.long:
+                lines.append("        if _maker_side == OrderSide.BUY:")
+                lines.append("            if self._check_long_exit(bar):")
+                lines.append("                self._submit_exit(bar)")
+                lines.append("                self._update_prev_values(bar)")
+                lines.append("                return")
+            if dsl.exit_conditions.short:
+                kw = "elif" if dsl.exit_conditions.long else "if"
+                lines.append(f"        {kw} _maker_side == OrderSide.SELL:")
+                lines.append("            if self._check_short_exit(bar):")
+                lines.append("                self._submit_exit(bar)")
+                lines.append("                self._update_prev_values(bar)")
+                lines.append("                return")
+            lines.append("")
 
         # Entry conditions
         lines.append("    # Evaluate entry conditions")

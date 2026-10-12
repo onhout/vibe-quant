@@ -410,11 +410,14 @@ def test_venue_calls_only_through_outbox_helper(source: str) -> None:
         )
     lines = src.splitlines()
     direct = [(i, lines[i].strip()) for i, ln in enumerate(lines) if _DIRECT_CALL.search(ln)]
-    # The only direct venue calls: the command_release="" path of on_stop.
-    assert {_method_of(lines, i) for i, _ in direct} <= {"on_stop"}, direct
+    # The only direct venue calls: the command_release="" path of on_stop, and the
+    # release point of a post-only entry intent (_place_entry_intent runs FROM the
+    # outbox flush -- or immediately in immediate mode -- so it must not re-queue).
+    assert {_method_of(lines, i) for i, _ in direct} <= {"on_stop", "_place_entry_intent"}, direct
     assert sorted(s for _, s in direct) == [
         "self.cancel_all_orders(self.instrument_id)",
         "self.close_all_positions(self.instrument_id)",
+        "self.submit_order(order)",
     ]
     # Every other reference hands the bound method to the outbox helper (or is
     # the queued-entry check in _has_pending_entry).
@@ -423,6 +426,14 @@ def test_venue_calls_only_through_outbox_helper(source: str) -> None:
             continue
         method = _method_of(lines, i)
         assert "self._send_command(self." in ln or method == "_has_pending_entry", (method, ln)
+    # _place_entry_intent submits directly, so it may only ever be REACHED through the
+    # outbox helper (or compared against queued commands), never called inline.
+    for i, ln in enumerate(lines):
+        if "self._place_entry_intent" in ln:
+            assert "self._send_command(self._place_entry_intent" in ln or "== self._place_entry_intent" in ln, (
+                _method_of(lines, i),
+                ln,
+            )
     sends = sum(ln.count("self._send_command(") for ln in lines)
     assert sends >= 11, sends  # 7 submit + 2 cancel + 2 cancel_all call sites
 

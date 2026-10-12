@@ -22,6 +22,14 @@ Every venue command goes through ``_send_command`` (vibe-quant-yul7u.9): with
 ``command_release`` set (backtests only) it is queued in a per-instrument
 outbox and sent on this strategy's OWN next datum -- NT's venue-wide latency
 release let another symbol's data event release it at a stale book.
+
+Post-only maker entries (``entry_order="post_only"``, validation only): the
+entry is sized at signal time and queued as an INTENT; ``_flush_outbox`` hands
+the releasing datum's price to ``_place_entry_intent``, which prices the
+post-only limit ``maker_offset_ticks`` inside it (NT processes that datum
+before the strategy sees it, so the limit is not marketable). Unfilled entries
+are cancelled after ``maker_entry_timeout_bars`` primary bars; exit and
+opposite-direction signals withdraw resting or queued entries.
 """
 
 from __future__ import annotations
@@ -96,6 +104,8 @@ ON_RESET_LINES: tuple[str, ...] = _lines(
         self._trailing_best_sl = None
         self._rearm_protection = False
         self._outbox = []
+        self._release_px = None
+        self._maker_bars = 0
     '''
 )
 
@@ -134,6 +144,13 @@ ON_START_OUTBOX_LINES: tuple[str, ...] = _lines(
         self.subscribe_bars(self._command_release_bar_type)
     elif _release:
         raise ValueError(f"Unknown command_release {_release!r}")
+    if self.config.entry_order not in ("market", "post_only"):
+        raise ValueError(f"Unknown entry_order {self.config.entry_order!r}")
+    if self._post_only and self.config.maker_offset_ticks < 1:
+        # offset 0 sits AT the book: NT rejects every post-only order that would take
+        raise ValueError("maker_offset_ticks must be >= 1")
+    if self._post_only and self.config.maker_entry_timeout_bars < 1:
+        raise ValueError("maker_entry_timeout_bars must be >= 1")
     '''
 )
 
@@ -142,7 +159,7 @@ ON_TRADE_TICK_LINES: tuple[str, ...] = _lines(
     def on_trade_tick(self, tick: TradeTick) -> None:
         """Command outbox: this instrument's own trade tick releases queued commands."""
         if tick.instrument_id == self.instrument_id:
-            self._flush_outbox(tick.ts_init)
+            self._flush_outbox(tick.ts_init, float(tick.price))
     '''
 )
 
@@ -182,6 +199,8 @@ ORDER_METHODS_LINES: tuple[str, ...] = _lines(
         for _ts, fn, args in self._outbox:
             if fn == self.submit_order and not args[0].is_reduce_only:
                 return True
+            if fn == self._place_entry_intent:
+                return True
         return False
 
     def _send_command(self, fn, *args) -> None:
@@ -196,25 +215,33 @@ ORDER_METHODS_LINES: tuple[str, ...] = _lines(
             return
         fn(*args)
 
-    def _flush_outbox(self, ts: int) -> None:
+    def _flush_outbox(self, ts: int, price: float) -> None:
         """Send queued commands with queue ts < ts, in order (strict: a datum at
-        the queue ts itself never releases)."""
+        the queue ts itself never releases). ``price`` is the releasing datum's
+        price: queued entry intents are priced from it."""
         if not self._outbox:
             return
         ready = [cmd for cmd in self._outbox if cmd[0] < ts]
         if not ready:
             return
         self._outbox = [cmd for cmd in self._outbox if cmd[0] >= ts]
+        self._release_px = price
         for _ts, fn, args in ready:
             fn(*args)
+        self._release_px = None
 
     def _submit_long_entry(self, bar: Bar) -> None:
         """Submit a long market entry (SL/TP follow on PositionOpened)."""
+        if self._post_only and self._withdraw_entries(keep_side=OrderSide.BUY):
+            return  # an opposite-direction entry was resting: withdrawn, skip this bar
         if self._position_open or self._has_pending_entry():
             return
 
         qty = self._calculate_position_size(bar, is_long=True)
         if qty is None:
+            return
+        if self._post_only:
+            self._send_command(self._place_entry_intent, OrderSide.BUY, qty)
             return
         order = self.order_factory.market(
             instrument_id=self.instrument_id,
@@ -227,11 +254,16 @@ ORDER_METHODS_LINES: tuple[str, ...] = _lines(
 
     def _submit_short_entry(self, bar: Bar) -> None:
         """Submit a short market entry (SL/TP follow on PositionOpened)."""
+        if self._post_only and self._withdraw_entries(keep_side=OrderSide.SELL):
+            return  # an opposite-direction entry was resting: withdrawn, skip this bar
         if self._position_open or self._has_pending_entry():
             return
 
         qty = self._calculate_position_size(bar, is_long=False)
         if qty is None:
+            return
+        if self._post_only:
+            self._send_command(self._place_entry_intent, OrderSide.SELL, qty)
             return
         order = self.order_factory.market(
             instrument_id=self.instrument_id,
@@ -245,6 +277,8 @@ ORDER_METHODS_LINES: tuple[str, ...] = _lines(
     def _submit_exit(self, bar: Bar) -> None:
         """Close the open position with a reduce-only market order."""
         if not self._position_open:
+            if self._post_only:
+                self._withdraw_entries()  # exit signal: no entry should be resting
             return
 
         # Cancel existing SL/TP orders
@@ -272,6 +306,96 @@ ORDER_METHODS_LINES: tuple[str, ...] = _lines(
             reduce_only=True,
         )
         self._send_command(self.submit_order, order)
+
+    def _place_entry_intent(self, side: OrderSide, qty: Quantity) -> None:
+        """Release point of a post-only entry intent: price the limit from the
+        releasing datum (immediate mode: the current bar close), ``maker_offset_ticks``
+        inside it, and send it. This is the venue call itself, not a queued one."""
+        px = self._release_px if self._release_px is not None else self._last_close
+        offset = self.config.maker_offset_ticks * float(self.instrument.price_increment)
+        limit_px = px - offset if side == OrderSide.BUY else px + offset
+        order = self.order_factory.limit(
+            instrument_id=self.instrument_id,
+            order_side=side,
+            quantity=qty,
+            price=self.instrument.make_price(limit_px),
+            time_in_force=TimeInForce.GTC,
+            post_only=True,
+        )
+        self._maker_bars = 0
+        self.submit_order(order)
+
+    def _queued(self, method: str) -> list:
+        """Outbox entries (ts, fn, args) queued for the venue method named ``method``."""
+        return [cmd for cmd in self._outbox if getattr(cmd[1], '__name__', '') == method]
+
+    def _open_entry_orders(self) -> list:
+        """Open or in-flight entry orders of this strategy that are not already being
+        cancelled (NT pending-cancel, or a cancel still waiting in the outbox)."""
+        seen = {cmd[2][0].client_order_id for cmd in self._queued('cancel_order')}
+        out = []
+        for order in (
+            self.cache.orders_open(instrument_id=self.instrument_id, strategy_id=self.id)
+            + self.cache.orders_inflight(instrument_id=self.instrument_id, strategy_id=self.id)
+        ):
+            if order.client_order_id in seen or order.is_reduce_only or order.is_pending_cancel:
+                continue
+            seen.add(order.client_order_id)
+            out.append(order)
+        return out
+
+    def _withdraw_entries(self, keep_side: OrderSide | None = None) -> bool:
+        """Cancel resting entries and drop queued entry intents (all of them, or only
+        those NOT on ``keep_side``). Returns True when anything was withdrawn."""
+        withdrawn = False
+        for order in self._open_entry_orders():
+            if keep_side is None or order.side != keep_side:
+                self._send_command(self.cancel_order, order)
+                withdrawn = True
+        kept = [
+            cmd for cmd in self._outbox
+            if not (cmd[1] == self._place_entry_intent and (keep_side is None or cmd[2][0] != keep_side))
+        ]
+        if len(kept) != len(self._outbox):
+            self._outbox = kept
+            withdrawn = True
+        return withdrawn
+
+    def _drop_queued_protection(self) -> None:
+        """Drop SL/TP submissions still waiting in the outbox: a maker entry can fill in
+        pieces faster than the outbox releases, and a queued pair sized for the first
+        piece is stale once the position grows. Callers re-arm for the whole position."""
+        stale = [
+            cmd for cmd in self._queued('submit_order')
+            if cmd[2][0].is_reduce_only and cmd[2][0].order_type in (OrderType.STOP_MARKET, OrderType.LIMIT)
+        ]
+        if stale:
+            self._outbox = [cmd for cmd in self._outbox if cmd not in stale]
+
+    def _pending_maker_side(self) -> OrderSide | None:
+        """Side of a resting or queued post-only entry, else None (also in market mode)."""
+        if not self._post_only:
+            return None
+        for order in self._open_entry_orders():
+            return order.side
+        for _ts, fn, args in self._outbox:
+            if fn == self._place_entry_intent:
+                return args[0]
+        return None
+
+    def _maker_entry_bar(self) -> None:
+        """Called on every primary bar: age a resting post-only entry and cancel it
+        (through the outbox) once it has rested ``maker_entry_timeout_bars`` bars."""
+        if not self._post_only:
+            return
+        orders = self._open_entry_orders()
+        if not orders:
+            self._maker_bars = 0
+            return
+        self._maker_bars += 1
+        if self._maker_bars >= self.config.maker_entry_timeout_bars:
+            for order in orders:
+                self._send_command(self.cancel_order, order)
 
     def _sl_config(self, is_long: bool) -> tuple[str, str]:
         """(stop-loss type, config field prefix), per-direction override first."""
@@ -353,6 +477,12 @@ ORDER_METHODS_LINES: tuple[str, ...] = _lines(
         """Size SL/TP to the full open position: re-arm if none, else cancel/replace
         any order whose remaining quantity differs (prices are kept)."""
         orders = self._protective_orders()
+        if getattr(self, '_post_only', False):  # getattr: hand-built strategy stubs lack the flag
+            # Partial maker fills: queued SL/TP are invisible to the cache. Drop them and
+            # treat orders awaiting a queued cancel as gone, then re-arm the whole position.
+            self._drop_queued_protection()
+            queued = {cmd[2][0].client_order_id for cmd in self._queued('cancel_order')}
+            orders = [o for o in orders if o.client_order_id not in queued]
         if not orders:
             entry_side = OrderSide.BUY if pos.side == PositionSide.LONG else OrderSide.SELL
             self._submit_sl_tp_orders(float(pos.avg_px_open), entry_side, pos.quantity)
