@@ -240,17 +240,22 @@ def apply_discovery_dsr_returns(
     symbol_daily: Mapping[str, Mapping[str, float] | None] | None = None,
     symbol_psr_floor: float = SYMBOL_PSR_FLOOR,
 ) -> tuple[DSRResult | None, dict[str, object], list[str]]:
-    """DSR on a dense DAILY return series (bd vibe-quant-yul7u.24).
+    """DSR on a dense MARK-TO-MARKET daily return series (yul7u.24, y9ywf).
 
-    The tested series is the champion candidate's daily balance returns over
-    the whole train range (portfolio mode: the shared account; worst mode:
-    the equal-weight pool of the symbols' own runs). Sharpe, skewness,
-    kurtosis and T (= series length) all come from that one series, at the
-    raw trial count N. Moments are clamped (skew <= 0, kurt >= 3).
+    The tested series is the champion candidate's mark-to-market daily return
+    series over the whole train range (portfolio mode: the shared account;
+    worst mode: the equal-weight pool of the symbols' own runs). Unlike the
+    realized-balance series, an open position contributes its move on the day
+    it happens, not on its exit day (bd vibe-quant-wcn55), so a multi-day hold
+    cannot inflate its Sharpe (y9ywf). Sharpe, skewness, kurtosis and T (=
+    series length) all come from that one series, at the raw trial count N.
+    Moments are clamped (skew <= 0, kurt >= 3).
 
     Worst mode (``symbol_daily`` given, 2+ symbols): each symbol must also
-    reach ``symbol_psr_floor`` undeflated PSR(SR > 0). With one symbol the
-    pooled series IS that symbol and no extra floor applies.
+    reach ``symbol_psr_floor`` undeflated PSR(SR > 0) -- judged on that
+    symbol's OWN mark-to-market series (the caller maps ``symbol_mtm_daily``
+    to this stats shape). With one symbol the pooled series IS that symbol and
+    no extra floor applies.
 
     Fails closed: a missing/short/non-finite series, or a symbol without one,
     is rejected with a ``DSR input missing`` reason.
@@ -259,7 +264,7 @@ def apply_discovery_dsr_returns(
         ``(result_or_None, record, reasons)`` -- empty ``reasons`` = pass.
     """
     record: dict[str, object] = {
-        "input": "pooled_daily_returns",
+        "input": "pooled_mtm_daily_returns",
         "trials": num_trials,
         "significance_level": significance_level,
         "day0_convention": DAY0_CONVENTION,
@@ -458,11 +463,13 @@ def apply_guardrails(
         kfold_cv: PurgedKFoldCV instance (required if require_purged_kfold).
         kfold_n_samples: Number of samples for K-Fold.
         kfold_runner: Backtest runner for K-Fold.
-        daily_returns: Dense daily return series of the candidate. When given
-            (or when ``dsr_requires_returns``), DSR tests THIS series -- see
+        daily_returns: Dense MARK-TO-MARKET daily return series of the
+            candidate (``fitness.mtm_daily_returns``). When given (or when
+            ``dsr_requires_returns``), DSR tests THIS series -- see
             :func:`apply_discovery_dsr_returns` -- instead of
             ``fitness.sharpe_ratio`` with ``num_observations``/moments.
-        symbol_daily: Worst mode per-symbol daily Sharpe inputs (floor).
+        symbol_daily: Worst mode per-symbol mark-to-market Sharpe inputs
+            (floor); a symbol whose MTM series is missing must map to ``None``.
         dsr_requires_returns: Real backtests always produce the series; a
             missing one then fails DSR closed instead of falling back.
 

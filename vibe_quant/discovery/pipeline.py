@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from vibe_quant.discovery.operators import Direction
+    from vibe_quant.metrics import DailyReturns
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +397,38 @@ def _select_diverse_top_k(
     return selected
 
 
+def _symbol_mtm_stats(
+    symbol_mtm_daily: dict[str, DailyReturns | None] | None,
+) -> dict[str, dict[str, float] | None] | None:
+    """Per-symbol DSR Sharpe inputs from each symbol's MARK-TO-MARKET series.
+
+    Same dict shape as ``FitnessResult.symbol_daily`` (sharpe / skewness /
+    kurtosis / observations / mean via :func:`daily_sharpe_inputs`), but built
+    from ``symbol_mtm_daily`` so the worst-mode per-symbol PSR floor judges the
+    SAME series the pooled test does (vibe-quant-y9ywf). A missing or empty
+    symbol series maps to ``None`` so the floor fails closed; a ``None`` input
+    (portfolio mode) yields ``None`` -- no per-symbol floor applies.
+    """
+    if symbol_mtm_daily is None:
+        return None
+    from vibe_quant.overfitting.dsr import daily_sharpe_inputs
+
+    stats: dict[str, dict[str, float] | None] = {}
+    for sym, series in symbol_mtm_daily.items():
+        if series is None or len(series) == 0:
+            stats[sym] = None
+            continue
+        sharpe, skewness, kurtosis = daily_sharpe_inputs(series.values)
+        stats[sym] = {
+            "sharpe": sharpe,
+            "skewness": skewness,
+            "kurtosis": kurtosis,
+            "observations": len(series),
+            "mean": sum(series.values) / len(series),
+        }
+    return stats
+
+
 def worst_symbol_gate_reasons(fitness: FitnessResult, min_trades: int) -> list[str]:
     """Hard train gate for ``symbol_agg="worst"`` champions (vibe-quant-ox73t).
 
@@ -490,12 +523,13 @@ class DiscoveryPipeline:
         self._dsr_trials: dict[str, object] | None = None
         self._buy_hold_records: dict[str, dict[str, object]] = {}
         self._buy_hold_gate: dict[str, object] | None = None
-        # DSR tests the candidate's daily return series (bd vibe-quant-yul7u.24).
-        # A real NT backtest fn is told to collect it, and a candidate without
-        # one then fails DSR closed; mock/synthetic fns keep the legacy input.
-        # The buy-and-hold gate reads the same series (mtm_daily_returns), so a
-        # run with --no-dsr but the buy-hold gate on must still collect it --
-        # without touching ``_dsr_requires_returns`` (DSR's own fail-closed rule).
+        # DSR tests the candidate's MARK-TO-MARKET daily return series
+        # (bd vibe-quant-yul7u.24, y9ywf). A real NT backtest fn is told to
+        # collect it, and a candidate without one then fails DSR closed;
+        # mock/synthetic fns keep the legacy input. The buy-and-hold gate reads
+        # the same series, so a run with --no-dsr but the buy-hold gate on must
+        # still collect it -- without touching ``_dsr_requires_returns`` (DSR's
+        # own fail-closed rule).
         from vibe_quant.discovery.backtest_fn import NTBacktestFn
 
         self._dsr_requires_returns = False
@@ -2075,7 +2109,7 @@ class DiscoveryPipeline:
             num_obs = day_count if day_count else max(100, fitness.total_trades * 5)
 
             trade_ret = np.array(fitness.trade_returns) if fitness.trade_returns else None
-            series = fitness.daily_returns
+            series = fitness.mtm_daily_returns
             result: GuardrailResult = apply_guardrails(
                 fitness=fitness,
                 num_genes=num_genes,
@@ -2086,7 +2120,7 @@ class DiscoveryPipeline:
                 kurtosis=fitness.kurtosis,
                 trade_returns=trade_ret,
                 daily_returns=series.values if series is not None else None,
-                symbol_daily=fitness.symbol_daily,
+                symbol_daily=_symbol_mtm_stats(fitness.symbol_mtm_daily),
                 dsr_requires_returns=self._dsr_requires_returns,
                 # trials_sharpe_variance intentionally omitted — use theoretical
                 # 1/(T-1). Cross-strategy Sharpe dispersion from GA is NOT what
@@ -2130,9 +2164,9 @@ class DiscoveryPipeline:
         """Run-level DSR trial counts: raw N (USED) + informational N_eff.
 
         ``neff_mean_corr`` and ``neff_eig_pr`` are two effective-trial-count
-        estimates over the retained daily series (only train-gate-passing
-        genomes keep one), both scaling to N when the series are
-        uncorrelated: ``N / (1 + (m-1)*rho_bar)`` (mean off-diagonal
+        estimates over the retained mark-to-market daily series (only
+        train-gate-passing genomes keep one), both scaling to N when the
+        series are uncorrelated: ``N / (1 + (m-1)*rho_bar)`` (mean off-diagonal
         correlation) and ``PR * N / m`` (participation ratio of the
         correlation eigenvalues). Recorded, never used by the gate (bd
         yul7u.24).
@@ -2147,9 +2181,9 @@ class DiscoveryPipeline:
         # Sorted uid order: the deterministic basis for the subsample below.
         entries = sorted(self._fitness_cache.items(), key=lambda kv: str(kv[0]))
         raw_rows = [
-            np.frombuffer(fr.daily_returns.values, dtype=np.float64)  # type: ignore[union-attr]
+            np.frombuffer(fr.mtm_daily_returns.values, dtype=np.float64)  # type: ignore[union-attr]
             for _, fr in entries
-            if fr.daily_returns is not None and len(fr.daily_returns) >= 2
+            if fr.mtm_daily_returns is not None and len(fr.mtm_daily_returns) >= 2
         ]
         lengths = {len(r) for r in raw_rows}
         rows = [r for r in raw_rows if r.std() > 0]

@@ -266,7 +266,7 @@ def test_build_prior_trials_fn_mock_guard_and_run_ids() -> None:
 def test_gate_default_uses_run_n_only() -> None:
     chrom = _chrom()
     pipe = _pipeline()
-    kept = pipe._validate_top_strategies([(chrom, _fit(daily_returns=_series(1.6)))], 10)
+    kept = pipe._validate_top_strategies([(chrom, _fit(mtm_daily_returns=_series(1.6)))], 10)
     assert [c.uid for c, _ in kept] == [chrom.uid]
     assert pipe._dsr_records[chrom.uid]["trials"] == 10  # run-only N
     assert pipe._dsr_trials is not None
@@ -278,11 +278,11 @@ def test_gate_rejects_candidate_that_fails_at_cumulative_n() -> None:
     chrom = _chrom()
     only = _pipeline()
     assert only._validate_top_strategies(
-        [(chrom, _fit(daily_returns=_series(1.6)))], 10
+        [(chrom, _fit(mtm_daily_returns=_series(1.6)))], 10
     )
     cumulative = _pipeline(prior_trials_fn=lambda s, e: 1000)
     kept = cumulative._validate_top_strategies(
-        [(chrom, _fit(daily_returns=_series(1.6)))], 10
+        [(chrom, _fit(mtm_daily_returns=_series(1.6)))], 10
     )
     assert kept == []
     assert cumulative._dsr_records[chrom.uid]["trials"] == 1010
@@ -307,7 +307,7 @@ def test_pipeline_passes_its_train_window_to_prior_fn() -> None:
         holdout_start_date="2025-11-18",
         holdout_end_date="2026-03-17",
     )
-    pipe._validate_top_strategies([(_chrom(), _fit(daily_returns=_series(1.6)))], 10)
+    pipe._validate_top_strategies([(_chrom(), _fit(mtm_daily_returns=_series(1.6)))], 10)
     assert calls == [("2022-06-01", "2025-11-17")]
     assert pipe._dsr_trials is not None and pipe._dsr_trials["gate_n"] == 15
 
@@ -319,7 +319,7 @@ def test_prior_fn_error_uses_zero_and_records_it() -> None:
     for bad in (boom, lambda s, e: None):
         pipe = _pipeline(prior_trials_fn=bad)
         kept = pipe._validate_top_strategies(
-            [(_chrom(), _fit(daily_returns=_series(1.6)))], 10
+            [(_chrom(), _fit(mtm_daily_returns=_series(1.6)))], 10
         )
         assert len(kept) == 1  # fail open to run-only N
         trials = pipe._dsr_trials
@@ -396,14 +396,14 @@ def test_multi_seed_result_carries_dsr_trials(monkeypatch: pytest.MonkeyPatch) -
     from vibe_quant.discovery import __main__ as cli
     from vibe_quant.discovery.pipeline import DiscoveryPipeline, DiscoveryResult
 
-    champ = (_chrom(), _fit(daily_returns=_series(5.0)))
+    champ = (_chrom(), _fit(mtm_daily_returns=_series(5.0)))
     seeds_seen: list[int] = []
 
     def fake_run(self: Any) -> DiscoveryResult:
         # each seed retains its own non-flat series (feeds the informational N_eff)
         seeds_seen.append(len(seeds_seen) + 1)
         self._fitness_cache[f"seed{seeds_seen[-1]}"] = _fit(
-            daily_returns=_series(1.0, seed=seeds_seen[-1])
+            mtm_daily_returns=_series(1.0, seed=seeds_seen[-1])
         )
         return DiscoveryResult(
             generations=[], top_strategies=[champ], total_candidates_evaluated=400,
@@ -499,7 +499,7 @@ def test_neff_eig_capped_at_500_deterministic() -> None:
     for i in range(m):
         x = common + rng.normal(0.0, 0.001, 1264)
         pipe._fitness_cache[f"k{i:04d}"] = _fit(
-            daily_returns=DailyReturns(19_000, array("d", x.tobytes()))
+            mtm_daily_returns=DailyReturns(19_000, array("d", x.tobytes()))
         )
 
     trials = pipe._dsr_trial_counts(600)
@@ -514,7 +514,7 @@ def test_neff_eig_capped_at_500_deterministic() -> None:
     # exactly the evenly-spaced 500-subset of the sorted-uid order was used
     items = sorted(pipe._fitness_cache.items(), key=lambda kv: str(kv[0]))
     rows = [
-        np.frombuffer(fr.daily_returns.values, dtype=np.float64)  # type: ignore[union-attr]
+        np.frombuffer(fr.mtm_daily_returns.values, dtype=np.float64)  # type: ignore[union-attr]
         for _, fr in items
     ]
     idx = np.unique(np.linspace(0, m - 1, 500).astype(int))
@@ -532,7 +532,7 @@ def test_neff_eig_uncapped_below_limit() -> None:
     for i in range(10):
         x = rng.normal(0.0005, 0.01, 1264)
         pipe._fitness_cache[f"k{i:04d}"] = _fit(
-            daily_returns=DailyReturns(19_000, array("d", x.tobytes()))
+            mtm_daily_returns=DailyReturns(19_000, array("d", x.tobytes()))
         )
     trials = pipe._dsr_trial_counts(10)
     assert trials["neff_subsampled_from"] is None

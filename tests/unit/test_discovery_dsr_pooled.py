@@ -1,10 +1,15 @@
-"""Discovery DSR on the pooled DAILY return series (bd vibe-quant-yul7u.24).
+"""Discovery DSR on the pooled MARK-TO-MARKET daily series (yul7u.24, y9ywf).
 
 The DSR gate used to test the worst-of-symbols x windows Sharpe with T = train
 days and per-trade moments. It now tests one dense daily return series (the
 shared account in portfolio mode, the equal-weight pool of the symbols in
 worst mode) with its own T and moments at raw N, plus a worst-mode per-symbol
 PSR floor and conservative (clamped) moments.
+
+``vibe-quant-y9ywf``: that series is the MARK-TO-MARKET one (``mtm_daily_returns``
+/ ``symbol_mtm_daily``), not the realized-balance series: the latter books a
+multi-day trade's whole PnL on its exit day, so DSR was too lenient. A missing
+MTM series now fails the gate closed.
 """
 
 from __future__ import annotations
@@ -98,15 +103,15 @@ def test_dsr_uses_pooled_daily_not_worst_of() -> None:
     # The OLD input (worst-of Sharpe 0.1, T = 1265 train days) cannot pass ...
     assert not apply_discovery_dsr(0.1, 79, 1265).is_significant
 
-    strong = (_chrom(stop_loss_pct=2.0), _fit(0.1, daily_returns=_series(2.5)))
-    weak = (_chrom(stop_loss_pct=3.0), _fit(0.1, daily_returns=_series(1.0)))
-    empty = (_chrom(stop_loss_pct=4.0), _fit(0.1, daily_returns=None))
+    strong = (_chrom(stop_loss_pct=2.0), _fit(0.1, mtm_daily_returns=_series(2.5)))
+    weak = (_chrom(stop_loss_pct=3.0), _fit(0.1, mtm_daily_returns=_series(1.0)))
+    empty = (_chrom(stop_loss_pct=4.0), _fit(0.1, mtm_daily_returns=None))
     kept = pipe._validate_top_strategies([strong, weak, empty], 79)
 
-    # ... the pooled daily series with SR 2.5 passes at N=79, T=1264
+    # ... the pooled mark-to-market series with SR 2.5 passes at N=79, T=1264
     assert [c.uid for c, _ in kept] == [strong[0].uid]
     rec = pipe._dsr_records[strong[0].uid]
-    assert rec["input"] == "pooled_daily_returns"
+    assert rec["input"] == "pooled_mtm_daily_returns"
     assert rec["observations"] == 1264 and rec["trials"] == 79
     assert rec["sharpe_annualized"] == pytest.approx(2.5, rel=1e-9)
     assert rec["p_value"] < 0.05
@@ -117,6 +122,61 @@ def test_dsr_uses_pooled_daily_not_worst_of() -> None:
     assert by_uid[weak[0].uid]["dsr"]["p_value"] >= 0.05
     empty_reasons = by_uid[empty[0].uid]["reasons"]
     assert any(r.startswith("DSR input missing") for r in empty_reasons)
+
+
+def test_dsr_tests_the_mtm_series_not_the_realized_one() -> None:
+    """The gate's pooled input is mark-to-market: swap the two series and the verdict flips."""
+    pipe = _pipeline()
+    mtm_weak = _series(0.2, seed=2)
+    mtm_strong = _series(2.5, seed=4)
+    # realized SR 2.5 would pass, but the MTM series of the same candidate is weak
+    weak = (_chrom(stop_loss_pct=2.0),
+            _fit(0.1, daily_returns=_series(2.5, seed=1), mtm_daily_returns=mtm_weak))
+    # realized SR 0.2 would fail, but the MTM series is strong
+    strong = (_chrom(stop_loss_pct=3.0),
+              _fit(0.1, daily_returns=_series(0.2, seed=3), mtm_daily_returns=mtm_strong))
+    kept = pipe._validate_top_strategies([weak, strong], 79)
+
+    assert [c.uid for c, _ in kept] == [strong[0].uid]
+    by_uid = {r["uid"]: r for r in pipe._guardrail_rejections}
+    weak_rec = by_uid[weak[0].uid]["dsr"]
+    assert weak_rec["input"] == "pooled_mtm_daily_returns"
+    assert weak_rec["observations"] == 1264
+    # the MTM series (0.2 ann), never the realized 2.5 the same candidate also carries
+    assert weak_rec["sharpe_annualized"] == pytest.approx(0.2, rel=1e-9)
+    sr_mtm, _skew, _kurt = daily_sharpe_inputs(list(mtm_weak.values))
+    assert weak_rec["sharpe_daily"] == pytest.approx(sr_mtm)
+    assert any(r.startswith("DSR not significant: p=") for r in by_uid[weak[0].uid]["reasons"])
+    # and the passing candidate's verdict came from its MTM series too
+    assert pipe._dsr_records[strong[0].uid]["sharpe_annualized"] == pytest.approx(2.5, rel=1e-9)
+
+
+def test_missing_mtm_series_fails_dsr_closed() -> None:
+    pipe = _pipeline()
+    chrom = _chrom()
+    # realized series present and passing, but the MTM series is missing -> fail closed
+    fit = _fit(0.1, daily_returns=_series(2.5, seed=1), mtm_daily_returns=None)
+    kept = pipe._validate_top_strategies([(chrom, fit)], 79)
+
+    assert kept == []
+    rej = pipe._guardrail_rejections[0]
+    assert any(r.startswith("DSR input missing") for r in rej["reasons"])
+    assert rej["dsr"]["input"] == "pooled_mtm_daily_returns" and rej["dsr"]["missing"] is True
+
+
+def test_symbol_mtm_stats_helper_shape_and_fail_closed() -> None:
+    from vibe_quant.discovery.pipeline import _symbol_mtm_stats
+
+    a = _series(2.5, seed=31)
+    out = _symbol_mtm_stats({"A": a, "B": None, "C": DailyReturns(19_000, array("d"))})
+    assert out is not None
+    assert out["B"] is None and out["C"] is None  # missing/empty -> None, floor fails closed
+    sr, skew, kurt = daily_sharpe_inputs(a.values)
+    assert out["A"] == {
+        "sharpe": sr, "skewness": skew, "kurtosis": kurt,
+        "observations": len(a), "mean": sum(a.values) / len(a),
+    }
+    assert _symbol_mtm_stats(None) is None  # portfolio mode: no per-symbol floor
 
 
 def test_mock_backtest_fn_keeps_legacy_input() -> None:
@@ -174,12 +234,38 @@ def test_one_strong_symbol_cannot_carry_null_symbols() -> None:
     _, _, ok_reasons = apply_discovery_dsr_returns(pooled, 79, symbol_daily=even)
     assert ok_reasons == []
 
-    # Through the pipeline: the floor rejects the candidate.
-    pipe = _pipeline(["A", "B", "C"])
+
+@pytest.mark.parametrize("n_symbols", [2, 3])
+def test_worst_mode_symbol_floor_rejects_weak_mtm_symbol(n_symbols: int) -> None:
+    """The per-symbol floor rejects the weak symbol for 2 AND 3 symbols.
+
+    ``apply_discovery_dsr_returns`` applies the floor only when
+    ``len(symbol_daily) >= 2``, so two symbols is the boundary: a regression
+    that drops the floor for exactly two symbols must fail the ``n_symbols=2``
+    case. Every symbol's REALIZED stats (``symbol_daily``) would clear the
+    floor -- only the MTM series is allowed to judge them.
+    """
+    strong = [f"S{i}" for i in range(n_symbols - 1)]
+    weak = "W"
+    pipe = _pipeline([*strong, weak])
     chrom = _chrom()
-    fit = _fit(0.1, daily_returns=_series(2.5), symbol_daily=carried)
+    mtm: dict[str, DailyReturns] = {s: _series(4.0, seed=30 + i) for i, s in enumerate(strong)}
+    mtm[weak] = _series(0.05, seed=39)
+    fit = _fit(
+        0.1,
+        mtm_daily_returns=_series(2.5, seed=24),  # the pool itself clears the DSR
+        symbol_mtm_daily=mtm,
+        symbol_daily={s: _sym_stats(2.5) for s in [*strong, weak]},  # realized: all would pass
+    )
     assert pipe._validate_top_strategies([(chrom, fit)], 79) == []
-    assert any("per-symbol floor" in r for r in pipe._guardrail_rejections[0]["reasons"])
+    rej = pipe._guardrail_rejections[0]
+    floor = [r for r in rej["reasons"] if r.startswith("DSR per-symbol floor")]
+    assert {r.split(":")[1].split()[0] for r in floor} == {weak}, rej["reasons"]
+    rec = rej["dsr"]
+    assert isinstance(rec["symbols"], dict) and len(rec["symbols"]) == n_symbols
+    assert rec["symbols"][weak]["psr"] < SYMBOL_PSR_FLOOR
+    for s in strong:
+        assert rec["symbols"][s]["psr"] > SYMBOL_PSR_FLOOR
 
 
 def test_missing_symbol_series_fails_closed() -> None:
@@ -417,11 +503,12 @@ def test_dsr_trials_recorded_not_used() -> None:
     common = rng.normal(0.0005, 0.01, 1264)
     for i in range(6):
         x = common + rng.normal(0, 0.001, 1264)
-        pipe._fitness_cache[f"k{i}"] = _fit(daily_returns=DailyReturns(19_000, array("d", x.tobytes())))
-    pipe._fitness_cache["flat"] = _fit(daily_returns=None)
+        series = DailyReturns(19_000, array("d", x.tobytes()))
+        pipe._fitness_cache[f"k{i}"] = _fit(mtm_daily_returns=series)
+    pipe._fitness_cache["flat"] = _fit()
     cand = _series(2.5)
     chrom = _chrom()
-    pipe._validate_top_strategies([(chrom, _fit(daily_returns=cand))], 79)
+    pipe._validate_top_strategies([(chrom, _fit(mtm_daily_returns=cand))], 79)
 
     trials = pipe._dsr_trials
     assert trials is not None
