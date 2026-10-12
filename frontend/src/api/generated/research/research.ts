@@ -1566,8 +1566,16 @@ export function useExtractionQueueStatusApiResearchExtractionQueueStatusGet<TDat
 
 
 /**
- * Cancel a *queued* extraction job. Cancelling a running job is not
-supported yet (bd-ma1j) — those return 409 until that bead ships.
+ * Cancel a queued or running extraction job.
+
+- **queued** → cancelled immediately (200).
+- **running** → stamp ``cancel_requested_at`` and wait up to
+  ``_CANCEL_WAIT_SECONDS`` for the worker to interrupt that job's
+  subprocess and finalize it as 'cancelled' (200). If the worker does not
+  confirm in time → 202 with the response-only status ``'cancel_pending'``
+  (never stored — the status CHECK forbids it).
+- **cancelled** → 200 idempotent no-op.
+- **done/failed** → 409.
  * @summary Cancel Extraction Job
  */
 export type cancelExtractionJobApiResearchExtractionJobsJobIdCancelPostResponse200 = {

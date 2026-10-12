@@ -303,3 +303,37 @@ async def test_job_response_exposes_notes_seed(
     by_id = {j["run_id"]: j for j in r.json()}
     assert by_id[ids[0]]["seed"] == 7
     assert by_id[ids[1]]["seed"] is None
+
+
+async def test_max_workers_reaches_params_and_command(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager],
+) -> None:
+    """Parallel launches can size their pools (4 runs x 4 workers oversubscribed 10 cores)."""
+    ac, state, job_mgr = client
+
+    with (
+        patch.object(job_mgr, "is_process_alive", return_value=True),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value.pid = 12345
+        r = await ac.post("/api/discovery/launch", json={**_BASE_BODY, "max_workers": 2})
+        default = await ac.post("/api/discovery/launch", json=_BASE_BODY)
+
+    assert r.status_code == 201, r.text
+    assert default.status_code == 201, default.text
+    run = state.get_backtest_run(r.json()["run_id"])
+    assert run is not None
+    assert run["parameters"]["max_workers"] == 2
+    first, second = (c.args[0] for c in mock_popen.call_args_list)
+    assert first[first.index("--max-workers") + 1] == "2"
+    assert second[second.index("--max-workers") + 1] == "4"  # default unchanged
+
+
+async def test_max_workers_zero_rejected(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager],
+) -> None:
+    """0 would mean 'all cores' in the CLI — the API only accepts an explicit count."""
+    ac, _state, job_mgr = client
+    with patch.object(job_mgr, "is_process_alive", return_value=True):
+        r = await ac.post("/api/discovery/launch", json={**_BASE_BODY, "max_workers": 0})
+    assert r.status_code == 422

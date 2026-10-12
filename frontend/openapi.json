@@ -2596,7 +2596,7 @@
           "research"
         ],
         "summary": "Cancel Extraction Job",
-        "description": "Cancel a *queued* extraction job. Cancelling a running job is not\nsupported yet (bd-ma1j) \u2014 those return 409 until that bead ships.",
+        "description": "Cancel a queued or running extraction job.\n\n- **queued** \u2192 cancelled immediately (200).\n- **running** \u2192 stamp ``cancel_requested_at`` and wait up to\n  ``_CANCEL_WAIT_SECONDS`` for the worker to interrupt that job's\n  subprocess and finalize it as 'cancelled' (200). If the worker does not\n  confirm in time \u2192 202 with the response-only status ``'cancel_pending'``\n  (never stored \u2014 the status CHECK forbids it).\n- **cancelled** \u2192 200 idempotent no-op.\n- **done/failed** \u2192 409.",
         "operationId": "cancel_extraction_job_api_research_extraction_jobs__job_id__cancel_post",
         "parameters": [
           {
@@ -5959,6 +5959,13 @@
               }
             ],
             "title": "Seed"
+          },
+          "max_workers": {
+            "type": "integer",
+            "maximum": 64.0,
+            "minimum": 1.0,
+            "title": "Max Workers",
+            "default": 4
           }
         },
         "type": "object",

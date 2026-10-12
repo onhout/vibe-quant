@@ -59,4 +59,9 @@ export interface DiscoveryLaunchRequest {
   no_bootstrap_ci?: boolean;
   bootstrap_min_sharpe?: number | null;
   seed?: number | null;
+  /**
+   * @minimum 1
+   * @maximum 64
+   */
+  max_workers?: number;
 }

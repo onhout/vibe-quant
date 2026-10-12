@@ -229,7 +229,7 @@ def _discovery_cli_args(body: DiscoveryLaunchRequest, start_date: str, end_date:
         "--convergence-generations",
         str(body.convergence_generations),
         "--max-workers",
-        "4",
+        str(body.max_workers),
         "--symbols",
         symbols_str,
         "--timeframe",
@@ -311,6 +311,7 @@ async def launch_discovery(
         "elite_count": body.elite_count,
         "tournament_size": body.tournament_size,
         "convergence_generations": body.convergence_generations,
+        "max_workers": body.max_workers,
     }
     if body.indicator_pool is not None:
         params["indicator_pool"] = body.indicator_pool

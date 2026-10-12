@@ -39,6 +39,7 @@ class DiscoveryLaunchRequest(BaseModel):
     no_bootstrap_ci: bool = False  # True disables bootstrap-CI hard gate (low-budget regimes)
     bootstrap_min_sharpe: float | None = None  # override timeframe-aware default (0.5 for 1m, 1.0 otherwise)
     seed: int | None = Field(default=None, ge=0, lt=2**32)  # RNG seed to replay a run; None = random
+    max_workers: int = Field(default=4, ge=1, le=64)  # backtest processes for this run
 
     @model_validator(mode="after")
     def _elite_below_population(self) -> DiscoveryLaunchRequest:
