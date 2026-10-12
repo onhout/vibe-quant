@@ -15,7 +15,7 @@
    - `clientRequestId`: unique and stable per subtask round, `cc-<slug>-<round>` (e.g. `cc-d4-logdir-1`). Reuse the same id **only** to retry that same call.
    - Optional: `title` (short, shown in the UI) and `role` (`implementation` / `test` / `research` / …).
 3. **Track.** Record every returned `taskId` (and `childThreadId`) in the job ledger row. A finished async child wakes the chief's thread with a notification — end the turn instead of polling. Use `task_status` only when a result is needed mid-turn, never in a tight loop. `task_cancel` **only when the user asks**.
-4. **Follow-up / fix rounds:** call `delegate_task` again with the original brief + the checker's findings verbatim + anything unresolved, under a new `clientRequestId` (`cc-<slug>-2`, …). Never `t3_thread_send` to the `childThreadId` (it is backing storage, not a conversation target).
+4. **Follow-up / fix rounds:** call `delegate_task` again with the original brief + the checker's findings verbatim + anything unresolved, under a new `clientRequestId` (`cc-<slug>-2`, …). Never `t3_thread_send` to the `childThreadId` (it is backing storage, not a conversation target). Never widen a running round's scope by bus DM: the child may not read it (job 20261012-nextsteps: cc-d3-4a round 3 finished 'test-only' and missed a DM'd code fix) — dispatch a new round with the change in the brief.
 5. **Never** use `t3_thread_launch` or `create_threads` for these: those create separate top-level threads that don't show as subagents.
 6. **Errors:** if `delegate_task` returns an error, show the user the error code and message **word for word**. Don't work around it (no retry on another provider, no `cmd-task.sh`).
 7. **When all tasks finish:** summarise what each Command Code subagent did, then check its work yourself (diff scope, re-run its verification command, then the normal checker per § Checking) before reporting to the user.
@@ -109,3 +109,4 @@ The `verifier` (or the orchestrator for tiny tasks) must:
 
 - 2026-10-11: allowed Command Code models reduced to `deepseek/deepseek-v4.1-flash` + `xiaomi/mimo-v2.6-pro`; `fast`/`long` tiers and all other alternates removed — user: "DONT run Kimi K3" (job 20261011-testspeed).
 - 2026-10-11 17:16: Command Code restricted to `deepseek/deepseek-v4.1-flash` effort high (MiMo `pro` tier removed); reviews on GPT-6.1-Sol via Codex, Sonnet/Haiku for implementation and fixes, Opus medium for planning — user rule (cost).
+- 2026-10-12: no mid-round scope changes by DM; new round instead — evidence: job 20261012-nextsteps cc-d3-4a-feedrag-3 missed a scope DM (chief).
