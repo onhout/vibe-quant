@@ -4,6 +4,22 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-12: PRE-REGISTRATION H-13 — leverage-flush reversal on BTC/ETH/SOL/BNB (first test of open-interest data)
+
+Committed before any evaluator exists and before anyone has looked at metrics values (the downloader has fetched files; only a coverage report has been read). First use of new information: Binance Vision USDT-M `metrics` files (5-minute open interest, long/short ratios, taker ratio; from ~2020-09). Ticket by alpha-scout-r2 (three blind tickets; H-13-2 smart-vs-retail long/short ≈8% prior and H-13-3 OI build-up overlay ≈5% prior are NOT registered). Frozen ticket: `scripts/research/h13/H-13-1.json` (SHA-256 c89af0fecf156b44ffe67599a1cba7cc573e8d50b02d7d7d3ef74de6e10aaadf), with one chief change below.
+
+**Mechanism:** a large one-day fall in open interest (coin units) on a down day proxies a liquidation cascade; forced, price-insensitive selling has a transitory impact that reverses (Brunnermeier & Pedersen 2009; Coval & Stafford 2007). Prior ≈12%.
+
+**Spec (frozen, as in the ticket):** OI_i,t = `sum_open_interest` of the 23:55:00 UTC row of day t (else the latest row in [23:00, 23:55]; else missing; ≤ 0 or NaN = missing). dOI_i,t = ln(OI_i,t / OI_i,t−1); D_t = mean over coins with data (≥ 3 of 4); R_t = mean 1d close-to-close return of those coins. flush_t = D_t ≤ 10th percentile of D over t−365..t−1 (≥ 180 obs) AND R_t < 0. If flat and flush_t: buy the equal-weight basket at the close of t, hold constant quantities, sell at the close of t+3; signals while holding are ignored. Costs 0.05% per side on traded notional; 8h funding on held weights (−w × rate). Daily returns, flat days 0, Sharpe ×√365.
+
+**Chief change (before any data analysis):** the ticket's primary null drew random 3-day blocks from all of B, so a plain down-day bounce would count as an OI effect (the ticket lists this as a risk). **Primary null = random down days:** draw the same number of non-overlapping 3-day holds starting at closes with R_t < 0 in B (same costs and funding), 20,000 draws, numpy seed 13, p = (1 + #{null mean ≥ observed}) / 20001. The ticket's all-days null is reported as secondary.
+
+**Decision window B = 2022-06-01..2026-09-30. PASS only if all:** (1) n ≥ 40 events in B; (2) mean net return per event (3-day basket − 0.10% − funding) ≥ +0.50%; (3) down-day-null p ≤ 0.05; (4) Sharpe of the sparse daily series ≥ 0.5; (5) window A (2020-10-01..2022-05-31) mean net per event > 0. Otherwise REJECT; no change of q, hold, percentile window or the R_t filter on this data. PASS → propose to the user an OI context indicator + engine strategy and full-fidelity validation; paper still needs a risk check and the user's approval.
+
+**Process:** evaluator written from this entry by one agent, run once; an independent agent re-implements it blind from this entry and must agree on n and the mean to 1e-9 before the result is journaled.
+
+---
+
 ## 2026-10-12: Full-flow batch on the last days' features + hand validation of near-misses (runs 910–918, 0 champions)
 
 User request: 4 discoveries exercising the 2026-10-10..12 changes, then full backtests, all CPUs, ≤ 30 min. 4 runs in parallel via the API (16 workers on 10 cores, load ≈ 21–27), default gates, seeds 20261201–04. Discovery 17:56:28 → 18:15:48 (19.3 min); validations finished 18:14. To have something to validate with 0 champions, rejected candidates now persist their DSL (c695f78, vibe-quant-6vf6b); validations below are of **gate-rejected** genomes, not champions.

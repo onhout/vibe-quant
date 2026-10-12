@@ -1,0 +1,87 @@
+{
+  "source": {
+    "kind": "journal+literature",
+    "ref": "docs/discovery-journal.md 2026-10-11/12 ('remaining lever is new information'); sources listed in mechanism"
+  },
+  "instrument": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT"
+  ],
+  "windows": {
+    "FULL": "2020-10-01..2026-09-30",
+    "A": "2020-10-01..2022-05-31",
+    "B": "2022-06-01..2026-09-30 (DECISION window; pre-2022 edges decayed)"
+  },
+  "data_conventions": {
+    "snapshot_rule": "Daily value x_i,t = the metrics row of coin i with create_time == 23:55:00 UTC on day t; if absent, the latest row with create_time in [23:00, 23:55] of day t; else MISSING. Strictly <= 23:55 so it is known before the 00:00 UTC daily close under either create_time semantic (period start or end). OI <= 0 or NaN = MISSING.",
+    "execution": "Decision at the 1d close of day t (00:00 UTC), fill at that close, close-to-close returns afterwards (same convention as H-8..H-12). Cost 0.05% x |weight traded| per side. No leverage.",
+    "funding": "Held weights pay/receive the catalog 8h funding at each settlement in the held interval: cashflow = -w * rate (long pays when rate > 0), weights decided at the previous close (H-11 convention). PASS metrics INCLUDE funding; also report without.",
+    "sharpe": "Daily returns, ddof=1 std, x sqrt(365); flat days = 0 return. Beta = OLS slope of daily strategy return on daily-rebalanced equal-weight 4-coin buy-and-hold return.",
+    "missing_data": "A coin-day with MISSING signal input is excluded from that day's signal; a rule that needs a coin and lacks it takes no new action that day. Report per-window day coverage; windows with < 90% coverage of any used column are flagged, and the decision still rests on B.",
+    "column_semantics": "Binance Vision metrics columns: sum_open_interest (OI in base-asset units), sum_open_interest_value (USD), count_toptrader_long_short_ratio (top-trader ACCOUNT ratio), sum_toptrader_long_short_ratio (top-trader POSITION ratio), count_long_short_ratio (global account ratio), sum_taker_long_short_vol_ratio (taker buy vol / sell vol). CONFIRMED from Binance API docs via search results: top-trader cohort = top 20% of users by margin balance; positions ratio = long-position share / short-position share of the cohort (dollar-weighted); accounts ratio counts accounts equally; global ratio = all traders, by account. NOT confirmed (docs pages are JS-rendered and unreachable; taker ratio = buyVol/sellVol is from memory): the mapping count_ -> accounts / sum_ -> positions in the Vision file. Frozen by COLUMN NAME; before the evaluation run, the data owner should cross-check the mapping on the last 30 days against fapi /futures/data/topLongShortPositionRatio and /topLongShortAccountRatio (a mapping check, not a result analysis)."
+  },
+  "dsl_feasible": false,
+  "missing": [
+    "data: Binance Vision metrics (OI, long/short ratios, taker ratio) not in the catalog or archive; needs ingestion + an indicator/plugin reading them",
+    "semantics: portfolio-level multi-coin book (DSL runs one strategy per symbol)",
+    "first evaluation is off-engine (daily, like H-8..H-12); an engine build is only proposed after a PASS and the user's approval"
+  ],
+  "id": "H-13-1",
+  "title": "Leverage-flush reversal: long the 4-coin basket for 3 days after a market-wide OI collapse on a down day",
+  "thesis": "Forced liquidations of leveraged longs push price below fundamental value for a few days (price impact of forced sales is transitory); buyers who provide liquidity after a flush are paid a reversal premium.",
+  "mechanism_class": "structural/flow (forced deleveraging, transitory price impact)",
+  "mechanism": "A large one-day fall in open interest (coin units, so not a price artefact) on a day when the basket fell is a proxy for liquidation cascades: margin calls are price-insensitive sellers. Forced-sale price impact is temporary and reverses as liquidity returns: Brunnermeier & Pedersen 2009 (market liquidity and funding liquidity, liquidity spirals); Coval & Stafford 2007 (fire-sale discounts that reverse); crypto-specific leverage/liquidation structure: arXiv 2102.04591 (Liquidation, Leverage and Optimal Margin in Bitcoin Futures Markets); perp demand is extrapolative and leveraged: arXiv 2212.06888 (Fundamentals of Perpetual Futures). Evidence quality: the microstructure mechanism is well grounded; no peer-reviewed test of OI-drop reversals on Binance perps found (searched 2026-10-12) -> mechanism is a priori, the size of the effect is unknown.",
+  "timeframe": "1d (decision at daily close)",
+  "direction": "long",
+  "indicators": [
+    "sum_open_interest (metrics)",
+    "1d close",
+    "8h funding"
+  ],
+  "spec": {
+    "signal": "dOI_i,t = ln(OI_i,t / OI_i,t-1) with OI = sum_open_interest snapshot (see data_conventions). D_t = mean of dOI_i,t over coins with data (need >= 3 of 4). R_t = mean of the 1d simple close-to-close returns of the coins with data. flush_t = [D_t <= 10th percentile of {D_s : s = t-365..t-1} (need >= 180 obs)] AND [R_t < 0].",
+    "tunable_parameters": {
+      "q": 0.1,
+      "hold_days": 3
+    },
+    "fixed_structural_constants": {
+      "percentile_window_days": 365,
+      "oi_change_lookback_days": 1,
+      "price_condition": "R_t < 0 (filters out OI drops on up days = profit-taking/short covering, not long liquidation)"
+    },
+    "position_rule": "If flat at close t and flush_t: buy the equal-weight basket (0.25 each of the coins with data, no leverage) at close t, hold constant quantities for 3 daily closes, sell at close t+3. flush signals on t+1, t+2 are ignored (no pyramiding, no extension). A flush at t+3 starts a new hold; charge the full exit and re-entry (no netting). No shorts.",
+    "costs": "0.05% per side on traded notional -> 0.10% round trip per event, plus funding on held weights.",
+    "rebalance_time": "daily close 00:00 UTC, event-driven"
+  },
+  "benchmark": "Random-timing null (beta-honest): same number of non-overlapping 3-day blocks drawn uniformly from B, same costs and funding, 20000 draws, numpy seed 13, p = (1 + #{null mean >= observed}) / 20001. Secondary reference: equal-weight buy-and-hold Sharpe in B 0.7357185048671342 (NOT the bar - strategy is in the market ~10-15% of days, so Sharpe-vs-B&H is not meaningful for it).",
+  "pass_thresholds": {
+    "all_required": [
+      "B: number of events n >= 40",
+      "B: mean net return per event (3-day basket return - 0.10% costs - funding) >= +0.50%",
+      "B: permutation p <= 0.05 against the random-timing null",
+      "B: net Sharpe of the sparse daily series (flat days = 0) >= 0.5",
+      "A: mean net return per event > 0 (sign consistency only)"
+    ],
+    "reject": "any required condition fails; no change of q, hold, percentile window or the R_t filter on this data"
+  },
+  "falsifier": "Mean net 3-day return after a flush is not distinguishable from random timing in B (p > 0.05) or < +0.50% per event, i.e. flushes are not followed by a reversal premium after costs. Also fatal: n < 40 in B (underpowered -> REJECT as unproven, do not loosen q).",
+  "risks": [
+    "Low power: ~12-20 independent events/yr -> ~50-90 events in B; a true +1%/event edge has t about 1.5-2.5 at best",
+    "OI collapses are often market-wide crashes (2022-05/06, 2022-11 FTX) where 3-day continuation hurts; Journal 2026-10 batch (line ~1254) already withdrew a '1m liquidation-cascade structural edge' as regime-dependent",
+    "The 3-day reversal may be pure beta rebound after down days (the permutation null does not condition on down days; if the chief wants that, it needs a new registration)",
+    "Binance OI history/holes: 5m rows can be missing around exchange incidents; daily snapshot rule handles it but coverage must be reported",
+    "Single-venue OI (Binance only) understates cross-venue deleveraging"
+  ],
+  "trades_per_year": "12-20 events/yr (each = 1 buy + 1 sell of a 4-coin basket, 8 fills); about 3-4 days/month in the market",
+  "prior_art": [
+    "H-3 (2026-10-08, journal line ~460): fading extreme funding failed - crowded longs CONTINUED over 24-72h; a flush is the opposite state (crowd already washed out), but the same regime-continuation risk applies",
+    "Journal ~line 1254: liquidation-cascade 'structural' claim on 1m was a regime artefact",
+    "H-12 (vol-managed B&H) shows high-vol stretches carried returns in this sample; reversal after high-vol drops is consistent but untested",
+    "No prior test used OI or any metrics-file variable"
+  ],
+  "prior_plausibility": "about 12% (best mechanism of the three; weakest statistical power)",
+  "rank": 1,
+  "rank_reason": "Only ticket with a well-grounded structural mechanism (forced sales, transitory impact) and a beta-honest test (random-timing null) that does not depend on beating buy-and-hold with partial exposure; uses information (OI in coin units) that no earlier test touched."
+}
