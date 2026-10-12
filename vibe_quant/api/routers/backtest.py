@@ -99,7 +99,9 @@ async def launch_screening(
     # Post-only maker entries are validation-only (screening fills resting
     # limits against the whole strategy bar, so parity is unproven) — refuse
     # before any run row exists (bd vibe-quant-2gyk1.4).
-    entry_order = body.parameters.get("entry_order", "market")
+    entry_order: object = body.entry_order
+    if entry_order == "market":
+        entry_order = body.parameters.get("entry_order", "market")
     if entry_order != "market":
         raise HTTPException(
             status_code=422,
@@ -170,6 +172,12 @@ async def launch_validation(
     parameters = dict(body.parameters)
     if body.bnb_discount:
         parameters["bnb_discount"] = True
+    # Post-only maker entries are validation-only and opt-in; store the three
+    # maker params only for a post_only run so default runs are unchanged.
+    if body.entry_order == "post_only":
+        parameters["entry_order"] = "post_only"
+        parameters["maker_offset_ticks"] = body.maker_offset_ticks
+        parameters["maker_entry_timeout_bars"] = body.maker_entry_timeout_bars
     run_id = state.create_backtest_run(
         strategy_id=body.strategy_id,
         run_mode="validation",

@@ -62,6 +62,143 @@ def position_direction(pos: Any) -> str:
     return "LONG" if getattr(pos.entry, "name", str(pos.entry)).upper() == "BUY" else "SHORT"
 
 
+def _leg_fees(pos: Any) -> tuple[float, float] | None:
+    """Entry/exit fees (USDT) from each fill's own commission, maker entries only.
+
+    ``None`` unless the position was opened by at least one MAKER fill (a
+    post-only entry): every other trade, i.e. every market-mode entry, keeps
+    the even split of the position total, byte-identical to before D3-6.
+    Fills on the position's entry side are entry legs; the rest are exits.
+    """
+    fills = [
+        e for e in (getattr(pos, "events", None) or []) if type(e).__name__ == "OrderFilled"
+    ]
+    entry_side = getattr(pos, "entry", None)
+    entry = 0.0
+    exit_fee = 0.0
+    maker_entry = False
+    for fill in fills:
+        fee = abs(float(fill.commission))
+        if fill.order_side == entry_side:
+            entry += fee
+            maker_entry = maker_entry or getattr(fill.liquidity_side, "name", "") == "MAKER"
+        else:
+            exit_fee += fee
+    return (entry, exit_fee) if maker_entry else None
+
+
+def _exact_split(total: float, entry: float) -> tuple[float, float]:
+    """``(entry', total - entry')`` whose float sum is exactly ``total``.
+
+    ``entry + (total - entry)`` can miss ``total`` by one ulp (~3% of random
+    commission pairs, when ``entry`` sits on a finer binary grid than
+    ``total``); the entry leg is then nudged by the fewest ulps (~1e-18 USDT)
+    that restore the exact sum, so a trade's legs always add up to the
+    position total that feeds every metric.
+    """
+    exit_fee = total - entry
+    if entry + exit_fee == total:
+        return entry, exit_fee
+    for ulps in range(1, 8):
+        for direction in (math.inf, -math.inf):
+            nudged = entry
+            for _ in range(ulps):
+                nudged = math.nextafter(nudged, direction)
+            exit_fee = total - nudged
+            if nudged + exit_fee == total:
+                return nudged, exit_fee
+    return entry, total - entry  # unreachable in practice; keep the per-fill entry
+
+
+def trade_fee_legs(pos: Any, pos_fees: float) -> tuple[float, float]:
+    """(entry_fee, exit_fee) of one trade; the pair sums exactly to ``abs(pos_fees)``.
+
+    Maker-entry trades take their entry leg from the fill commissions and the
+    exit leg is the remainder (see :func:`_exact_split`). Everything else --
+    market-mode trades, positions without fill events -- is split evenly like
+    before, so existing per-trade rows do not move.
+    """
+    total = abs(pos_fees)
+    split = _leg_fees(pos)
+    if split is None or not 0.0 <= split[0] <= total:
+        return total / 2.0, total / 2.0
+    return _exact_split(total, split[0])
+
+
+def maker_entry_stats(
+    engine: Any,
+    *,
+    primary_bar_ns: int,
+    maker_entry_timeout_bars: int,
+) -> dict[str, object]:
+    """Post-only entry statistics from the engine cache (vibe-quant-2gyk1.4 D3-6).
+
+    Entry orders are the non-reduce-only post-only LIMIT orders the generated
+    strategy placed. Terminal outcomes are kept apart: ``rejected_post_only``
+    (the venue refused a would-be-taker), ``denied`` (the risk engine refused
+    it) and ``expired`` (NT-expired, timed out, or still resting at the end).
+
+    A cancelled, never-filled order is told apart by the number of PRIMARY BARS
+    that closed between its placement and its cancel -- the strategy's own
+    ``maker_entry_timeout_bars`` counter, not elapsed minutes (an order placed
+    at a detail bar mid-way through a primary bar rests for fewer minutes than
+    ``timeout x bar length``). The strategy evaluates its timeout before any
+    exit/opposite-signal withdrawal on the same bar, so a cancel after
+    ``maker_entry_timeout_bars`` closes is a timeout (``expired``) and an
+    earlier one came from an exit/opposite signal (``cancelled_by_exit``).
+    ``fill_rate`` is ``filled / submitted`` (``None`` when nothing was submitted).
+    """
+    from nautilus_trader.model.enums import OrderStatus, OrderType
+
+    submitted = 0
+    filled = 0
+    partial = 0
+    expired = 0
+    rejected = 0
+    denied = 0
+    cancelled_by_exit = 0
+    for order in engine.cache.orders():
+        if order.is_reduce_only or not order.is_post_only or order.order_type != OrderType.LIMIT:
+            continue
+        submitted += 1
+        status = order.status
+        if status == OrderStatus.REJECTED:
+            rejected += 1
+            continue
+        if status == OrderStatus.DENIED:
+            denied += 1
+            continue
+        if status == OrderStatus.FILLED:
+            filled += 1
+            continue
+        filled_qty = float(order.filled_qty)
+        how_much = float(order.quantity)
+        if 0.0 < filled_qty < how_much:
+            partial += 1
+            continue
+        if filled_qty > 0.0:
+            filled += 1  # fully filled but the status has not settled
+            continue
+        if status != OrderStatus.CANCELED:
+            expired += 1  # NT-expired, or still resting when the run ended
+            continue
+        bars_closed = int(order.ts_last) // primary_bar_ns - int(order.ts_init) // primary_bar_ns
+        if bars_closed >= maker_entry_timeout_bars:
+            expired += 1
+        else:
+            cancelled_by_exit += 1
+    return {
+        "submitted": submitted,
+        "filled": filled,
+        "partial": partial,
+        "expired": expired,
+        "rejected_post_only": rejected,
+        "denied": denied,
+        "cancelled_by_exit": cancelled_by_exit,
+        "fill_rate": (filled / submitted) if submitted else None,
+    }
+
+
 def accrue_position_funding(
     calculator: FundingCalculator,
     pos: Any,
@@ -877,14 +1014,11 @@ def extract_trades(
         else:
             roi_pct = 0.0
 
-        # Split fees 50/50 between entry and exit.
-        # NT's MakerTakerFeeModel uses order.liquidity_side per fill:
-        # market/stop orders → taker, limit orders → maker. Our strategies
-        # use market entry + stop-market SL/TP, so both fills are taker.
-        # The Position only exposes total commissions, not per-fill breakdown,
-        # so we split evenly (both sides same rate in practice).
-        entry_fee = abs(pos_fees) / 2.0
-        exit_fee = abs(pos_fees) / 2.0
+        # Per-leg fees: a post-only maker entry pays the maker rate while its
+        # stop-market exit pays the taker rate (NT's MakerTakerFeeModel charges
+        # order.liquidity_side per fill). The pair always sums exactly to
+        # pos_fees, so the per-trade TOTAL and every metric are unchanged.
+        entry_fee, exit_fee = trade_fee_legs(pos, pos_fees)
 
         # TODO: NT Position does not expose which child order (SL/TP/signal)
         # triggered the close. Detecting exit_reason from price vs SL/TP

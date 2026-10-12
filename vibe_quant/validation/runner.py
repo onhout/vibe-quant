@@ -135,6 +135,15 @@ class ValidationRunner:
         # Validate strategy DSL (compilation happens in _run_backtest)
         dsl = self._validate_dsl(dsl_config, strategy_name=strategy_name)
 
+        # Post-only maker entries are validation-only and opt-in. Validate the
+        # run-level maker params now so a bad value fails the run with a clear
+        # message instead of surfacing from the generated on_start mid-engine.
+        try:
+            entry_order = self._resolve_maker_params(run_config)
+        except ValidationRunnerError as exc:
+            self._state.update_backtest_run_status(run_id, "failed", error_message=str(exc))
+            raise
+
         # Resolve fill-resolution detail data and clamp the run window to the
         # data actually available (bd vibe-quant-e70tl.13). Missing detail data
         # fails the run instead of silently degrading to strategy-TF fills.
@@ -217,6 +226,25 @@ class ValidationRunner:
                     writer=writer,
                     detail_timeframe=effective_detail,
                 )
+
+                # Market-mode TWIN of the identical backtest (same window,
+                # symbols, fee schedule, latency) so the maker entries can be
+                # compared against the market baseline they replace. It never
+                # writes trades or a result row -- the run keeps exactly one
+                # result row, the post_only one (D3-6). A twin that fails is
+                # reported in the notes and never fails the primary run.
+                if entry_order == "post_only":
+                    maker_notes = result.notes.get("maker_entries")
+                    if isinstance(maker_notes, dict):
+                        maker_notes["market_twin"] = self._run_market_twin(
+                            run_id=run_id,
+                            strategy_name=strategy_name,
+                            dsl=dsl,
+                            venue_config=venue_config,
+                            run_config=run_config,
+                            writer=writer,
+                            detail_timeframe=effective_detail,
+                        )
 
                 self._write_completion_event(writer, run_id, strategy_name, result)
 
@@ -816,6 +844,8 @@ class ValidationRunner:
         run_config: dict[str, object],
         writer: EventWriter,
         detail_timeframe: str | None = None,
+        entry_order_override: str | None = None,
+        write_trade_events: bool = True,
     ) -> ValidationResult:
         """Run NautilusTrader backtest with full-fidelity execution.
 
@@ -838,6 +868,10 @@ class ValidationRunner:
             run_config: Run configuration from database.
             writer: Event writer for logging.
             detail_timeframe: Sub-bar timeframe for fill resolution (e.g., '5s').
+            entry_order_override: Force entry_order for this run (the market-mode
+                twin of a post_only run); None keeps the run's own parameter.
+            write_trade_events: False for the twin, which must not write trade
+                events (it also never reaches result storage).
 
         Returns:
             ValidationResult with real metrics and trades.
@@ -861,7 +895,7 @@ class ValidationRunner:
             CatalogManager,
             create_instrument,
         )
-        from vibe_quant.validation.extraction import finest_timeframe
+        from vibe_quant.validation.extraction import finest_timeframe, maker_entry_stats
 
         # Parse symbols from run config
         symbols = self._parse_symbols(run_config)
@@ -912,6 +946,9 @@ class ValidationRunner:
             timeframe=dsl.timeframe,
             has_detail_data=detail_timeframe is not None,
         )
+        # Market-mode twin: same run, market entries (D3-6).
+        if entry_order_override is not None:
+            strategy_params["entry_order"] = entry_order_override
 
         # NT 1.226+ rejects unknown config fields (fast-fail decoding), so
         # forward only params the generated StrategyConfig actually declares.
@@ -929,6 +966,9 @@ class ValidationRunner:
             strategy_params = {
                 k: v for k, v in strategy_params.items() if k in config_fields
             }
+        # The mode the generated config actually got: post_only drives the
+        # maker-entry statistics recorded in the notes.
+        effective_entry_order = str(strategy_params.get("entry_order", "market"))
         logger.info(
             "Run %d strategy params: %s",
             run_id,
@@ -1101,9 +1141,24 @@ class ValidationRunner:
                 catalog_path=catalog_path,
             )
 
-            # Log trade events
-            for trade in result.trades:
-                self._write_trade_events(writer, run_id, strategy_name, trade)
+            # Log trade events (the market-mode twin writes none)
+            if write_trade_events:
+                for trade in result.trades:
+                    self._write_trade_events(writer, run_id, strategy_name, trade)
+
+            if effective_entry_order == "post_only":
+                timeout_raw = strategy_params.get("maker_entry_timeout_bars", 3)
+                timeout_bars = (
+                    timeout_raw
+                    if isinstance(timeout_raw, int) and not isinstance(timeout_raw, bool)
+                    else 3
+                )
+                result.notes["maker_entries"] = maker_entry_stats(
+                    engine,
+                    primary_bar_ns=self._TIMEFRAME_SECONDS.get(dsl.timeframe, 3600)
+                    * 1_000_000_000,
+                    maker_entry_timeout_bars=timeout_bars,
+                )
 
             return result
         finally:
@@ -1165,6 +1220,71 @@ class ValidationRunner:
             for stat in stats:
                 analyzer.register_statistic(stat)
 
+    def _run_market_twin(
+        self,
+        *,
+        run_id: int,
+        strategy_name: str,
+        dsl: StrategyDSL,
+        venue_config: VenueConfig,
+        run_config: dict[str, object],
+        writer: EventWriter,
+        detail_timeframe: str | None,
+    ) -> dict[str, object]:
+        """Market-mode twin of a post_only run, as the notes entry (D3-6).
+
+        The twin is a comparison aid, so a failure is logged and returned as
+        ``{"error": ...}`` instead of failing the already-finished primary run.
+        """
+        try:
+            twin = self._run_backtest(
+                run_id=run_id,
+                strategy_name=strategy_name,
+                dsl=dsl,
+                venue_config=venue_config,
+                run_config=run_config,
+                writer=writer,
+                detail_timeframe=detail_timeframe,
+                entry_order_override="market",
+                write_trade_events=False,
+            )
+        except Exception as exc:
+            logger.exception("Run %d: market twin failed; the post_only result is kept", run_id)
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "sharpe_ratio": twin.sharpe_ratio,
+            "total_return": twin.total_return,
+            "total_trades": twin.total_trades,
+            "total_fees": twin.total_fees,
+        }
+
+    def _resolve_maker_params(self, run_config: dict[str, object]) -> str:
+        """Validate and return the run's entry_order (vibe-quant-2gyk1.4 D3-6).
+
+        Post-only maker entries are validation-only and opt-in. A bad mode or
+        maker knob fails the run before the engine starts, rather than being
+        rejected by the generated on_start mid-run.
+
+        Raises:
+            ValidationRunnerError: For an unknown entry_order or a
+                maker_offset_ticks / maker_entry_timeout_bars < 1.
+        """
+        params = self._build_strategy_params(run_config)
+        entry_order = params.get("entry_order", "market")
+        if entry_order not in ("market", "post_only"):
+            msg = f"entry_order must be 'market' or 'post_only', got {entry_order!r}"
+            raise ValidationRunnerError(msg)
+        if entry_order == "post_only":
+            for key, default in (
+                ("maker_offset_ticks", 1),
+                ("maker_entry_timeout_bars", 3),
+            ):
+                value = params.get(key, default)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    msg = f"{key} must be an integer >= 1, got {value!r}"
+                    raise ValidationRunnerError(msg)
+        return str(entry_order)
+
     def _build_strategy_params(self, run_config: dict[str, object]) -> dict[str, object]:
         """Extract strategy parameter overrides from run config.
 
@@ -1187,7 +1307,13 @@ class ValidationRunner:
         for key, value in raw_params.items():
             # Skip meta-keys that aren't strategy parameters. The fee schedule
             # is venue-level; forwarding it would break the generated config.
-            if key in ("sweep", "overfitting_filters", "fee_tier", "bnb_discount"):
+            if key in (
+                "sweep",
+                "overfitting_filters",
+                "fee_tier",
+                "bnb_discount",
+                "fee_schedule_source",
+            ):
                 continue
             params[key] = value
 

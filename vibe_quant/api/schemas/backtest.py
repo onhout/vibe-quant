@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, StrictBool, field_validator, model_validator
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from vibe_quant.api.schemas._validators import KNOWN_TIMEFRAMES, check_date_range, clean_symbols
 
@@ -30,9 +32,17 @@ class BacktestLaunchRequest(BaseModel):
     end_date: str
     parameters: dict[str, object]
     latency_preset: str | None = None
-    # Validation-only: charge the BNB-discounted (x0.9) fee schedule. Stored
-    # into the run parameters only when true; screening refuses it (D3-2).
+    # Charge the BNB-discounted (x0.9) fee schedule. Stored into the run
+    # parameters only when true, so default runs' stored params are unchanged
+    # (screening and discovery accept it too, bd vibe-quant-2gyk1.4 D3-2).
     bnb_discount: StrictBool = False
+    # Post-only maker entries are validation-only and opt-in: the entry is a
+    # limit priced at the outbox release. Screening refuses a non-market
+    # entry_order, and the three fields are stored in the run parameters only
+    # when entry_order == "post_only" (D3-6).
+    entry_order: Literal["market", "post_only"] = "market"
+    maker_offset_ticks: int = Field(1, ge=1)
+    maker_entry_timeout_bars: int = Field(3, ge=1)
 
     @field_validator("symbols")
     @classmethod

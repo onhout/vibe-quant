@@ -4514,6 +4514,27 @@
             "type": "boolean",
             "title": "Bnb Discount",
             "default": false
+          },
+          "entry_order": {
+            "type": "string",
+            "enum": [
+              "market",
+              "post_only"
+            ],
+            "title": "Entry Order",
+            "default": "market"
+          },
+          "maker_offset_ticks": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Maker Offset Ticks",
+            "default": 1
+          },
+          "maker_entry_timeout_bars": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Maker Entry Timeout Bars",
+            "default": 3
           }
         },
         "additionalProperties": false,

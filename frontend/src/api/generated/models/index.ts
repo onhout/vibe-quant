@@ -6,6 +6,7 @@
  */
 
 export * from './backtestLaunchRequest';
+export * from './backtestLaunchRequestEntryOrder';
 export * from './backtestLaunchRequestParameters';
 export * from './backtestResultResponse';
 export * from './backtestResultResponseCrossRegimeResults';
