@@ -28,11 +28,13 @@ from vibe_quant.data.downloader import (
     RestDownloadError,
     download_funding_rates,
     download_monthly_klines,
+    download_monthly_mark_klines,
     download_recent_klines,
     get_months_in_range,
     get_years_months_to_download,
 )
 from vibe_quant.data.verify import verify_symbol
+from vibe_quant.utils import generate_month_range
 
 logger = logging.getLogger(__name__)
 
@@ -597,6 +599,116 @@ def ingest_symbol(
         if verbose:
             print(f"Wrote {len(agg_bars)} {interval} bars")
 
+    return counts
+
+
+def ingest_mark_klines(
+    symbol: str,
+    start_date: datetime,
+    end_date: datetime | None = None,
+    archive: RawDataArchive | None = None,
+    verbose: bool = True,
+) -> dict[str, Any]:
+    """Ingest Binance mark-price 1m klines from Vision monthly archives.
+
+    Liquidation triggers on the mark price, so it is archived in its own
+    ``raw_mark_klines`` table and never mixed into the ``raw_klines`` path that
+    feeds the catalog. Only Vision monthly zips are used (no REST fill): a
+    symbol's later months may simply not be published yet (404 = unavailable).
+
+    Args:
+        symbol: Trading symbol (e.g., 'BTCUSDT').
+        start_date: Start date (required); earlier months are not requested.
+        end_date: End date (defaults to now).
+        archive: Raw data archive (created if not provided).
+        verbose: Print progress messages.
+
+    Returns:
+        Dict with counts: ``mark_klines_fetched``, ``mark_klines_inserted``,
+        ``months_skipped``, ``months_downloaded`` plus the ``failed_months`` /
+        ``unavailable_months`` lists ("YYYY-MM") on the same convention as
+        :func:`ingest_symbol`: failed = download errored after retries (a hole
+        to re-run), unavailable = not published (404), not an error.
+
+    Raises:
+        ValueError: If symbol is not in INSTRUMENT_CONFIGS.
+    """
+    if symbol not in INSTRUMENT_CONFIGS:
+        supported = sorted(INSTRUMENT_CONFIGS.keys())
+        raise ValueError(f"Unsupported symbol '{symbol}'. Supported symbols: {supported}")
+
+    if archive is None:
+        archive = RawDataArchive()
+
+    counts: dict[str, Any] = {"mark_klines_fetched": 0, "mark_klines_inserted": 0}
+    failed_months: list[str] = []
+    unavailable_months: list[str] = []
+
+    # Every UTC month touching [start, end], including the one holding `end`:
+    # unlike raw klines there is no REST fill for the trailing partial month, so
+    # an unpublished final month must surface as "unavailable", not vanish.
+    # Endpoints are normalised to UTC (Vision months are UTC; naive = UTC) and
+    # snapped to midnight month starts, else a late start time-of-day (or a
+    # non-UTC offset) drops the inclusive end month from generate_month_range.
+    def _utc(dt: datetime) -> datetime:
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+    utc_start = _utc(start_date)
+    utc_end = _utc(end_date or datetime.now(UTC))
+    months = list(
+        generate_month_range(
+            utc_start.replace(day=1, hour=0, minute=0, second=0, microsecond=0), utc_end
+        )
+    )
+
+    # Smart skip: months already carrying most of their 1m mark price are done.
+    skipped: list[tuple[int, int]] = []
+    to_download: list[tuple[int, int]] = []
+    for year, month in months:
+        if archive.has_month_mark_coverage(symbol, "1m", year, month):
+            skipped.append((year, month))
+        else:
+            to_download.append((year, month))
+
+    if verbose:
+        print(
+            f"Downloading {symbol} mark-price 1m klines: {len(to_download)} months to "
+            f"download, {len(skipped)} months skipped (already archived)"
+        )
+
+    for year, month in to_download:
+        try:
+            klines = download_monthly_mark_klines(symbol, "1m", year, month)
+        except MonthlyDownloadError as e:
+            failed_months.append(f"{year}-{month:02d}")
+            logger.error("%s %d-%02d: mark-price download FAILED: %s", symbol, year, month, e)
+            if verbose:
+                print(f"  {year}-{month:02d}: FAILED ({e})")
+            continue
+        if klines:
+            inserted = archive.insert_mark_klines(symbol, "1m", klines, "binance_vision")
+            counts["mark_klines_fetched"] += len(klines)
+            counts["mark_klines_inserted"] += inserted
+            if verbose:
+                print(f"  {year}-{month:02d}: {len(klines)} mark klines ({inserted} new)")
+        else:
+            unavailable_months.append(f"{year}-{month:02d}")
+            if verbose:
+                coverage = archive.get_mark_date_range(symbol, "1m")
+                coverage_end = (
+                    datetime.fromtimestamp(coverage[1] / 1000, tz=UTC).strftime("%Y-%m-%d")
+                    if coverage
+                    else "none archived"
+                )
+                print(
+                    f"  {year}-{month:02d}: unavailable (not yet published) - "
+                    f"mark coverage ends {coverage_end}"
+                )
+
+    counts["months_skipped"] = len(skipped)
+    counts["months_downloaded"] = len(to_download) - len(failed_months)
+    counts["failed_months"] = failed_months
+    counts["unavailable_months"] = unavailable_months
     return counts
 
 
@@ -1190,6 +1302,29 @@ def main(argv: list[str] | None = None) -> int:
         help="End date YYYY-MM-DD (defaults to today)",
     )
 
+    # Mark-price klines command (liquidation trigger price, own archive table)
+    mark_parser = subparsers.add_parser(
+        "download-mark", help="Download Binance mark-price 1m klines into the archive"
+    )
+    mark_parser.add_argument(
+        "--symbols",
+        type=str,
+        default=",".join(SUPPORTED_SYMBOLS),
+        help="Comma-separated symbols",
+    )
+    mark_parser.add_argument(
+        "--start",
+        type=str,
+        required=True,
+        help="Start date YYYY-MM-DD (required)",
+    )
+    mark_parser.add_argument(
+        "--end",
+        type=str,
+        default=None,
+        help="End date YYYY-MM-DD (defaults to today)",
+    )
+
     # Verify command
     verify_parser = subparsers.add_parser("verify", help="Verify data quality")
     verify_parser.add_argument(
@@ -1280,6 +1415,48 @@ def main(argv: list[str] | None = None) -> int:
         if detail_failed:
             print("\nERROR: downloads failed (holes in archive):", file=sys.stderr)
             for line in detail_failed:
+                print(f"  {line}", file=sys.stderr)
+            return 1
+    elif args.command == "download-mark":
+        symbols = [s.strip() for s in args.symbols.split(",")]
+        try:
+            mark_start = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=UTC)
+            mark_end = (
+                datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=UTC) if args.end else None
+            )
+        except ValueError as e:
+            print(f"Error: invalid date format (expected YYYY-MM-DD): {e}", file=sys.stderr)
+            return 1
+        mark_archive = RawDataArchive()
+        mark_failed: list[str] = []
+        for symbol in symbols:
+            print(f"\n{'=' * 50}")
+            print(f"Mark-price 1m klines: {symbol}")
+            print(f"{'=' * 50}")
+            try:
+                mark_counts = ingest_mark_klines(
+                    symbol,
+                    start_date=mark_start,
+                    end_date=mark_end,
+                    archive=mark_archive,
+                    verbose=True,
+                )
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                mark_failed.append(f"{symbol}: {e}")
+                continue
+            print(
+                f"  {symbol}: {mark_counts['months_downloaded']} months downloaded, "
+                f"{mark_counts['months_skipped']} skipped, "
+                f"{len(mark_counts['unavailable_months'])} unavailable, "
+                f"{len(mark_counts['failed_months'])} failed, "
+                f"{mark_counts['mark_klines_inserted']:,} rows inserted"
+            )
+            mark_failed += [f"{symbol}: {m}" for m in mark_counts["failed_months"]]
+        mark_archive.close()
+        if mark_failed:
+            print("\nERROR: mark-price downloads failed (holes in archive):", file=sys.stderr)
+            for line in mark_failed:
                 print(f"  {line}", file=sys.stderr)
             return 1
     elif args.command == "update":

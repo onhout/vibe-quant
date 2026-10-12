@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 # Binance Vision base URL for futures data
 BINANCE_VISION_BASE = "https://data.binance.vision/data/futures/um/monthly/klines"
 
+# Binance Vision base URL for futures MARK-price data. Mark price is what
+# liquidations trigger on; the zip layout and CSV format match normal klines
+# (volume/taker columns are always 0, count is 60).
+BINANCE_VISION_MARK_BASE = "https://data.binance.vision/data/futures/um/monthly/markPriceKlines"
+
 # Binance Futures REST API
 BINANCE_FUTURES_API = "https://fapi.binance.com"
 
@@ -125,9 +130,59 @@ def download_monthly_klines(
         MonthlyDownloadError: Transient failures persisted through the retry
             schedule, or a non-retryable error (e.g. 403) occurred.
     """
+    return _download_monthly_zip(
+        BINANCE_VISION_BASE, symbol, interval, year, month, timeout, client
+    )
+
+
+def download_monthly_mark_klines(
+    symbol: str,
+    interval: str,
+    year: int,
+    month: int,
+    timeout: float = 60.0,
+    client: httpx.Client | None = None,
+) -> list[tuple[Any, ...]] | None:
+    """Download monthly MARK-price klines from Binance Vision.
+
+    Same contract, zip layout and CSV format as :func:`download_monthly_klines`;
+    only the ``markPriceKlines`` path differs. Available roughly from each
+    symbol's listing month (BTCUSDT 2020-01, ETHUSDT 2020-01, BNBUSDT 2020-03,
+    SOLUSDT 2020-10); earlier months are a 404.
+
+    Args:
+        symbol: Trading symbol (e.g., 'BTCUSDT').
+        interval: Candle interval (e.g., '1m').
+        year: Year to download.
+        month: Month to download (1-12).
+        timeout: Request timeout in seconds.
+        client: Optional shared httpx.Client for connection reuse.
+
+    Returns:
+        List of kline tuples, or None when the month is not published (404).
+
+    Raises:
+        MonthlyDownloadError: Transient failures persisted through the retry
+            schedule, or a non-retryable error (e.g. 403) occurred.
+    """
+    return _download_monthly_zip(
+        BINANCE_VISION_MARK_BASE, symbol, interval, year, month, timeout, client
+    )
+
+
+def _download_monthly_zip(
+    base_url: str,
+    symbol: str,
+    interval: str,
+    year: int,
+    month: int,
+    timeout: float,
+    client: httpx.Client | None,
+) -> list[tuple[Any, ...]] | None:
+    """Fetch one monthly Vision zip from *base_url* under the shared contract."""
     # Format: BTCUSDT-1m-2024-01.zip
     filename = f"{symbol}-{interval}-{year}-{month:02d}.zip"
-    url = f"{BINANCE_VISION_BASE}/{symbol}/{interval}/{filename}"
+    url = f"{base_url}/{symbol}/{interval}/{filename}"
 
     own_client = client is None
     if own_client:

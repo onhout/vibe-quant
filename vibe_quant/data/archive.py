@@ -35,6 +35,23 @@ CREATE TABLE IF NOT EXISTS raw_klines (
     UNIQUE(symbol, interval, open_time)
 );
 
+-- Raw MARK-price klines from Binance (liquidation trigger price). Only OHLC
+-- and the two timestamps: mark-price volume/taker columns are always 0.
+CREATE TABLE IF NOT EXISTS raw_mark_klines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    interval TEXT NOT NULL,
+    open_time INTEGER NOT NULL,
+    open REAL NOT NULL,
+    high REAL NOT NULL,
+    low REAL NOT NULL,
+    close REAL NOT NULL,
+    close_time INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    downloaded_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(symbol, interval, open_time)
+);
+
 -- Raw funding rates from Binance
 CREATE TABLE IF NOT EXISTS raw_funding_rates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,6 +66,8 @@ CREATE TABLE IF NOT EXISTS raw_funding_rates (
 
 CREATE INDEX IF NOT EXISTS idx_raw_klines_symbol_time
     ON raw_klines(symbol, interval, open_time);
+CREATE INDEX IF NOT EXISTS idx_raw_mark_klines_symbol_time
+    ON raw_mark_klines(symbol, interval, open_time);
 CREATE INDEX IF NOT EXISTS idx_raw_funding_symbol_time
     ON raw_funding_rates(symbol, funding_time);
 
@@ -68,6 +87,37 @@ CREATE TABLE IF NOT EXISTS download_sessions (
     error_message TEXT
 );
 """
+
+
+def _month_bounds_ms(year: int, month: int) -> tuple[int, int]:
+    """UTC ``[start, end)`` open_time bounds (ms) of a calendar month."""
+    start_ms = int(datetime(year, month, 1, tzinfo=UTC).timestamp() * 1000)
+    if month == 12:
+        end_ms = int(datetime(year + 1, 1, 1, tzinfo=UTC).timestamp() * 1000)
+    else:
+        end_ms = int(datetime(year, month + 1, 1, tzinfo=UTC).timestamp() * 1000)
+    return start_ms, end_ms
+
+
+# Bars a fully covered month holds, per interval (absent = unsupported interval).
+_KLINES_PER_DAY: dict[str, int] = {
+    "1s": 24 * 3600,
+    "5s": 24 * 720,
+    "1m": 24 * 60,
+    "5m": 24 * 12,
+    "15m": 24 * 4,
+    "1h": 24,
+    "4h": 6,
+}
+
+
+def _expected_klines_in_month(interval: str, year: int, month: int) -> int | None:
+    """Expected bar count for a month, or None for an unsupported interval."""
+    per_day = _KLINES_PER_DAY.get(interval)
+    if per_day is None:
+        return None
+    _, days_in_month = calendar.monthrange(year, month)
+    return days_in_month * per_day
 
 
 class RawDataArchive:
@@ -160,6 +210,63 @@ class RawDataArchive:
         ).fetchone()[0]
         return int(after - before)
 
+    def insert_mark_klines(
+        self,
+        symbol: str,
+        interval: str,
+        klines: Iterable[tuple[Any, ...]],
+        source: str,
+    ) -> int:
+        """Insert mark-price kline data into the ``raw_mark_klines`` archive.
+
+        Mark-price klines carry zero volume/taker columns, so only OHLC and the
+        two timestamps are stored — one row per minute is already a lot of disk.
+
+        Args:
+            symbol: Trading symbol (e.g., 'BTCUSDT').
+            interval: Candle interval (e.g., '1m').
+            klines: Iterable of tuples in Binance kline order:
+                (open_time, open, high, low, close, volume, close_time, ...);
+                only indices 0-4 and 6 are stored.
+            source: Data source identifier (e.g., 'binance_vision').
+
+        Returns:
+            Number of rows inserted.
+        """
+        rows = [
+            (
+                symbol,
+                interval,
+                k[0],  # open_time
+                k[1],  # open
+                k[2],  # high
+                k[3],  # low
+                k[4],  # close
+                k[6],  # close_time
+                source,
+            )
+            for k in klines
+        ]
+
+        before = self.conn.execute(
+            "SELECT COUNT(*) FROM raw_mark_klines WHERE symbol = ? AND interval = ?",
+            (symbol, interval),
+        ).fetchone()[0]
+
+        self.conn.executemany(
+            """INSERT OR IGNORE INTO raw_mark_klines
+               (symbol, interval, open_time, open, high, low, close, close_time, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self.conn.commit()
+
+        after = self.conn.execute(
+            "SELECT COUNT(*) FROM raw_mark_klines WHERE symbol = ? AND interval = ?",
+            (symbol, interval),
+        ).fetchone()[0]
+        return int(after - before)
+
     def insert_funding_rates(
         self,
         symbol: str,
@@ -228,6 +335,37 @@ class RawDataArchive:
         query += " ORDER BY open_time"
         return list(self.conn.execute(query, params))
 
+    def get_mark_klines(
+        self,
+        symbol: str,
+        interval: str,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> list[sqlite3.Row]:
+        """Get mark-price klines from the archive, oldest first.
+
+        Args:
+            symbol: Trading symbol.
+            interval: Candle interval.
+            start_ms: Start timestamp (ms), inclusive.
+            end_ms: End timestamp (ms), inclusive.
+
+        Returns:
+            List of mark kline rows ordered by open_time.
+        """
+        query = "SELECT * FROM raw_mark_klines WHERE symbol = ? AND interval = ?"
+        params: list[Any] = [symbol, interval]
+
+        if start_ms is not None:
+            query += " AND open_time >= ?"
+            params.append(start_ms)
+        if end_ms is not None:
+            query += " AND open_time <= ?"
+            params.append(end_ms)
+
+        query += " ORDER BY open_time"
+        return list(self.conn.execute(query, params))
+
     def get_funding_rates(
         self,
         symbol: str,
@@ -277,6 +415,26 @@ class RawDataArchive:
             return (row[0], row[1])
         return None
 
+    def get_mark_date_range(self, symbol: str, interval: str) -> tuple[int, int] | None:
+        """Get the date range of stored MARK-price klines.
+
+        Args:
+            symbol: Trading symbol.
+            interval: Candle interval.
+
+        Returns:
+            (min_open_time, max_open_time) tuple or None if no data.
+        """
+        row = self.conn.execute(
+            """SELECT MIN(open_time), MAX(open_time) FROM raw_mark_klines
+               WHERE symbol = ? AND interval = ?""",
+            (symbol, interval),
+        ).fetchone()
+
+        if row and row[0] is not None:
+            return (row[0], row[1])
+        return None
+
     def get_kline_count(self, symbol: str, interval: str) -> int:
         """Get count of stored klines.
 
@@ -311,17 +469,41 @@ class RawDataArchive:
         Returns:
             Number of klines in that month.
         """
-        # First ms of month
-        start_ms = int(datetime(year, month, 1, tzinfo=UTC).timestamp() * 1000)
-        if month == 12:
-            end_ms = int(datetime(year + 1, 1, 1, tzinfo=UTC).timestamp() * 1000)
-        else:
-            end_ms = int(datetime(year, month + 1, 1, tzinfo=UTC).timestamp() * 1000)
+        return self._count_month_rows("raw_klines", symbol, interval, year, month)
 
+    def get_month_mark_kline_count(
+        self,
+        symbol: str,
+        interval: str,
+        year: int,
+        month: int,
+    ) -> int:
+        """Get mark-price kline count for a specific month.
+
+        Args:
+            symbol: Trading symbol.
+            interval: Candle interval.
+            year: Year.
+            month: Month (1-12).
+
+        Returns:
+            Number of mark klines in that month.
+        """
+        return self._count_month_rows("raw_mark_klines", symbol, interval, year, month)
+
+    def _count_month_rows(
+        self, table: str, symbol: str, interval: str, year: int, month: int
+    ) -> int:
+        """Count *table* rows whose open_time falls inside a calendar month.
+
+        *table* is always one of this module's table-name constants, never user
+        input, so interpolating it is safe (values stay parameterized).
+        """
+        start_ms, end_ms = _month_bounds_ms(year, month)
         row = self.conn.execute(
-            """SELECT COUNT(*) FROM raw_klines
-               WHERE symbol = ? AND interval = ?
-               AND open_time >= ? AND open_time < ?""",
+            f"""SELECT COUNT(*) FROM {table}
+                WHERE symbol = ? AND interval = ?
+                AND open_time >= ? AND open_time < ?""",
             (symbol, interval, start_ms, end_ms),
         ).fetchone()
         return row[0] if row else 0
@@ -349,27 +531,46 @@ class RawDataArchive:
         Returns:
             True if month is sufficiently covered.
         """
-        _, days_in_month = calendar.monthrange(year, month)
+        return self._has_month_coverage("raw_klines", symbol, interval, year, month, threshold)
 
-        # Expected klines per interval
-        if interval == "1s":
-            expected = days_in_month * 24 * 3600
-        elif interval == "5s":
-            expected = days_in_month * 24 * 720  # 3600/5
-        elif interval == "1m":
-            expected = days_in_month * 24 * 60
-        elif interval == "5m":
-            expected = days_in_month * 24 * 12
-        elif interval == "15m":
-            expected = days_in_month * 24 * 4
-        elif interval == "1h":
-            expected = days_in_month * 24
-        elif interval == "4h":
-            expected = days_in_month * 6
-        else:
+    def has_month_mark_coverage(
+        self,
+        symbol: str,
+        interval: str,
+        year: int,
+        month: int,
+        threshold: float = 0.9,
+    ) -> bool:
+        """Check if a month has sufficient MARK-price kline coverage.
+
+        Same threshold semantics as :meth:`has_month_coverage`.
+
+        Args:
+            symbol: Trading symbol.
+            interval: Candle interval.
+            year: Year.
+            month: Month (1-12).
+            threshold: Coverage ratio threshold (0-1). Default 0.9.
+
+        Returns:
+            True if month is sufficiently covered.
+        """
+        return self._has_month_coverage("raw_mark_klines", symbol, interval, year, month, threshold)
+
+    def _has_month_coverage(
+        self,
+        table: str,
+        symbol: str,
+        interval: str,
+        year: int,
+        month: int,
+        threshold: float,
+    ) -> bool:
+        """Coverage test shared by the kline and mark-kline tables."""
+        expected = _expected_klines_in_month(interval, year, month)
+        if expected is None:
             return False
-
-        actual = self.get_month_kline_count(symbol, interval, year, month)
+        actual = self._count_month_rows(table, symbol, interval, year, month)
         return actual >= expected * threshold
 
     def get_symbols(self) -> list[str]:
