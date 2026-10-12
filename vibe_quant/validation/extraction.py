@@ -29,6 +29,7 @@ from vibe_quant.validation.results import TradeRecord, ValidationResult
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from decimal import Decimal
     from pathlib import Path
 
     from nautilus_trader.backtest.engine import BacktestEngine
@@ -319,12 +320,14 @@ def mark_open_positions(
     catalog_path: Path | str | None = None,
     start_ns: int | None = None,
     end_ns: int | None = None,
+    taker_fee: Decimal | float | None = None,
 ) -> list[OpenPositionMark]:
     """Mark open positions at the last execution-bar close in the window.
 
-    The exit fee is estimated at the instrument's taker rate (the flatten
-    would be a market order). Positions that cannot be priced are skipped
-    with a WARNING.
+    The exit fee is estimated at ``taker_fee`` when given (the run's fee
+    schedule), else at the instrument's taker rate -- either way the flatten
+    would be a market order. Positions that cannot be priced are skipped with
+    a WARNING.
     """
     from vibe_quant.data.catalog import INTERVAL_TO_AGGREGATION
 
@@ -350,10 +353,13 @@ def mark_open_positions(
             continue
         price = float(series.close[-1])
         qty = float(pos.signed_qty)
-        try:
-            taker = float(engine.kernel.cache.instrument(pos.instrument_id).taker_fee)
-        except Exception:
-            taker = 0.0005
+        if taker_fee is not None:
+            taker = float(taker_fee)
+        else:
+            try:
+                taker = float(engine.kernel.cache.instrument(pos.instrument_id).taker_fee)
+            except Exception:
+                taker = 0.0005
         mark = OpenPositionMark(
             position=pos,
             ts=int(series.ts[-1]),

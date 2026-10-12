@@ -15,6 +15,7 @@ from nautilus_trader.config import (
     LatencyModelConfig,
 )
 
+from vibe_quant.fees import BINANCE_USDTM_TIERS, FeeSchedule
 from vibe_quant.validation.fill_model import (
     ScreeningFillModelConfig,
     VolumeSlippageFillModelConfig,
@@ -26,10 +27,14 @@ from vibe_quant.validation.latency import (
     get_latency_model,
 )
 
-# Default Binance fee rates (percentage)
-# Note: Binance has VIP tiers; these are default non-VIP rates
-BINANCE_MAKER_FEE = Decimal("0.0002")  # 0.02%
-BINANCE_TAKER_FEE = Decimal("0.0005")  # 0.05%
+# Default Binance VIP0 fee rates (fraction of notional), single-sourced from
+# the tier table in vibe_quant.fees so constants and schedule cannot diverge.
+BINANCE_MAKER_FEE = BINANCE_USDTM_TIERS["VIP0"][0]  # 0.02%
+BINANCE_TAKER_FEE = BINANCE_USDTM_TIERS["VIP0"][1]  # 0.05%
+
+# Fee model used for a non-default schedule (the default keeps NT's model).
+SCHEDULE_FEE_MODEL_PATH = "vibe_quant.validation.fee_model:ScheduleFeeModel"
+SCHEDULE_FEE_MODEL_CONFIG_PATH = "vibe_quant.validation.fee_model:ScheduleFeeModelConfig"
 
 # Single source of truth for the default account size. The results API
 # fallback MUST match this — a mismatched fallback (e.g. 10k vs 1k) scales
@@ -50,8 +55,10 @@ class VenueConfig:
         latency_config: Custom latency config (overrides preset).
         use_volume_slippage: Use volume-based slippage (validation mode).
         fill_config: Fill model configuration.
-        maker_fee: Maker fee rate as decimal.
-        taker_fee: Taker fee rate as decimal.
+        fee_schedule: Binance fee schedule (VIP tier + optional BNB discount).
+            The default keeps NT's MakerTakerFeeModel path (rates read from
+            the instrument definition); ``maker_fee`` / ``taker_fee`` are
+            read-only views derived from it.
         bar_adaptive_high_low_ordering: When one bar touches both a long's
             SL and TP, NT's default O->H->L->C path books longs at TP and
             shorts at SL. Adaptive ordering (extreme nearer the open first)
@@ -73,13 +80,23 @@ class VenueConfig:
     use_volume_slippage: bool = False
     fill_config: VolumeSlippageFillModelConfig | ScreeningFillModelConfig | None = None
 
-    # Fee configuration (uses instrument fees via MakerTakerFeeModel)
-    # These are for reference; actual fees come from instrument definition
-    maker_fee: Decimal = BINANCE_MAKER_FEE
-    taker_fee: Decimal = BINANCE_TAKER_FEE
+    # Fee configuration. The default schedule (VIP0, no BNB) keeps NT's
+    # MakerTakerFeeModel path, so every pre-existing number is bit-identical;
+    # a non-default schedule swaps in ScheduleFeeModel with its rates.
+    fee_schedule: FeeSchedule = field(default_factory=FeeSchedule)
 
     # Same-bar SL/TP ambiguity resolution (see docstring)
     bar_adaptive_high_low_ordering: bool = True
+
+    @property
+    def maker_fee(self) -> Decimal:
+        """Maker fee rate (fraction of notional) derived from the schedule."""
+        return self.fee_schedule.maker_rate
+
+    @property
+    def taker_fee(self) -> Decimal:
+        """Taker fee rate (fraction of notional) derived from the schedule."""
+        return self.fee_schedule.taker_rate
 
 
 # Fixed seed for the screening fill model's probabilistic slippage draws. NT's
@@ -211,8 +228,15 @@ def create_backtest_venue_config(config: VenueConfig) -> BacktestVenueConfig:
     # Create fill model config
     fill_model = _create_importable_fill_model_config(config)
 
-    # Create fee model config (uses instrument's maker/taker fees)
-    fee_model = _create_importable_fee_model_config()
+    # A non-default schedule would silently change a non-Binance venue's fee
+    # semantics (Ethereal fills on its own schedule), so refuse it.
+    if config.name != "BINANCE" and not config.fee_schedule.is_default:
+        raise ValueError(
+            f"fee_schedule is only supported for the BINANCE venue, not {config.name!r}"
+        )
+
+    # Create fee model config from the schedule (default keeps MakerTakerFeeModel)
+    fee_model = _create_importable_fee_model_config(config)
 
     return BacktestVenueConfig(
         name=config.name,
@@ -304,15 +328,27 @@ def _create_importable_latency_model_config(
     )
 
 
-def _create_importable_fee_model_config() -> ImportableFeeModelConfig:
-    """Create ImportableFeeModelConfig for BacktestVenueConfig.
+def _create_importable_fee_model_config(config: VenueConfig) -> ImportableFeeModelConfig:
+    """Create ImportableFeeModelConfig from the venue's fee schedule.
 
-    Uses MakerTakerFeeModel which reads fees from instrument definition.
+    The default schedule keeps NT's MakerTakerFeeModel (fees read from the
+    instrument definition), so the default path is unchanged; any other
+    schedule uses :class:`ScheduleFeeModel` with the schedule's rates.
     """
+    schedule = config.fee_schedule
+    if schedule.is_default:
+        return ImportableFeeModelConfig(
+            fee_model_path="nautilus_trader.backtest.models:MakerTakerFeeModel",
+            config_path="nautilus_trader.config:MakerTakerFeeModelConfig",
+            config={},
+        )
     return ImportableFeeModelConfig(
-        fee_model_path="nautilus_trader.backtest.models:MakerTakerFeeModel",
-        config_path="nautilus_trader.config:MakerTakerFeeModelConfig",
-        config={},
+        fee_model_path=SCHEDULE_FEE_MODEL_PATH,
+        config_path=SCHEDULE_FEE_MODEL_CONFIG_PATH,
+        config={
+            "maker_rate": str(schedule.maker_rate),
+            "taker_rate": str(schedule.taker_rate),
+        },
     )
 
 
