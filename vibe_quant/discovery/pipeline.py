@@ -1071,6 +1071,12 @@ class DiscoveryPipeline:
             entry["dsr"] = dsr
         if buy_hold is not None:
             entry["buy_hold"] = buy_hold
+        # Fee drag on the rejection row (bd vibe-quant-2gyk1.4): most runs end
+        # with zero champions, so this is often the only place a user sees that
+        # fees, not the signal, killed a high-turnover genome. Always written
+        # (JSON null when unavailable).
+        entry["fee_drag"] = fitness.fee_drag
+        entry["fees_pct_equity_yr"] = fitness.fees_pct_equity_yr
         self._guardrail_rejections.append(entry)
         logger.info("Gate FAIL [%s]: %s reasons=%s", stage, chrom.uid, reasons)
 

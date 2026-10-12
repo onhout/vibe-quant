@@ -289,6 +289,10 @@ class NTScreeningRunner:
         self._collect_daily_returns = collect_daily_returns
         self.last_daily_returns: DailyReturns | None = None
         self.last_mtm_daily_returns: DailyReturns | None = None
+        # Fee-drag inputs of the last run, for the discovery bt dict
+        # (bd vibe-quant-2gyk1.4); not part of BacktestMetrics.
+        self.last_starting_balance: float = 0.0
+        self.last_days: int = 0
         self._dsl_dict = dsl_dict
         self._symbols = sorted(symbols)
         self._fill_ticks = fill_ticks
@@ -336,6 +340,8 @@ class NTScreeningRunner:
         # the previous run's series on a reused runner (bd vibe-quant-wcn55).
         self.last_daily_returns = None
         self.last_mtm_daily_returns = None
+        self.last_starting_balance = 0.0
+        self.last_days = 0
         try:
             return self._run_backtest(params, start_time)
         except (UnknownStrategyParamError, DataUnavailableError, FillTickCatalogModifiedError):
@@ -744,11 +750,13 @@ class NTScreeningRunner:
         """
         from vibe_quant.metrics import (
             closed_trade_drawdown,
+            gross_pnl,
             mark_to_market_daily_returns,
             mark_to_market_max_drawdown,
             profit_factor,
         )
         from vibe_quant.screening.types import BacktestMetrics
+        from vibe_quant.utils import compute_day_count
         from vibe_quant.validation.extraction import (
             OpenPositionMark,
             accrue_position_funding,
@@ -930,6 +938,20 @@ class NTScreeningRunner:
         extra_costs = total_funding - unrealized_at_end
         if extra_costs != 0.0 and starting_balance > 0:
             metrics.total_return -= extra_costs / starting_balance
+
+        # Cost-free PnL = net + reported fees + reported slippage + funding
+        # (bd vibe-quant-2gyk1.4), plus the inputs discovery needs to report
+        # fee drag and the annualized fee rate. Screening reports no separate
+        # slippage: tick slippage is modelled in the fill prices and stays
+        # embedded in net, so gross excludes it and screening fee_drag is
+        # slightly conservative (overstated). Score and every pre-existing
+        # metric are untouched.
+        metrics.gross_pnl = gross_pnl(
+            metrics.total_return * starting_balance, total_fees, 0.0, total_funding
+        )
+        self.last_starting_balance = starting_balance
+        days = compute_day_count(self._start_date, self._end_date)
+        self.last_days = int(days) if days else 0
 
         # Trade-based profit factor on net PnL (shared definition with
         # validation). NT's realized-PnL PF is unimplemented, and its

@@ -32,6 +32,18 @@ def _finite_or_none(value: float | int) -> float | None:
     return v if v == v and v not in (float("inf"), float("-inf")) else None
 
 
+def _sum_fee_fields(results: list[dict[str, float | int]]) -> dict[str, float]:
+    """Summed fee-drag inputs over windows/symbols (bd vibe-quant-2gyk1.4).
+
+    ``total_fees`` and ``gross_pnl`` are SUMMED so fitness derives the drag
+    from the totals, never as an average of per-window/per-symbol ratios.
+    """
+    return {
+        "total_fees": sum(float(r.get("total_fees", 0.0)) for r in results),
+        "gross_pnl": sum(float(r.get("gross_pnl", 0.0)) for r in results),
+    }
+
+
 class NTBacktestFn:
     """Picklable backtest callable for ProcessPoolExecutor.
 
@@ -158,6 +170,13 @@ class NTBacktestFn:
             # Full dense series INCLUDING day 0; trimmed by _chain_window_series.
             out["daily_returns"] = runner.last_daily_returns  # type: ignore[assignment]
             out["mtm_daily_returns"] = runner.last_mtm_daily_returns  # type: ignore[assignment]
+        # Fee-drag inputs (bd vibe-quant-2gyk1.4): raw cost-free PnL and fees,
+        # plus the annualization inputs. The aggregates sum fees/gross and
+        # fitness derives the ratios -- never an averaged ratio.
+        out["total_fees"] = float(getattr(result, "total_fees", 0.0))
+        out["gross_pnl"] = float(getattr(result, "gross_pnl", 0.0))
+        out["starting_balance"] = float(runner.last_starting_balance)
+        out["days"] = int(runner.last_days)
         return out
 
     @staticmethod
@@ -228,6 +247,9 @@ class NTBacktestFn:
                 "total_trades": total_trades_sum,
                 "total_return": 0.0,
                 "window_trades": tuple(per_window_trades),  # type: ignore[dict-item]
+                **_sum_fee_fields(results),
+                "starting_balance": float(results[0].get("starting_balance", 0.0)),
+                "days": sum(int(r.get("days", 0)) for r in results),
             }
 
         def _finite_or(value: float, fallback: float) -> float:
@@ -252,6 +274,9 @@ class NTBacktestFn:
                 (r.get("trade_returns", ()) for r in results), ()  # type: ignore[arg-type]
             ),
             "window_trades": tuple(per_window_trades),  # type: ignore[dict-item]
+            **_sum_fee_fields(results),
+            "starting_balance": float(results[0].get("starting_balance", 0.0)),
+            "days": sum(int(r.get("days", 0)) for r in results),
         }
 
     @staticmethod
@@ -277,6 +302,11 @@ class NTBacktestFn:
             "total_return": float(last.get("total_return", 0.0)) if keep else 0.0,
             "window_trades": tuple(per_window_trades),  # type: ignore[dict-item]
             "early_exit": window_idx,
+            # Fees the windows actually run did pay; a zeroed score must not
+            # hide that the signal was killed by costs (bd vibe-quant-2gyk1.4).
+            **_sum_fee_fields(results),
+            "starting_balance": float(results[0].get("starting_balance", 0.0)),
+            "days": sum(int(r.get("days", 0)) for r in results),
         }
 
     def _eval_symbols(
@@ -330,6 +360,14 @@ class NTBacktestFn:
 
         ``total_trades`` is the MIN across symbols (the min-trades gate then
         applies per symbol); trade_returns are concatenated for the bootstrap CI.
+
+        Fee-drag flows (``total_fees``/``gross_pnl``) are SUMMED over symbols, and
+        so is ``starting_balance``: each symbol runs as its own backtest on its
+        OWN account, so the combined equity behind those fees is N x balance. The
+        annualized rate fitness derives (``fees / starting_balance * 365 / days``)
+        therefore divides the summed fees by the summed equity -- dividing by a
+        single balance would overstate it by the symbol count. ``fee_drag``
+        (fees/gross) is unaffected; ``days`` stays the shared window span.
         """
         import math
 
@@ -375,6 +413,13 @@ class NTBacktestFn:
                 }
                 for sym, r in zip(symbols, results, strict=True)
             },
+            # Fee-drag flows are SUMMED over symbols (bd vibe-quant-2gyk1.4);
+            # days is the shared window span, never summed across symbols.
+            **_sum_fee_fields(results),
+            # Each symbol is its own account, so the summed fees are annualized
+            # against the SUMMED equity (bd vibe-quant-2gyk1.4).
+            "starting_balance": sum(float(r.get("starting_balance", 0.0)) for r in results),
+            "days": max(int(r.get("days", 0)) for r in results),
         }
         synthetic = [
             sym

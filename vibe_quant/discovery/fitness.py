@@ -139,6 +139,41 @@ class FitnessResult:
     # symbols plus each symbol's own series (``symbol_mtm_daily``).
     mtm_daily_returns: DailyReturns | None = None
     symbol_mtm_daily: dict[str, DailyReturns | None] | None = None
+    # Fee drag (bd vibe-quant-2gyk1.4): reporting only, never read by the score.
+    # ``fee_drag`` is fees / gross PnL from the SUMMED fees and gross of the run
+    # (windows and, in worst mode, symbols); None when gross <= 0 (no edge to
+    # attribute a share of). ``fees_pct_equity_yr`` annualizes the fees against
+    # the starting balance (equity assumed constant); None without a run
+    # duration/balance. In worst mode every symbol runs on its OWN account, so
+    # the bt dict's ``starting_balance`` is the SUM of those accounts (N x
+    # balance) and the summed fees are annualized against the summed equity.
+    # Kept for every result -- the whole point is showing that fees, not the
+    # signal, killed a genome that never became a champion.
+    fee_drag: float | None = None
+    fees_pct_equity_yr: float | None = None
+
+
+def _fee_drag_fields(bt: dict[str, float | int]) -> tuple[float | None, float | None]:
+    """``(fee_drag, fees_pct_equity_yr)`` from a bt dict's summed fee fields.
+
+    Reporting only, never scored (bd vibe-quant-2gyk1.4). Each ratio is judged
+    on its own inputs: a bad ``gross_pnl`` voids only ``fee_drag``, a bad
+    ``days``/``starting_balance`` only ``fees_pct_equity_yr`` (the metrics
+    helpers return None for non-finite or non-positive denominators). Non-finite
+    ``total_fees`` voids both, so an unparseable backtest can never fabricate a
+    ratio. A run without fee fields (mock/synthetic/old) yields None for both.
+    """
+    import math
+
+    from vibe_quant.metrics import fee_drag, fees_pct_equity_per_year
+
+    fees = float(bt.get("total_fees", 0.0))
+    if not math.isfinite(fees):
+        return None, None
+    gross = float(bt.get("gross_pnl", 0.0))
+    balance = float(bt.get("starting_balance", 0.0))
+    days = float(bt.get("days", 0))
+    return fee_drag(fees, gross), fees_pct_equity_per_year(fees, balance, days)
 
 
 # Pre-compute inverse ranges for normalization to avoid repeated division
@@ -560,6 +595,8 @@ def _evaluate_single(
                 chrom.stop_loss_pct, chrom.take_profit_pct,
             )
 
+    fee_drag_val, fees_pct_val = _fee_drag_fields(bt)
+
     return FitnessResult(
         sharpe_ratio=sharpe,
         max_drawdown=max_dd,
@@ -589,6 +626,8 @@ def _evaluate_single(
         symbol_mtm_daily=cast("dict[str, DailyReturns | None] | None", bt.get("symbol_mtm_daily"))
         if keep_series
         else None,
+        fee_drag=fee_drag_val,
+        fees_pct_equity_yr=fees_pct_val,
     )
 
 

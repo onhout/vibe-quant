@@ -50,6 +50,53 @@ def profit_factor(trade_pnls: Iterable[float]) -> float:
     return min(gross_profit / gross_loss, PROFIT_FACTOR_CAP)
 
 
+def gross_pnl(
+    net_pnl: float,
+    fees: float,
+    slippage: float = 0.0,
+    funding: float = 0.0,
+) -> float:
+    """Gross PnL in USD: net PnL plus every cost that was paid for it.
+
+    ``net_pnl`` is already net of fees, slippage and funding, so adding the
+    costs back recovers the PnL the signal would have made cost-free. Funding
+    is signed (positive = paid, negative = received) -- receiving funding
+    lowers gross PnL. Mirrors ``frontend/src/lib/metrics.ts`` ``grossPnlUsd``
+    (bd vibe-quant-2gyk1.4).
+    """
+    return net_pnl + fees + slippage + funding
+
+
+def fee_drag(fees: float, gross: float) -> float | None:
+    """Fees as a fraction of gross PnL: how much of the edge the fees ate.
+
+    ``None`` when ``gross <= 0`` or not finite: a strategy that made no money
+    (or lost it) has no meaningful "share lost to fees", and dividing by a
+    non-positive gross would report a nonsensical ratio (never raises).
+    """
+    if not math.isfinite(gross) or gross <= 0.0:
+        return None
+    return fees / gross
+
+
+def fees_pct_equity_per_year(
+    fees: float, starting_balance: float, days: float
+) -> float | None:
+    """Fees paid in a run, annualized as a fraction of equity.
+
+    ``fees / starting_balance * 365 / days``. The assumption, stated because
+    the ledger has no per-day equity curve here, is that equity equals the
+    starting balance (no compounding). ``None`` when ``days <= 0``,
+    ``starting_balance <= 0``, or either is non-finite -- a run with no
+    duration has no annual rate (never raises).
+    """
+    if not math.isfinite(days) or not math.isfinite(starting_balance):
+        return None
+    if days <= 0.0 or starting_balance <= 0.0:
+        return None
+    return fees / starting_balance * 365.0 / days
+
+
 _DAY_NS = 86_400 * 1_000_000_000
 
 
@@ -550,6 +597,9 @@ class PerformanceMetrics:
     total_trades: int = 0
     total_fees: float = 0.0
     total_funding: float = 0.0
+    # Net PnL plus fees/slippage/funding (see :func:`gross_pnl`); screening sets
+    # it so discovery can report fee drag (bd vibe-quant-2gyk1.4).
+    gross_pnl: float = 0.0
     execution_time_seconds: float = 0.0
     skewness: float = 0.0  # Return distribution skewness (0 = symmetric)
     kurtosis: float = 3.0  # Return distribution kurtosis (3 = normal)

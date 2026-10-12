@@ -527,6 +527,49 @@ def wfa_entry(wfa: WFARollingResult) -> dict[str, object]:
     }
 
 
+def _champion_entry(
+    chrom: StrategyChromosome,
+    fitness: FitnessResult,
+    *,
+    timeframe: str,
+    dsr: dict[str, object] | None,
+    buy_hold: dict[str, object] | None,
+) -> dict[str, object]:
+    """Base champion entry (dsr/buy_hold/symbol scores + fee drag).
+
+    ``fee_drag``/``fees_pct_equity_yr`` (bd vibe-quant-2gyk1.4) are reporting
+    only -- they never influence selection. Full-range/holdout/cross-window/WFA
+    payloads are added by the caller (they are index-dependent).
+    """
+    from vibe_quant.discovery.genome import chromosome_to_dsl, chromosome_to_serializable
+
+    dsl = chromosome_to_dsl(chrom)
+    dsl["timeframe"] = timeframe
+    entry: dict[str, object] = {
+        "dsl": dsl,
+        "chromosome": chromosome_to_serializable(chrom),
+        "score": fitness.adjusted_score,
+        "sharpe": fitness.sharpe_ratio,
+        "max_dd": fitness.max_drawdown,
+        "pf": fitness.profit_factor,
+        "trades": fitness.total_trades,
+        "return_pct": fitness.total_return,
+    }
+    if dsr is not None:
+        entry["dsr"] = dsr
+    if buy_hold is not None:
+        entry["buy_hold"] = buy_hold
+    if fitness.symbol_scores is not None:
+        entry["symbol_scores"] = {
+            sym: round(sc, 6) for sym, sc in fitness.symbol_scores.items()
+        }
+    # Always persisted (JSON null when unavailable) so readers can tell
+    # "no edge to attribute" from "key never written".
+    entry["fee_drag"] = fitness.fee_drag
+    entry["fees_pct_equity_yr"] = fitness.fees_pct_equity_yr
+    return entry
+
+
 def _resolve_seed(arg: int | None) -> int:
     """Explicit --seed, else a fresh OS-entropy seed (recorded so runs can be replayed)."""
     return arg if arg is not None else random.SystemRandom().randrange(2**32)
@@ -1305,8 +1348,6 @@ def main() -> int:
         execution_time = time.perf_counter() - started_at
 
         # Save top strategies as DSL dicts in notes
-        from vibe_quant.discovery.genome import chromosome_to_dsl, chromosome_to_serializable
-
         # bd vibe-quant-rewru: the GA's stored sharpe/trades are the multi-window
         # fitness aggregate (worst-of-windows / sum-of-windows) and, with a train/test
         # split, cover only the training slice. Promotion replays ONE continuous
@@ -1344,26 +1385,13 @@ def main() -> int:
 
         top_dsls = []
         for idx, (chrom, fitness) in enumerate(result.top_strategies[:5]):
-            dsl = chromosome_to_dsl(chrom)
-            dsl["timeframe"] = args.timeframe
-            entry: dict[str, object] = {
-                "dsl": dsl,
-                "chromosome": chromosome_to_serializable(chrom),
-                "score": fitness.adjusted_score,
-                "sharpe": fitness.sharpe_ratio,
-                "max_dd": fitness.max_drawdown,
-                "pf": fitness.profit_factor,
-                "trades": fitness.total_trades,
-                "return_pct": fitness.total_return,
-            }
-            if chrom.uid in result.dsr_records:
-                entry["dsr"] = result.dsr_records[chrom.uid]
-            if chrom.uid in result.buy_hold_records:
-                entry["buy_hold"] = result.buy_hold_records[chrom.uid]
-            if fitness.symbol_scores is not None:
-                entry["symbol_scores"] = {
-                    sym: round(sc, 6) for sym, sc in fitness.symbol_scores.items()
-                }
+            entry = _champion_entry(
+                chrom,
+                fitness,
+                timeframe=args.timeframe,
+                dsr=result.dsr_records.get(chrom.uid),
+                buy_hold=result.buy_hold_records.get(chrom.uid),
+            )
             # Full-range headline (single continuous backtest) for like-for-like
             # promotion/replay_drift; sharpe/trades above stay as the multi-window
             # robustness aggregate. full_range_fn(chrom) raises
