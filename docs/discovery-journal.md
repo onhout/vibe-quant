@@ -4,6 +4,22 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-12: 1m short-term discovery, 2026-05-01..2026-10-08 (runs 907–909, 0 champions)
+
+User request: short-term strategies on 1m candles from 2026-05 (catalog ends 2026-10-08 18:57 UTC). Rust-native pool per the 1m journal (STOCH/CCI/ROC/NATR; SOL without NATR), pop 16 × 6 gens, eval_windows 2, default gates; train windows do not overlap prior 1m runs (those end 2026-03), so the DSR prior-trial count starts small. Runs 905/906 failed at start: `ATR` is not a genome-pool name (NATR is) — the API accepted the launch (bead vibe-quant-l42df); relaunched as 908/909. The machine slept overnight; processes resumed on wake (caffeinate added).
+
+| Run | Symbol | Gens | Evaluated | Sub-window backtests | < 50 trades | ≥ 50 & profitable | ≥ 50 & losing | ≥ 1000 trades | Best ≥ 50-trade backtest |
+|---|---|---|---|---|---|---|---|---|---|
+| 907 | SOLUSDT | 6 | 79 | 84 | 52 | 1 | 31 | 19 | sharpe 1.05, 62 trades, +2.26% |
+| 908 | BTCUSDT | 6 | 69 | 73 | 34 | 1 | 38 | 12 | sharpe 0.27, 52 trades, +0.21% |
+| 909 | ETHUSDT | 6 | 84 | 89 | 43 | 1 | 45 | 19 | sharpe 1.40, 80 trades, +1.70% |
+
+zero_score 16/16 in every generation of all three runs (worst-of-2-windows needs ≥ 50 trades AND positive return in both halves); 0 errors.
+
+**Reading:** on 1m, active genomes lose to fees (0.05% taker per side → 0.10% round trip; 1,000–5,500-trade genomes lost 48–94%), and quiet genomes fall below the trade floor; only 3 of 246 sub-window backtests were both active and profitable, never in both windows. A 1m edge here would need maker (limit) execution or a much more selective signal — see vibe-quant-2gyk1.4 (fee model, maker entries, fee-drag reporting).
+
+---
+
 ## 2026-10-12: RESULT H-12 — REJECTED (vol management lowers drawdown but not Sharpe in crypto)
 
 `h12_vol_managed.py` (spec aede438), run once:
