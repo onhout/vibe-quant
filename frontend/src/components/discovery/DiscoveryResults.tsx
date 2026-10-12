@@ -16,7 +16,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { formatFractionPct } from "@/lib/metrics";
 import { cn } from "@/lib/utils";
+
+/** Rows may carry null, absent (legacy) or non-finite values: only a finite number is shown. */
+function finiteOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
 
 /** Typed accessor for untyped strategy dict. */
 function num(s: DiscoveryResultResponseStrategiesItem, key: string): number | null {
@@ -41,6 +47,11 @@ function fmtNum(v: number | null, decimals = 4): string {
 function fmtPct(v: number | null, decimals = 1): string {
   if (v == null) return "--";
   return `${v.toFixed(decimals)}%`;
+}
+
+/** Fee drag is a fraction (0.195 = 19.5% of gross PnL); null has no ratio to show. */
+function fmtFeeDrag(v: number | null): string {
+  return formatFractionPct(v, 1);
 }
 
 interface SummaryStats {
@@ -136,8 +147,16 @@ export function DiscoveryResults({ runId }: DiscoveryResultsProps) {
     return strategies
       .map((s, originalIndex) => ({ strategy: s, originalIndex }))
       .sort((a, b) => {
-        const fa = num(a.strategy, "fitness") ?? num(a.strategy, "adjusted_score") ?? num(a.strategy, "score") ?? -Infinity;
-        const fb = num(b.strategy, "fitness") ?? num(b.strategy, "adjusted_score") ?? num(b.strategy, "score") ?? -Infinity;
+        const fa =
+          num(a.strategy, "fitness") ??
+          num(a.strategy, "adjusted_score") ??
+          num(a.strategy, "score") ??
+          -Infinity;
+        const fb =
+          num(b.strategy, "fitness") ??
+          num(b.strategy, "adjusted_score") ??
+          num(b.strategy, "score") ??
+          -Infinity;
         return fb - fa;
       });
   }, [strategies]);
@@ -146,11 +165,14 @@ export function DiscoveryResults({ runId }: DiscoveryResultsProps) {
 
   function handleExport(originalIndex: number, stableKey: string) {
     if (runId == null) return;
-    exportMutation.mutate({ runId, strategyIndex: originalIndex }, {
-      onSuccess: () => {
-        setExportedKeys((prev) => new Set(prev).add(stableKey));
+    exportMutation.mutate(
+      { runId, strategyIndex: originalIndex },
+      {
+        onSuccess: () => {
+          setExportedKeys((prev) => new Set(prev).add(stableKey));
+        },
       },
-    });
+    );
   }
 
   if (isLoading) {
@@ -214,6 +236,7 @@ export function DiscoveryResults({ runId }: DiscoveryResultsProps) {
               <TableHead className="text-xs">Max DD</TableHead>
               <TableHead className="text-xs">Trades</TableHead>
               <TableHead className="text-xs">PF</TableHead>
+              <TableHead className="text-xs">Fee drag</TableHead>
               <TableHead className="text-xs">Indicators</TableHead>
               <TableHead className="w-20 text-xs">Actions</TableHead>
             </TableRow>
@@ -231,7 +254,10 @@ export function DiscoveryResults({ runId }: DiscoveryResultsProps) {
               const dsl = s.dsl as Record<string, unknown> | undefined;
               const dslIndicators = dsl?.indicators;
               const indicators = dslIndicators
-                ? Object.keys(dslIndicators as Record<string, unknown>).map(k => k.split("_")[0]!.toUpperCase()).filter((v, i, a) => a.indexOf(v) === i).join(", ")
+                ? Object.keys(dslIndicators as Record<string, unknown>)
+                    .map((k) => k.split("_")[0]!.toUpperCase())
+                    .filter((v, i, a) => a.indexOf(v) === i)
+                    .join(", ")
                 : str(s, "indicators");
               // Build a stable key from strategy identity fields (survives re-sort)
               const stableKey = `${str(s, "name")}-${fitness ?? ""}-${sharpe ?? ""}-${trades ?? ""}`;
@@ -298,7 +324,16 @@ export function DiscoveryResults({ runId }: DiscoveryResultsProps) {
                   <TableCell className="font-mono text-xs text-foreground">
                     {fmtNum(pf, 2)}
                   </TableCell>
-                  <TableCell className="max-w-40 truncate text-xs text-foreground" title={indicators}>
+                  <TableCell
+                    className="font-mono text-xs text-foreground"
+                    title="Fees as a share of gross PnL"
+                  >
+                    {fmtFeeDrag(finiteOrNull(s.fee_drag))}
+                  </TableCell>
+                  <TableCell
+                    className="max-w-40 truncate text-xs text-foreground"
+                    title={indicators}
+                  >
                     {indicators}
                   </TableCell>
                   <TableCell className="text-xs" onClick={(e) => e.stopPropagation()}>
@@ -322,16 +357,19 @@ export function DiscoveryResults({ runId }: DiscoveryResultsProps) {
       </div>
 
       {/* Expanded row detail */}
-      {expandedKey != null && (() => {
-        const expandedIdx = sorted.findIndex(({ strategy: s }) => {
-          const fitness = num(s, "fitness") ?? num(s, "adjusted_score") ?? num(s, "score");
-          const sharpe = num(s, "sharpe") ?? num(s, "sharpe_ratio");
-          const trades = num(s, "trades") ?? num(s, "total_trades");
-          return `${str(s, "name")}-${fitness ?? ""}-${sharpe ?? ""}-${trades ?? ""}` === expandedKey;
-        });
-        const entry = expandedIdx >= 0 ? sorted[expandedIdx] : undefined;
-        return entry ? <StrategyDetail strategy={entry.strategy} rank={expandedIdx + 1} /> : null;
-      })()}
+      {expandedKey != null &&
+        (() => {
+          const expandedIdx = sorted.findIndex(({ strategy: s }) => {
+            const fitness = num(s, "fitness") ?? num(s, "adjusted_score") ?? num(s, "score");
+            const sharpe = num(s, "sharpe") ?? num(s, "sharpe_ratio");
+            const trades = num(s, "trades") ?? num(s, "total_trades");
+            return (
+              `${str(s, "name")}-${fitness ?? ""}-${sharpe ?? ""}-${trades ?? ""}` === expandedKey
+            );
+          });
+          const entry = expandedIdx >= 0 ? sorted[expandedIdx] : undefined;
+          return entry ? <StrategyDetail strategy={entry.strategy} rank={expandedIdx + 1} /> : null;
+        })()}
 
       {/* Candidates that made top-K but failed guardrails */}
       <RejectionList rejections={rejectionDetails?.rejections ?? []} />
@@ -343,20 +381,18 @@ function RejectionList({ rejections }: { rejections: { [key: string]: unknown }[
   if (rejections.length === 0) return null;
   return (
     <div className="mt-3 space-y-1">
-      <h4 className="text-xs font-semibold text-muted-foreground">
-        Rejected candidates
-      </h4>
+      <h4 className="text-xs font-semibold text-muted-foreground">Rejected candidates</h4>
       {rejections.map((r, i) => (
         <div
           key={i}
           className="rounded-md border border-amber-500/20 bg-amber-950/10 p-2 font-mono text-[11px] text-muted-foreground"
         >
-          <span className="text-foreground">
-            {typeof r.uid === "string" ? r.uid : `#${i + 1}`}
-          </span>
+          <span className="text-foreground">{typeof r.uid === "string" ? r.uid : `#${i + 1}`}</span>
           {typeof r.score === "number" && ` score=${r.score}`}
           {typeof r.sharpe === "number" && ` sharpe=${r.sharpe}`}
           {typeof r.trades === "number" && ` trades=${r.trades}`}
+          {` fee_drag=${fmtFeeDrag(finiteOrNull(r.fee_drag))}`}
+          {` fees/yr=${fmtFeeDrag(finiteOrNull(r.fees_pct_equity_yr))}`}
           {Array.isArray(r.reasons) && (
             <ul className="mt-1 list-inside list-disc text-amber-300/80">
               {r.reasons.map((reason, j) => (

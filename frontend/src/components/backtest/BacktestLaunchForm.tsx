@@ -7,7 +7,11 @@ import {
   useValidateCoverageApiBacktestValidateCoveragePost,
 } from "@/api/generated/backtest/backtest";
 import { useListSymbolsApiDataSymbolsGet } from "@/api/generated/data/data";
-import type { CoverageCheckResponseCoverage } from "@/api/generated/models";
+import type {
+  BacktestLaunchRequest,
+  BacktestLaunchRequestEntryOrder,
+  CoverageCheckResponseCoverage,
+} from "@/api/generated/models";
 import { useListLatencyPresetsApiSettingsLatencyPresetsGet } from "@/api/generated/settings/settings";
 import { useListStrategiesApiStrategiesGet } from "@/api/generated/strategies/strategies";
 import { Button } from "@/components/ui/button";
@@ -23,21 +27,28 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
 import { useDatasetDateRange } from "@/hooks/useDatasetDateRange";
 import { useIndicatorCatalog } from "@/hooks/useIndicatorCatalog";
+import { cn } from "@/lib/utils";
 import { PreflightStatus } from "./PreflightStatus";
 import {
   SweepBuilder,
   type SweepCatalog,
   type SweepConfig,
-  sweepableParamsFor,
   strategyTranslationProblem,
+  sweepableParamsFor,
   sweepProblem,
   sweepToPayload,
 } from "./SweepBuilder";
 
 type BacktestMode = "screening" | "validation";
+
+/** Maker knobs are integer ticks/bars >= 1 (the API rejects 0 and non-integers). */
+function positiveInt(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 1;
+  return Math.max(1, Math.trunc(n));
+}
 
 export function BacktestLaunchForm() {
   // Form state
@@ -52,6 +63,10 @@ export function BacktestLaunchForm() {
   // Validation-only fields
   const [latencyPreset, setLatencyPreset] = useState("");
   const [bnbDiscount, setBnbDiscount] = useState(false);
+  // Validation-only: post-only maker entries (D3-6), with their knobs.
+  const [entryOrder, setEntryOrder] = useState<BacktestLaunchRequestEntryOrder>("market");
+  const [makerOffsetTicks, setMakerOffsetTicks] = useState(1);
+  const [makerEntryTimeoutBars, setMakerEntryTimeoutBars] = useState(3);
   // Sweep state
   const [sweepEnabled, setSweepEnabled] = useState(false);
   const [sweepConfig, setSweepConfig] = useState<SweepConfig>({ params: [] });
@@ -175,7 +190,7 @@ export function BacktestLaunchForm() {
     // Sizing/risk configs and overfitting toggles used to be sent here but no
     // backtest runner ever applied them (the API now rejects them). Overfitting
     // filters run in discovery / the overfitting CLI.
-    const payload = {
+    const payload: BacktestLaunchRequest = {
       strategy_id: Number(strategyId),
       symbols: selectedSymbols,
       timeframe,
@@ -192,6 +207,13 @@ export function BacktestLaunchForm() {
       ...(mode === "validation" && {
         latency_preset: latencyPreset && latencyPreset !== "__none__" ? latencyPreset : null,
         ...(bnbDiscount && { bnb_discount: true }),
+        // Post-only maker entries are validation-only and opt-in; the three
+        // fields reach the run only when post_only is chosen (D3-6).
+        ...(entryOrder === "post_only" && {
+          entry_order: entryOrder,
+          maker_offset_ticks: makerOffsetTicks,
+          maker_entry_timeout_bars: makerEntryTimeoutBars,
+        }),
       }),
     };
 
@@ -328,7 +350,9 @@ export function BacktestLaunchForm() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="start-date" className="text-xs text-muted-foreground">Start</Label>
+                <Label htmlFor="start-date" className="text-xs text-muted-foreground">
+                  Start
+                </Label>
                 <DatePicker
                   id="start-date"
                   value={startDate}
@@ -337,7 +361,9 @@ export function BacktestLaunchForm() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="end-date" className="text-xs text-muted-foreground">End</Label>
+                <Label htmlFor="end-date" className="text-xs text-muted-foreground">
+                  End
+                </Label>
                 <DatePicker
                   id="end-date"
                   value={endDate}
@@ -456,6 +482,66 @@ export function BacktestLaunchForm() {
                 <Label htmlFor="bnb-discount" className="cursor-pointer">
                   Pay fees in BNB (−10%)
                 </Label>
+              </div>
+
+              {/* Entry orders: market fills or post-only maker limits (D3-6) */}
+              <div className="space-y-2">
+                <Label htmlFor="entry-order">Entry Orders</Label>
+                <Select
+                  value={entryOrder}
+                  onValueChange={(v) => setEntryOrder(v as BacktestLaunchRequestEntryOrder)}
+                >
+                  <SelectTrigger id="entry-order" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="market">Market (fill at the release bar)</SelectItem>
+                    <SelectItem value="post_only">Post-only maker (limit)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {entryOrder === "post_only" && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label
+                          htmlFor="maker-offset-ticks"
+                          className="text-xs text-muted-foreground"
+                        >
+                          Maker Offset (ticks)
+                        </Label>
+                        <Input
+                          id="maker-offset-ticks"
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={makerOffsetTicks}
+                          onChange={(e) => setMakerOffsetTicks(positiveInt(e.target.value))}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label
+                          htmlFor="maker-timeout-bars"
+                          className="text-xs text-muted-foreground"
+                        >
+                          Entry Timeout (bars)
+                        </Label>
+                        <Input
+                          id="maker-timeout-bars"
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={makerEntryTimeoutBars}
+                          onChange={(e) => setMakerEntryTimeoutBars(positiveInt(e.target.value))}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Post-only entries are modelled optimistically (full size when price trades
+                      through the limit). Each post-only validation run also backtests a market twin
+                      for comparison.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           )}

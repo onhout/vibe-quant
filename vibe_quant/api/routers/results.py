@@ -272,7 +272,9 @@ async def get_run_summary(run_id: int, mgr: StateMgr) -> BacktestResultResponse:
         walk_forward_efficiency=None,
         purged_kfold_mean_sharpe=None,
         execution_time_seconds=best.get("execution_time_seconds"),
-        starting_balance=None,
+        # Screening ran on the screening venue's balance (the venue default), never a
+        # requested initial_balance; the UI derives net PnL and fee ratios from it.
+        starting_balance=float(DEFAULT_STARTING_BALANCE_USDT),
         notes=None,
         created_at=None,
     )
