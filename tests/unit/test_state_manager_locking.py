@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -241,6 +244,154 @@ def test_concurrent_readers_and_writer_do_not_corrupt_connection(
     assert errors == [], errors
     assert sm.count_active_extraction_jobs() == 0
     assert len(sm.list_extraction_jobs(status="done")) == n_jobs
+
+
+def test_close_waits_for_an_in_flight_connection_use(tmp_state_manager: StateManager) -> None:
+    """``close()`` must not tear the connection down under a thread that is mid-query.
+
+    Closing a ``check_same_thread=False`` connection while another thread is
+    inside ``connection.execute`` segfaults CPython's sqlite3 (0x38 NULL deref in
+    ``_pysqlite_query_execute``). A reader owns ``_write_lock`` for the whole
+    query, so ``close()`` has to queue behind it.
+    """
+    sm = tmp_state_manager
+    sm.create_strategy("closing", {"x": 1})
+
+    sm._write_lock.acquire()  # stand-in for a reader that is mid-query
+    closed = threading.Event()
+    closer = threading.Thread(target=lambda: (sm.close(), closed.set()))
+    closer.start()
+    try:
+        assert not closed.wait(timeout=0.3), "close() ran while a query held the write lock"
+        assert sm._conn is not None
+    finally:
+        sm._write_lock.release()
+    closer.join(timeout=5)
+    assert closed.is_set()
+    assert sm._conn is None
+
+
+def test_close_waits_for_connection_initialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``close()`` must also queue behind ``conn`` while it initializes.
+
+    ``conn`` assigns ``self._conn`` and then runs ``init_schema`` under
+    ``_lock``; a ``close()`` that takes only ``_write_lock`` can close that
+    half-built connection and leave the opening thread with ``conn`` returning
+    ``None``. An ``init_schema`` wrapper that pauses after the connection exists
+    makes the race deterministic instead of probabilistic.
+    """
+    sm = _state_manager_module.StateManager(tmp_path / "init-race.db")
+    real_init_schema = _state_manager_module.init_schema
+    in_init = threading.Event()
+    release = threading.Event()
+    initialized: list[sqlite3.Connection] = []
+
+    def slow_init_schema(conn: sqlite3.Connection) -> None:
+        real_init_schema(conn)
+        initialized.append(conn)
+        in_init.set()
+        assert release.wait(timeout=10), "init_schema was never released"
+
+    monkeypatch.setattr(_state_manager_module, "init_schema", slow_init_schema)
+
+    opened: list[sqlite3.Connection] = []
+    opener = threading.Thread(target=lambda: opened.append(sm.conn))
+    closed = threading.Event()
+    closer = threading.Thread(target=lambda: (sm.close(), closed.set()))
+
+    opener.start()
+    try:
+        assert in_init.wait(timeout=5), "conn never reached init_schema"
+        closer.start()
+        assert not closed.wait(timeout=0.3), "close() ran during connection initialization"
+        assert sm._conn is not None
+    finally:
+        release.set()
+
+    opener.join(timeout=5)
+    closer.join(timeout=5)
+    assert not opener.is_alive(), "conn did not finish after init_schema was released"
+    assert closed.is_set(), "close() did not run after initialization finished"
+    assert opened == initialized and opened, (
+        "conn returned a connection that was never initialized"
+    )
+    assert sm._conn is None
+    assert sm.list_strategies() == []  # reopens lazily through conn
+    sm.close()
+
+
+_CLOSE_STRESS_SCRIPT = """
+import sys, tempfile, threading, time
+from pathlib import Path
+from vibe_quant.db.state_manager import StateManager
+
+sm = StateManager(Path(tempfile.mkdtemp()) / "stress.db")
+sm.create_strategy("s", {"x": 1})
+stop = threading.Event()
+lock = threading.Lock()
+errors = []
+ok = 0
+closes = 0
+
+def reader():
+    global ok
+    while not stop.is_set():
+        try:
+            strategy = sm.get_strategy(1)
+            if strategy is None or strategy["name"] != "s" or strategy["dsl_config"] != {"x": 1}:
+                raise AssertionError(f"get_strategy(1) -> {strategy!r}")
+            strategies = sm.list_strategies()
+            if [s["name"] for s in strategies] != ["s"]:
+                raise AssertionError(f"list_strategies() -> {strategies!r}")
+        except Exception as exc:
+            errors.append(exc)
+            return
+        with lock:
+            ok += 1
+
+threads = [threading.Thread(target=reader) for _ in range(4)]
+for t in threads:
+    t.start()
+end = time.monotonic() + 2.0
+while time.monotonic() < end:
+    sm.close()
+    closes += 1
+stop.set()
+for t in threads:
+    t.join()
+if errors:
+    print(f"reader_failure_count={len(errors)} first={errors[0]!r}", file=sys.stderr)
+    sys.exit(2)
+print(f"survived ok={ok} closes={closes}")
+"""
+
+
+def test_close_racing_readers_does_not_crash_the_interpreter() -> None:
+    """Hammer ``close()`` against reader threads in a child process.
+
+    Unfixed, the child dies with SIGSEGV (returncode -11) within ~0.1 s; a child
+    is used so the crash cannot take the pytest/xdist worker down with it.
+
+    The readers also assert their query results, so a build where queries fail
+    (or raise) cannot report "survived": any reader exception exits the child
+    non-zero, and the parent additionally requires that queries actually
+    succeeded (``ok > 0``) and that ``close()`` actually ran (``closes > 0``).
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", _CLOSE_STRESS_SCRIPT],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
+    )
+    assert result.returncode == 0, (result.returncode, result.stderr[-600:])
+    assert result.stdout.startswith("survived "), result.stdout
+    fields = dict(part.split("=", 1) for part in result.stdout.split()[1:])
+    assert int(fields["ok"]) > 0, result.stdout
+    assert int(fields["closes"]) > 0, result.stdout
 
 
 # --- Modules that used to reach into ``state.conn`` from outside StateManager ---

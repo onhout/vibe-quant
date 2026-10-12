@@ -160,8 +160,14 @@ class StateManager:
             return self._conn
 
     def close(self) -> None:
-        """Close database connection."""
-        with self._lock:
+        """Close database connection.
+
+        Waits for any in-flight query (they hold ``_write_lock``): closing a
+        ``check_same_thread=False`` connection under a thread that is inside
+        ``execute`` segfaults CPython's sqlite3. Lock order matches the query
+        methods (``_write_lock`` then ``_lock`` via ``conn``).
+        """
+        with self._write_lock, self._lock:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
