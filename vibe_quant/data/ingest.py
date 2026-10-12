@@ -33,6 +33,7 @@ from vibe_quant.data.downloader import (
     get_months_in_range,
     get_years_months_to_download,
 )
+from vibe_quant.data.mark_bars import build_mark_bars
 from vibe_quant.data.verify import verify_symbol
 from vibe_quant.utils import generate_month_range
 
@@ -1140,6 +1141,16 @@ def rebuild_from_archive(
     if verbose:
         print(f"Rebuilding catalog for {len(symbols)} symbols...")
 
+    # MARK bars are rebuilt for the same symbol set (driven by raw_klines); a
+    # symbol with mark rows but no raw_klines has no LAST series to stand next
+    # to, so it is skipped here rather than silently given a half catalog.
+    mark_only = sorted(
+        {row[0] for row in archive.conn.execute("SELECT DISTINCT symbol FROM raw_mark_klines")}
+        - set(symbols)
+    )
+    if mark_only:
+        print(f"Skipping MARK-only symbols (no raw_klines): {', '.join(mark_only)}")
+
     for symbol in symbols:
         if verbose:
             print(f"\n{'=' * 50}")
@@ -1202,6 +1213,14 @@ def rebuild_from_archive(
                 counts[f"bars_{detail_interval}"] = len(detail_bars)
                 if verbose:
                     print(f"Wrote {len(detail_bars):,} {detail_interval} bars")
+
+        # MARK-price 1m bars (liquidation trigger price) live beside the LAST
+        # series and share the symbol's instrument.
+        mark_written = build_mark_bars(catalog, archive, symbol)
+        if mark_written:
+            counts["mark_bars_1m"] = mark_written
+            if verbose:
+                print(f"Wrote {mark_written:,} mark 1m bars")
 
         results[symbol] = counts
 
@@ -1323,6 +1342,11 @@ def main(argv: list[str] | None = None) -> int:
         type=str,
         default=None,
         help="End date YYYY-MM-DD (defaults to today)",
+    )
+    mark_parser.add_argument(
+        "--catalog",
+        action="store_true",
+        help="Also rebuild MARK 1m bars in the ParquetDataCatalog from the archive",
     )
 
     # Verify command
@@ -1453,6 +1477,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"{mark_counts['mark_klines_inserted']:,} rows inserted"
             )
             mark_failed += [f"{symbol}: {m}" for m in mark_counts["failed_months"]]
+        if args.catalog:
+            mark_catalog = CatalogManager()
+            for symbol in symbols:
+                mark_bars = build_mark_bars(mark_catalog, mark_archive, symbol)
+                print(f"  {symbol}: {mark_bars:,} MARK 1m bars in catalog")
         mark_archive.close()
         if mark_failed:
             print("\nERROR: mark-price downloads failed (holes in archive):", file=sys.stderr)

@@ -342,12 +342,15 @@ def _aggregate_group(
     )
 
 
-def get_bar_type(symbol: str, interval: str) -> BarType:
+def get_bar_type(symbol: str, interval: str, price_type: PriceType = PriceType.LAST) -> BarType:
     """Get NautilusTrader BarType for a symbol and interval.
 
     Args:
         symbol: Trading symbol (e.g., 'BTCUSDT').
         interval: Candle interval (e.g., '1m', '5m', '1h').
+        price_type: Price the bars were built from. Defaults to LAST (the
+            execution bars); MARK selects the mark-price series
+            (``...-1-MINUTE-MARK-EXTERNAL``) used by the liquidation scanner.
 
     Returns:
         NautilusTrader BarType.
@@ -355,7 +358,7 @@ def get_bar_type(symbol: str, interval: str) -> BarType:
     instrument_id = InstrumentId(Symbol(f"{symbol}-PERP"), BINANCE_VENUE)
     step, aggregation = INTERVAL_TO_AGGREGATION[interval]
 
-    bar_spec = BarSpecification(step, aggregation, PriceType.LAST)
+    bar_spec = BarSpecification(step, aggregation, price_type)
     return BarType(
         instrument_id=instrument_id,
         bar_spec=bar_spec,
@@ -472,7 +475,9 @@ class CatalogManager:
                 self._catalog = None  # re-read from disk
         self.catalog.write_data([instrument])
 
-    def clear_bar_data(self, symbol: str, interval: str) -> None:
+    def clear_bar_data(
+        self, symbol: str, interval: str, price_type: PriceType = PriceType.LAST
+    ) -> None:
         """Remove existing parquet files for a bar type.
 
         Used before re-writing bars from archive to avoid disjoint interval errors.
@@ -480,10 +485,12 @@ class CatalogManager:
         Args:
             symbol: Trading symbol.
             interval: Candle interval.
+            price_type: Price the bars were built from (LAST by default; MARK
+                for the mark-price series).
         """
         import shutil
 
-        bar_type = get_bar_type(symbol, interval)
+        bar_type = get_bar_type(symbol, interval, price_type)
         # NautilusTrader catalog stores bars under data/bar/<bar_type_str>/
         bar_dir = self._catalog_path / "data" / "bar" / str(bar_type)
         if bar_dir.exists():
