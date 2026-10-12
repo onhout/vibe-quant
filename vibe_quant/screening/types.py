@@ -40,6 +40,15 @@ class BacktestMetrics(PerformanceMetrics):
     """
 
     parameters: dict[str, float | int] = field(default_factory=dict)
+    # DSR inputs from the mark-to-market daily return series (NT Sharpe day
+    # convention: the first day is dropped): per-DAY Sharpe, bias-corrected
+    # skewness, full kurtosis and the series length. ``None`` = unavailable
+    # (no MTM paths / non-positive balance) -> DSR fails closed (bd
+    # vibe-quant-68630). ``sharpe_ratio`` stays the realized NT figure.
+    mtm_sharpe_daily: float | None = None
+    mtm_skewness: float | None = None
+    mtm_kurtosis: float | None = None
+    mtm_days: int | None = None
 
 
 @dataclass

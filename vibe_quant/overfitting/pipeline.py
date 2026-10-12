@@ -11,17 +11,19 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from vibe_quant.db.connection import DEFAULT_DB_PATH
+from vibe_quant.db.schema import _migrate_add_columns
 from vibe_quant.overfitting.dsr import (
     TRADING_DAYS_PER_YEAR,
     DeflatedSharpeRatio,
     DSRResult,
-    deannualize_sharpe,
+    mtm_dsr_calculate,
 )
 from vibe_quant.overfitting.mock_runner import MockBacktestRunner
 from vibe_quant.overfitting.purged_kfold import CVConfig, CVResult, PurgedKFoldCV
@@ -31,7 +33,6 @@ from vibe_quant.overfitting.types import (
     PipelineResult,
 )
 from vibe_quant.overfitting.wfa import WalkForwardAnalysis, WFAConfig, WFAResult
-from vibe_quant.utils import compute_day_count
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,15 @@ class _Unset:
 
 
 _UNSET = _Unset()
+
+#: ``input`` of a discovery DSR record that was computed on the pooled
+#: mark-to-market daily series (``apply_discovery_dsr_returns``). Older records
+#: ("pooled_daily_returns") tested the realized-balance series and are not
+#: trusted for promotion. Duplicated here to avoid importing discovery.
+_MTM_DSR_INPUT = "pooled_mtm_daily_returns"
+
+#: sweep_results columns the DSR recheck reads; the connection must have them all.
+_MTM_SWEEP_COLUMNS = ("mtm_sharpe_daily", "mtm_skewness", "mtm_kurtosis", "mtm_days")
 
 
 class OverfittingPipeline:
@@ -80,11 +90,30 @@ class OverfittingPipeline:
     def conn(self) -> sqlite3.Connection:
         """Get database connection with WAL mode."""
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA busy_timeout=5000")
-            self._conn.execute("PRAGMA foreign_keys=ON")
+            conn = sqlite3.connect(str(self.db_path))
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=5000")
+                conn.execute("PRAGMA foreign_keys=ON")
+                # This connection bypasses StateManager/init_schema, so a DB from
+                # before a column migration (e.g. sweep_results.mtm_*) would raise
+                # on promotion instead of failing DSR closed. The shared helper is
+                # idempotent but swallows EVERY error (incl. SQLITE_BUSY from a
+                # concurrent writer), so verify the columns it was needed for.
+                _migrate_add_columns(conn)
+                present = {r[1] for r in conn.execute("PRAGMA table_info(sweep_results)")}
+                missing = [c for c in _MTM_SWEEP_COLUMNS if present and c not in present]
+                if missing:
+                    msg = (
+                        "sweep_results migration incomplete (database busy?): "
+                        f"missing {', '.join(missing)}; retry"
+                    )
+                    raise RuntimeError(msg)
+            except BaseException:
+                conn.close()
+                raise
+            self._conn = conn
         return self._conn
 
     def close(self) -> None:
@@ -110,10 +139,10 @@ class OverfittingPipeline:
         Args:
             run_id: Backtest run ID to filter candidates for.
             config: Filter configuration. Uses default if None.
-            num_observations: Number of DAILY observations for DSR. ``None``
-                (default) = day count of the window the Sharpe was measured on
-                (a discovery run's train range, else the run's date range).
-                Sharpes are de-annualized internally to match.
+            num_observations: IGNORED by DSR (kept for CLI/API compatibility).
+                DSR tests the candidate's stored mark-to-market daily
+                statistics and T is the length of THAT series
+                (``mtm_days``); a different T would not match the Sharpe.
             data_start: Start date for WFA windows. ``None`` = run start date.
             data_end: End date for WFA windows. ``None`` = run end date.
             n_samples: Number of samples for Purged K-Fold (default 1000).
@@ -190,49 +219,56 @@ class OverfittingPipeline:
         passed_wfa_count = 0
         passed_cv_count = 0
 
+        if config.enable_dsr and num_observations is not None:
+            logger.warning(
+                "num_observations=%d is ignored by DSR: T is the length of the stored "
+                "mark-to-market daily series (mtm_days)",
+                num_observations,
+            )
+
         for candidate in candidates:
             # Apply DSR filter
             dsr_result: DSRResult | None = None
             passed_dsr: bool | None = None
+            dsr_fail_reason: str | None = None
 
             if config.enable_dsr:
-                # Use actual return distribution moments if available in
-                # sweep_results, otherwise fall back to normal distribution
-                # assumption (skewness=0, kurtosis=3). For accurate DSR,
-                # the screening pipeline should store these in sweep_results.
-                sharpe = candidate.get("sharpe_ratio")
-                if sharpe is None:
+                # Tests the MARK-TO-MARKET daily statistics (bd vibe-quant-68630),
+                # never the realized Sharpe: the realized series books a multi-day
+                # trade's whole PnL on its exit day. Missing stats fail closed.
+                num_trials = self._resolve_num_trials(candidate, total_trials, len(candidates))
+                dsr_result, dsr_fail_reason = mtm_dsr_calculate(
+                    dsr,
+                    candidate.get("mtm_sharpe_daily"),
+                    candidate.get("mtm_skewness"),
+                    candidate.get("mtm_kurtosis"),
+                    candidate.get("mtm_days"),
+                    num_trials,
+                    trials_sharpe_variance=(
+                        trials_sharpe_variance / TRADING_DAYS_PER_YEAR
+                        if trials_sharpe_variance is not None
+                        else None
+                    ),
+                )
+                if dsr_result is None:
                     passed_dsr = False
                 else:
-                    # NULL columns come back as None (not missing keys), so
-                    # coalesce explicitly to the normal-distribution defaults.
-                    raw_skew = candidate.get("skewness")
-                    raw_kurt = candidate.get("kurtosis")
-                    skewness = float(raw_skew) if raw_skew is not None else 0.0
-                    kurtosis = float(raw_kurt) if raw_kurt is not None else 3.0
-                    # Guard against invalid stored values (theoretical min is 1)
-                    kurtosis = max(kurtosis, 1.0)
-                    num_trials = self._resolve_num_trials(
-                        candidate, total_trials, len(candidates)
-                    )
-                    num_obs = self._resolve_num_observations(
-                        candidate, num_observations, run_dates
-                    )
-                    # Stored Sharpes are NT-annualized (252-day); DSR needs
-                    # per-period units matching num_observations (days).
-                    dsr_result = dsr.calculate(
-                        observed_sharpe=deannualize_sharpe(float(sharpe)),
-                        num_trials=num_trials,
-                        num_observations=num_obs,
-                        skewness=skewness,
-                        kurtosis=kurtosis,
-                        trials_sharpe_variance=(
-                            trials_sharpe_variance / TRADING_DAYS_PER_YEAR
-                            if trials_sharpe_variance is not None
-                            else None
-                        ),
-                    )
                     passed_dsr = dsr.passes_threshold(dsr_result, config.dsr_confidence_threshold)
+                    if not passed_dsr:
+                        dsr_fail_reason = (
+                            f"DSR not significant: p={dsr_result.p_value:.4f} "
+                            f"(T={candidate.get('mtm_days')}, N={num_trials})"
+                        )
+                    floor_reasons = self._symbol_floor_reasons(candidate)
+                    if floor_reasons:
+                        passed_dsr = False
+                        dsr_fail_reason = "; ".join(
+                            ([dsr_fail_reason] if dsr_fail_reason else []) + floor_reasons
+                        )
+                if dsr_fail_reason:
+                    logger.info(
+                        "DSR fail for sweep_result %s: %s", candidate.get("id"), dsr_fail_reason
+                    )
                 if passed_dsr:
                     passed_dsr_count += 1
 
@@ -340,6 +376,7 @@ class OverfittingPipeline:
                 dsr_result=dsr_result,
                 wfa_result=wfa_result,
                 cv_result=cv_result,
+                dsr_fail_reason=dsr_fail_reason,
             )
             results.append(result)
 
@@ -390,10 +427,7 @@ class OverfittingPipeline:
         """
         cursor = self.conn.execute(
             """
-            SELECT sr.id, sr.run_id, sr.parameters, sr.sharpe_ratio, sr.total_return,
-                   sr.sortino_ratio, sr.max_drawdown, sr.profit_factor, sr.win_rate,
-                   sr.skewness, sr.kurtosis,
-                   sr.is_pareto_optimal, br.strategy_id, s.name AS strategy_name
+            SELECT sr.*, br.strategy_id, s.name AS strategy_name
             FROM sweep_results sr
             LEFT JOIN backtest_runs br ON sr.run_id = br.id
             LEFT JOIN strategies s ON br.strategy_id = s.id
@@ -448,6 +482,9 @@ class OverfittingPipeline:
 
         d = dict(br_row)
         parameters = d.pop("notes", None) or "{}"
+        # MTM DSR inputs come from the champion's persisted DSR record, never
+        # from the headline replay's realized Sharpe (bd vibe-quant-68630).
+        mtm = self._mtm_columns_from_notes(parameters)
         d.pop("strategy_name", None)
         d.pop("strategy_id", None)
         d.pop("total_trades", None)
@@ -457,8 +494,9 @@ class OverfittingPipeline:
             INSERT INTO sweep_results
                 (run_id, parameters, sharpe_ratio, sortino_ratio, max_drawdown,
                  total_return, profit_factor, win_rate, total_fees, total_funding,
-                 execution_time_seconds, skewness, kurtosis, is_pareto_optimal)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                 execution_time_seconds, skewness, kurtosis,
+                 mtm_sharpe_daily, mtm_skewness, mtm_kurtosis, mtm_days, is_pareto_optimal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 run_id,
@@ -474,6 +512,10 @@ class OverfittingPipeline:
                 d.get("execution_time_seconds"),
                 d.get("skewness"),
                 d.get("kurtosis"),
+                mtm["mtm_sharpe_daily"],
+                mtm["mtm_skewness"],
+                mtm["mtm_kurtosis"],
+                mtm["mtm_days"],
             ),
         )
         self.conn.commit()
@@ -498,6 +540,7 @@ class OverfittingPipeline:
                 "win_rate": d.get("win_rate"),
                 "skewness": d.get("skewness"),
                 "kurtosis": d.get("kurtosis"),
+                **mtm,
                 "is_pareto_optimal": 1,
                 "strategy_id": br_row["strategy_id"],
                 "strategy_name": br_row["strategy_name"],
@@ -615,28 +658,91 @@ class OverfittingPipeline:
         return max(1, num_candidates)
 
     @staticmethod
-    def _resolve_num_observations(
-        candidate: dict[str, Any],
-        num_observations: int | None,
-        run_dates: tuple[date, date] | None,
-    ) -> int:
-        """DSR observation count T (days) of the window the Sharpe was measured on."""
-        if num_observations is not None:
-            return num_observations
-        payload = OverfittingPipeline._discovery_payload(candidate)
-        if payload is not None:
-            train = payload.get("train_dates")
-            if isinstance(train, list) and len(train) == 2:
-                days = compute_day_count(str(train[0]), str(train[1]))
-                if days:
-                    return days
-        if run_dates is not None:
-            return max(1, (run_dates[1] - run_dates[0]).days)
-        logger.warning(
-            "No date range for candidate %s — DSR assumes %d daily observations",
-            candidate.get("id"), TRADING_DAYS_PER_YEAR,
-        )
-        return int(TRADING_DAYS_PER_YEAR)
+    def _champion_dsr_record(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+        """DSR record of the run's best champion (``top_strategies[0]``).
+
+        ``top_strategies[0]`` is the champion whose headline is the run's
+        ``backtest_results`` row, i.e. the one promoted to ``sweep_results``.
+        """
+        if payload is None:
+            return None
+        top = payload.get("top_strategies")
+        if not isinstance(top, list) or not top or not isinstance(top[0], dict):
+            return None
+        record = top[0].get("dsr")
+        return record if isinstance(record, dict) else None
+
+    @staticmethod
+    def _finite(value: object) -> float | None:
+        """``value`` as a finite float, else None (bools and strings rejected)."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if math.isfinite(value) else None
+
+    def _mtm_columns_from_notes(self, notes_json: str | None) -> dict[str, float | int | None]:
+        """Pooled MTM DSR inputs a discovery run persisted for its champion.
+
+        They describe the train-range series the run's own DSR gate tested, so
+        the recheck at a different N uses the same Sharpe, moments and T. A
+        record from before the MTM switch (``input`` is not the MTM series), a
+        missing record or non-numeric fields give all-None -> DSR fails closed.
+        """
+        none: dict[str, float | int | None] = {
+            "mtm_sharpe_daily": None,
+            "mtm_skewness": None,
+            "mtm_kurtosis": None,
+            "mtm_days": None,
+        }
+        try:
+            payload = json.loads(notes_json) if notes_json else None
+        except json.JSONDecodeError:
+            return none
+        record = self._champion_dsr_record(payload if isinstance(payload, dict) else None)
+        if record is None or record.get("input") != _MTM_DSR_INPUT or record.get("missing"):
+            return none
+        sharpe = self._finite(record.get("sharpe_daily"))
+        skew = self._finite(record.get("skewness"))
+        kurt = self._finite(record.get("kurtosis"))
+        days = self._finite(record.get("observations"))
+        if sharpe is None or skew is None or kurt is None or days is None:
+            return none
+        return {
+            "mtm_sharpe_daily": sharpe,
+            "mtm_skewness": skew,
+            "mtm_kurtosis": kurt,
+            "mtm_days": int(days),
+        }
+
+    def _symbol_floor_reasons(self, candidate: dict[str, Any]) -> list[str]:
+        """Worst-mode per-symbol PSR floor of a discovery champion (empty = ok).
+
+        The floor is undeflated PSR(SR > 0) per symbol (N = 1), so it does not
+        move with the trial count of the recheck: the persisted PSRs are
+        re-applied as they are. Fails closed when the run was worst-mode over
+        2+ symbols and the persisted record lacks a symbol's PSR.
+        """
+        payload = self._discovery_payload(candidate)
+        if payload is None or payload.get("symbol_agg") != "worst":
+            return []
+        syms = payload.get("symbols")
+        if not isinstance(syms, list) or len(syms) < 2:
+            return []
+        record = self._champion_dsr_record(payload) or {}
+        per_symbol = record.get("symbols")
+        per_symbol = per_symbol if isinstance(per_symbol, dict) else {}
+        from vibe_quant.discovery.guardrails import SYMBOL_PSR_FLOOR
+
+        floor = self._finite(record.get("symbol_psr_floor"))
+        floor = SYMBOL_PSR_FLOOR if floor is None else floor
+        reasons: list[str] = []
+        for sym in sorted(str(x) for x in syms):
+            entry = per_symbol.get(sym)
+            psr = self._finite(entry.get("psr")) if isinstance(entry, dict) else None
+            if psr is None:
+                reasons.append(f"DSR input missing: no per-symbol PSR for {sym}")
+            elif not psr >= floor:
+                reasons.append(f"DSR per-symbol floor: {sym} PSR(SR>0)={psr:.3f} < {floor:.2f}")
+        return reasons
 
     def get_filtered_candidates(
         self,

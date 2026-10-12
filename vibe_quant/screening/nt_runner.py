@@ -998,15 +998,26 @@ class NTScreeningRunner:
             mtm_dd = closed_trade_drawdown(starting_balance, closed_net)
         else:
             mtm_dd = mark_to_market_max_drawdown(starting_balance, mtm_paths)
-            if (
-                self._collect_daily_returns
-                and start_ns is not None
-                and end_ns is not None
-                and end_ns > start_ns
-            ):
-                self.last_mtm_daily_returns = mark_to_market_daily_returns(
+            if start_ns is not None and end_ns is not None and end_ns > start_ns:
+                mtm_series = mark_to_market_daily_returns(
                     starting_balance, mtm_paths, start_ns, end_ns
                 )
+                if self._collect_daily_returns:
+                    self.last_mtm_daily_returns = mtm_series
+                # DSR inputs for EVERY run (bd vibe-quant-68630): the overfitting
+                # and screening DSR gates test the market-valued series, never
+                # the realized Sharpe above. NT's Sharpe drops day 0 (return vs
+                # the starting balance); so does this, like discovery's series.
+                if mtm_series is not None:
+                    from vibe_quant.overfitting.dsr import daily_sharpe_inputs
+
+                    mtm_values = mtm_series.without_first_day().values
+                    (
+                        metrics.mtm_sharpe_daily,
+                        metrics.mtm_skewness,
+                        metrics.mtm_kurtosis,
+                    ) = daily_sharpe_inputs(mtm_values)
+                    metrics.mtm_days = len(mtm_values)
         metrics.max_drawdown = mtm_dd
 
         return metrics

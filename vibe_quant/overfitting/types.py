@@ -78,6 +78,7 @@ class CandidateResult:
         dsr_result: Full DSR result (None if disabled).
         wfa_result: Full WFA result (None if disabled).
         cv_result: Full CV result (None if disabled).
+        dsr_fail_reason: Why DSR failed (None if it passed or was disabled).
     """
 
     sweep_result_id: int
@@ -93,6 +94,9 @@ class CandidateResult:
     dsr_result: DSRResult | None = None
     wfa_result: WFAResult | None = None
     cv_result: CVResult | None = None
+    # Why the DSR filter failed (missing MTM statistics, not significant, a
+    # symbol below the PSR floor); None when it passed or was disabled.
+    dsr_fail_reason: str | None = None
 
 
 @dataclass

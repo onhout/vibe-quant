@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from vibe_quant.errors import DataUnavailableError
 from vibe_quant.fees import FeeSchedule
-from vibe_quant.overfitting.dsr import DeflatedSharpeRatio, deannualize_sharpe
+from vibe_quant.overfitting.dsr import DeflatedSharpeRatio, mtm_dsr_calculate
 from vibe_quant.screening.grid import (
     build_parameter_grid,
     compute_pareto_front,
@@ -37,7 +37,6 @@ from vibe_quant.screening.types import (
     MetricFilters,
     ScreeningResult,
 )
-from vibe_quant.utils import compute_day_count
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -97,17 +96,17 @@ FAILED_BACKTEST_SHARPE = -999.0
 
 
 def _trial_sharpe_variance(results: list[BacktestMetrics]) -> float | None:
-    """Sample variance of trial Sharpes (daily units) for DSR.
+    """Sample variance of trial mark-to-market Sharpes (daily units) for DSR.
 
-    Only real measurements enter the variance: NaN / +-inf Sharpes (0-trade or
-    degenerate combos) and the crash sentinel ``FAILED_BACKTEST_SHARPE`` are
-    excluded -- a single NaN made the variance NaN and failed every candidate.
+    Same statistic as the tested one (``mtm_sharpe_daily``). Only real
+    measurements enter the variance: trials without MTM statistics (crashed /
+    stalled combos, unavailable series) and non-finite values are excluded.
     They still count toward the trial count N (they were tried).
     """
     sharpes = [
-        deannualize_sharpe(r.sharpe_ratio)
+        r.mtm_sharpe_daily
         for r in results
-        if math.isfinite(r.sharpe_ratio) and r.sharpe_ratio != FAILED_BACKTEST_SHARPE
+        if r.mtm_sharpe_daily is not None and math.isfinite(r.mtm_sharpe_daily)
     ]
     if len(sharpes) < 2:
         return None
@@ -247,25 +246,34 @@ class ScreeningPipeline:
             dsr = DeflatedSharpeRatio(significance_level=dsr_significance)
             # Every combo tried counts as a trial, including failed/NaN ones.
             num_trials = len(all_results)
-            # NT reports Sharpe annualized from daily returns ("252 days").
-            # DSR needs the statistic and T in the same sampling frequency,
-            # so de-annualize to daily units and use the window's day count
-            # as the observation count (not the bar count).
-            day_count = compute_day_count(self._start_date, self._end_date)
+            # DSR tests the MARK-TO-MARKET daily statistics (bd vibe-quant-68630),
+            # not NT's realized Sharpe (a multi-day trade books its whole PnL on
+            # its exit day there). The Sharpe is already per day and T is the
+            # length of that series. A result without MTM statistics fails.
             trials_sharpe_variance = _trial_sharpe_variance(all_results)
             dsr_passed = []
+            dsr_missing = 0
             for r in filtered:
-                num_obs = day_count if day_count else max(r.total_trades, 30)
-                result = dsr.calculate(
-                    observed_sharpe=deannualize_sharpe(r.sharpe_ratio),
-                    num_trials=num_trials,
-                    num_observations=num_obs,
-                    skewness=r.skewness,
-                    kurtosis=r.kurtosis,
+                result, reason = mtm_dsr_calculate(
+                    dsr,
+                    r.mtm_sharpe_daily,
+                    r.mtm_skewness,
+                    r.mtm_kurtosis,
+                    r.mtm_days,
+                    num_trials,
                     trials_sharpe_variance=trials_sharpe_variance,
                 )
-                if result.is_significant:
+                if reason is not None:
+                    dsr_missing += 1
+                if result is not None and result.is_significant:
                     dsr_passed.append(r)
+            if dsr_missing:
+                logger.warning(
+                    "DSR filter: %d/%d result(s) have no mark-to-market statistics "
+                    "and fail closed",
+                    dsr_missing,
+                    len(filtered),
+                )
             logger.info(
                 "DSR filter: %d/%d pass significance test (p<%.2f, %d trials)",
                 len(dsr_passed),
@@ -439,6 +447,10 @@ class ScreeningPipeline:
                     "execution_time_seconds": metrics.execution_time_seconds,
                     "skewness": metrics.skewness,
                     "kurtosis": metrics.kurtosis,
+                    "mtm_sharpe_daily": metrics.mtm_sharpe_daily,
+                    "mtm_skewness": metrics.mtm_skewness,
+                    "mtm_kurtosis": metrics.mtm_kurtosis,
+                    "mtm_days": metrics.mtm_days,
                     "is_pareto_optimal": is_pareto,
                 }
             )

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when adding new migrations to _migrate_add_columns. One-time data
 # migrations are additionally gated by ``PRAGMA user_version`` markers.
-SCHEMA_VERSION: int = 17
+SCHEMA_VERSION: int = 18
 
 SCHEMA_SQL = """
 -- Strategy definitions (DSL configs)
@@ -148,6 +148,10 @@ CREATE TABLE IF NOT EXISTS sweep_results (
     execution_time_seconds REAL,
     skewness REAL,
     kurtosis REAL,
+    mtm_sharpe_daily REAL,
+    mtm_skewness REAL,
+    mtm_kurtosis REAL,
+    mtm_days INTEGER,
     is_pareto_optimal BOOLEAN DEFAULT 0,
     passed_deflated_sharpe BOOLEAN,
     passed_walk_forward BOOLEAN,
@@ -352,6 +356,12 @@ def _migrate_add_columns(conn: sqlite3.Connection) -> None:
         ("sweep_results", "execution_time_seconds", "REAL"),
         ("sweep_results", "skewness", "REAL"),
         ("sweep_results", "kurtosis", "REAL"),
+        # Mark-to-market daily DSR inputs (per-day Sharpe, moments, series
+        # length); NULL on older rows = DSR fails closed (bd vibe-quant-68630).
+        ("sweep_results", "mtm_sharpe_daily", "REAL"),
+        ("sweep_results", "mtm_skewness", "REAL"),
+        ("sweep_results", "mtm_kurtosis", "REAL"),
+        ("sweep_results", "mtm_days", "INTEGER"),
         ("backtest_results", "skewness", "REAL"),
         ("backtest_results", "kurtosis", "REAL"),
         ("research_extractions", "proposed_indicators_json", "TEXT"),

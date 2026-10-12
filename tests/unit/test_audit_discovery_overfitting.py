@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 
 def _discovery_run(tmp_path: Path, *, sharpe: float, evaluated: int) -> tuple[Path, int]:
+    """Discovery run whose champion DSR record (MTM series) has SR ``sharpe`` ann, T=612."""
     db = tmp_path / "t.db"
     sm = StateManager(db)
     run_id = sm.create_backtest_run(
@@ -46,6 +47,13 @@ def _discovery_run(tmp_path: Path, *, sharpe: float, evaluated: int) -> tuple[Pa
                 "type": "discovery",
                 "evaluated": evaluated,
                 "train_dates": ["2024-01-01", "2025-09-05"],
+                "top_strategies": [{
+                    "dsr": {
+                        "input": "pooled_mtm_daily_returns", "observations": 612,
+                        "sharpe_daily": deannualize_sharpe(sharpe),
+                        "skewness": 0.0, "kurtosis": 3.0,
+                    },
+                }],
             }),
         },
     )
@@ -53,7 +61,7 @@ def _discovery_run(tmp_path: Path, *, sharpe: float, evaluated: int) -> tuple[Pa
     return db, run_id
 
 
-def test_dsr_on_ga_champion_uses_discovery_trials_and_train_days(tmp_path: Path) -> None:
+def test_dsr_on_ga_champion_uses_discovery_trials_and_mtm_series_length(tmp_path: Path) -> None:
     db, run_id = _discovery_run(tmp_path, sharpe=2.2, evaluated=6000)
     p = OverfittingPipeline(db)
     res = p.run(run_id=run_id, config=FilterConfig.dsr_only())
@@ -61,31 +69,33 @@ def test_dsr_on_ga_champion_uses_discovery_trials_and_train_days(tmp_path: Path)
     c = res.candidates[0]
     assert c.dsr_result is not None
     assert c.dsr_result.num_trials == 6000
-    train_days = (date(2025, 9, 5) - date(2024, 1, 1)).days  # 613
-    assert c.dsr_result.num_observations == train_days
+    series_days = 612  # train days (613) minus NT's dropped first day
+    assert c.dsr_result.num_observations == series_days
     ref = DeflatedSharpeRatio().calculate(
         observed_sharpe=deannualize_sharpe(2.2), num_trials=6000,
-        num_observations=train_days, skewness=0.0, kurtosis=3.0,
+        num_observations=series_days, skewness=0.0, kurtosis=3.0,
     )
     assert c.dsr_result.p_value == ref.p_value
     # 6000 GA trials: a 2.2 Sharpe is not significant (with N=1 it "passed")
     assert c.passed_dsr is False
 
 
-def test_dsr_observations_default_to_run_day_count(tmp_path: Path) -> None:
+def test_dsr_observations_are_mtm_series_length_not_run_day_count(tmp_path: Path) -> None:
     db = tmp_path / "t.db"
     sm = StateManager(db)
     sid = sm.create_strategy("s", {"timeframe": "4h"})
     rid = sm.create_backtest_run(sid, "screening", ["BTCUSDT"], "4h", "2022-01-01", "2022-12-31", {})
     sm.save_sweep_results_batch(rid, [
-        {"parameters": {"p": 1}, "sharpe_ratio": 1.0, "total_return": 0.1, "total_trades": 50},
+        {"parameters": {"p": 1}, "sharpe_ratio": 1.0, "total_return": 0.1, "total_trades": 50,
+         "mtm_sharpe_daily": deannualize_sharpe(1.0), "mtm_skewness": 0.0,
+         "mtm_kurtosis": 3.0, "mtm_days": 300},
     ])
     sm.close()
     p = OverfittingPipeline(db)
     res = p.run(run_id=rid, config=FilterConfig.dsr_only())
     p.close()
     assert res.candidates[0].dsr_result is not None
-    assert res.candidates[0].dsr_result.num_observations == 364  # not the old 252
+    assert res.candidates[0].dsr_result.num_observations == 300  # not the 364-day range
 
 
 def test_overfitting_cli_forwards_total_trials_and_derived_observations(
@@ -113,10 +123,15 @@ def test_overfitting_cli_forwards_total_trials_and_derived_observations(
 
 
 def _metrics(sr: float, trades: int = 100) -> BacktestMetrics:
-    return BacktestMetrics(
+    m = BacktestMetrics(
         parameters={}, sharpe_ratio=sr, profit_factor=1.5, max_drawdown=0.1,
         total_trades=trades, total_return=0.1,
     )
+    if sr != -999.0:  # the crash sentinel has no MTM statistics (nothing was measured)
+        # market-valued stats of the same Sharpe over the 365-day window
+        m.mtm_sharpe_daily = deannualize_sharpe(sr)
+        m.mtm_skewness, m.mtm_kurtosis, m.mtm_days = 0.0, 3.0, 365
+    return m
 
 
 def _screen(results: list[BacktestMetrics], start: str = "2024-01-01",

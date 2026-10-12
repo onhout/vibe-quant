@@ -421,3 +421,57 @@ def calculate_dsr(
         kurtosis=kurtosis,
         trials_sharpe_variance=trials_sharpe_variance,
     )
+
+
+def mtm_dsr_calculate(
+    dsr: DeflatedSharpeRatio,
+    sharpe_daily: float | None,
+    skewness: float | None,
+    kurtosis: float | None,
+    days: int | None,
+    num_trials: int,
+    trials_sharpe_variance: float | None = None,
+) -> tuple[DSRResult | None, str | None]:
+    """DSR of a stored mark-to-market daily statistic (bd vibe-quant-68630).
+
+    The statistic comes from the market-valued daily return series
+    (``mtm_sharpe_daily`` is already per DAY, no de-annualizing; ``days`` is
+    that series' length T), never from the realized-PnL Sharpe: a multi-day
+    trade books its whole PnL on its exit day there and inflates the Sharpe.
+    Moments are clamped like discovery's gate (skew <= 0, kurtosis >= 3): a
+    positive skew or thin tails would LOWER the estimator variance and the bar.
+
+    Fails closed: any missing / non-finite input or fewer than 2 observations
+    returns ``(None, reason)`` -- callers must treat that as "DSR failed".
+    """
+    absent = [
+        name
+        for name, v in (
+            ("mtm_sharpe_daily", sharpe_daily),
+            ("mtm_skewness", skewness),
+            ("mtm_kurtosis", kurtosis),
+            ("mtm_days", days),
+        )
+        if v is None
+    ]
+    if absent:
+        return None, f"DSR input missing: no mark-to-market statistics ({', '.join(absent)})"
+    if (
+        sharpe_daily is None
+        or skewness is None
+        or kurtosis is None
+        or days is None
+        or not all(math.isfinite(v) for v in (sharpe_daily, skewness, kurtosis, days))
+    ):
+        return None, "DSR input missing: non-finite mark-to-market statistics"
+    if days < 2:
+        return None, f"DSR input missing: mark-to-market series too short ({days} days)"
+    result = dsr.calculate(
+        observed_sharpe=sharpe_daily,
+        num_trials=num_trials,
+        num_observations=int(days),
+        skewness=min(skewness, 0.0),
+        kurtosis=max(kurtosis, 3.0),
+        trials_sharpe_variance=trials_sharpe_variance,
+    )
+    return result, None

@@ -1,7 +1,8 @@
 """Tests for DSR calculation fixes.
 
 Covers beads:
-- vibe-quant-edhju: pipeline loads stored skewness/kurtosis into DSR
+- vibe-quant-edhju: pipeline loads stored skewness/kurtosis into DSR (now the
+  mark-to-market moments, vibe-quant-68630)
 - vibe-quant-zmzzh: annualized Sharpe de-annualized to match observation units
 """
 
@@ -55,7 +56,7 @@ class TestComputeDayCount:
 
 
 class TestDsrUsesStoredMoments:
-    """The offline pipeline must feed stored return moments into DSR."""
+    """The offline pipeline must feed stored MTM return moments into DSR."""
 
     @pytest.fixture
     def db_path(self, tmp_path: Path) -> Path:
@@ -77,6 +78,8 @@ class TestDsrUsesStoredMoments:
                 total_return REAL, profit_factor REAL, win_rate REAL,
                 total_trades INTEGER, total_fees REAL, total_funding REAL,
                 execution_time_seconds REAL, skewness REAL, kurtosis REAL,
+                mtm_sharpe_daily REAL, mtm_skewness REAL, mtm_kurtosis REAL,
+                mtm_days INTEGER,
                 is_pareto_optimal BOOLEAN DEFAULT 0,
                 passed_deflated_sharpe BOOLEAN, passed_walk_forward BOOLEAN,
                 passed_purged_kfold BOOLEAN
@@ -98,10 +101,12 @@ class TestDsrUsesStoredMoments:
     ) -> float:
         conn = sqlite3.connect(str(db_path))
         conn.execute("DELETE FROM sweep_results")
+        # realized Sharpe 9.0 is a decoy: DSR must read the MTM columns (SR 3.0 ann)
         conn.execute(
             "INSERT INTO sweep_results (run_id, parameters, sharpe_ratio,"
-            " total_return, skewness, kurtosis) VALUES (1, '{}', 3.0, 0.5, ?, ?)",
-            (skewness, kurtosis),
+            " total_return, mtm_sharpe_daily, mtm_skewness, mtm_kurtosis, mtm_days)"
+            " VALUES (1, '{}', 9.0, 0.5, ?, ?, ?, 365)",
+            (deannualize_sharpe(3.0), skewness, kurtosis),
         )
         conn.commit()
         conn.close()
@@ -113,7 +118,6 @@ class TestDsrUsesStoredMoments:
                 config=FilterConfig(
                     enable_dsr=True, enable_wfa=False, enable_purged_kfold=False
                 ),
-                num_observations=365,
                 total_trials=100,
             )
         finally:
@@ -132,11 +136,24 @@ class TestDsrUsesStoredMoments:
         # significant (higher p) for a positive Sharpe.
         assert p_fat > p_normal
 
-    def test_null_moments_coalesce(self, db_path: Path) -> None:
-        """NULL skewness/kurtosis must not crash and match normal defaults."""
-        p_null = self._run_dsr(db_path, skewness=None, kurtosis=None)
-        p_normal = self._run_dsr(db_path, skewness=0.0, kurtosis=3.0)
-        assert p_null == pytest.approx(p_normal)
+    def test_null_moments_fail_closed(self, db_path: Path) -> None:
+        """NULL MTM moments are not defaulted to a normal distribution: DSR fails."""
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("DELETE FROM sweep_results")
+        conn.execute(
+            "INSERT INTO sweep_results (run_id, parameters, sharpe_ratio, total_return,"
+            " mtm_sharpe_daily, mtm_days) VALUES (1, '{}', 3.0, 0.5, 0.19, 365)"
+        )
+        conn.commit()
+        conn.close()
+        pipeline = OverfittingPipeline(db_path)
+        try:
+            result = pipeline.run(run_id=1, config=FilterConfig.dsr_only(), total_trials=100)
+        finally:
+            pipeline.close()
+        cand = result.candidates[0]
+        assert cand.dsr_result is None and cand.passed_dsr is False
+        assert cand.dsr_fail_reason is not None and "mtm_skewness" in cand.dsr_fail_reason
 
     def test_deannualized_units(self, db_path: Path) -> None:
         """Pipeline p-value must match a direct daily-units DSR calculation."""
