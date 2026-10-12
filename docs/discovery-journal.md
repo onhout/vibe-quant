@@ -4,6 +4,26 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-12: RESULT H-13 — REJECTED (OI flushes are followed by a bounce, but no more than random down days)
+
+Evaluator `scripts/research/h13/h13_flush_reversal.py` (DeepSeek, run once) and a blind re-implementation (Sonnet, never saw the evaluator) agree exactly: identical headline numbers, max per-event |Δnet| 4.3e-19. Spec: pre-registration 39709a1 + amendment 965c024 + conventions 139870c + erratum df14adc (funding mark looked 16 h ahead; fixed before the evaluator's run, raised by the evaluator).
+
+| Window B 2022-06-01..2026-09-30 | Value | Required | |
+|---|---|---|---|
+| (1) events n_B | 94 | ≥ 40 | PASS |
+| (2) mean net per event | 0.007647644291057807 | ≥ 0.005 | PASS |
+| (3) p vs random down-day holds | 0.11639418029098544 | ≤ 0.05 | **FAIL** |
+| (4) Sharpe of the sparse daily series | 0.7152855028102072 | ≥ 0.5 | PASS |
+| secondary p vs random any-day holds | 0.13074346282685867 | (report) | |
+
+1 event skipped (2026-10-07: catalog 1d closes end before t+3). Window A has no events (amendment). **Verdict: REJECT.** Buying the 4-coin basket for 3 days after a market-wide OI collapse on a down day earns +0.76% per event after costs and funding, but random down-day (and even random any-day) 3-day holds in the same window earn nearly as much: the bounce is the 2022-26 market's drift and ordinary down-day mean reversion, not a liquidation-flush premium.
+
+**Data caveats (downloader review, PASS on data fidelity):** (a) Vision `create_time` T holds the OI that Binance's API stamps T+5 min, so the 23:55 row is ≈ 00:00 OI, available seconds after the decision close — a tiny look-ahead that can only favour PASS, so it cannot change a REJECT; future OI tests must lag one 5-min row. (b) 188–473 zero-OI glitch rows per symbol (e.g. 2022-03-07/08) are treated as missing (OI ≤ 0), as specified. (c) ETH/SOL/BNB metrics start 2021-12-01.
+
+**Takeaway:** the first new-information test fails the same way the price tests did: the effect exists in raw returns but does not beat the right null. H-13-2 (top-trader vs retail positioning) and H-13-3 (OI build-up overlay) remain unregistered tickets; the long/short column mapping must be confirmed before H-13-2 is registered.
+
+---
+
 ## 2026-10-12: PRE-REGISTRATION H-13 — leverage-flush reversal on BTC/ETH/SOL/BNB (first test of open-interest data)
 
 Committed before any evaluator exists and before anyone has looked at metrics values (the downloader has fetched files; only a coverage report has been read). First use of new information: Binance Vision USDT-M `metrics` files (5-minute open interest, long/short ratios, taker ratio; from ~2020-09). Ticket by alpha-scout-r2 (three blind tickets; H-13-2 smart-vs-retail long/short ≈8% prior and H-13-3 OI build-up overlay ≈5% prior are NOT registered). Frozen ticket: `scripts/research/h13/H-13-1.json` (SHA-256 c89af0fecf156b44ffe67599a1cba7cc573e8d50b02d7d7d3ef74de6e10aaadf), with one chief change below.
