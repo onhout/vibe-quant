@@ -82,6 +82,9 @@ export function DiscoveryConfig({ onConvergenceChange }: DiscoveryConfigProps) {
   const [noBootstrapCi, setNoBootstrapCi] = useState(false);
   const [bootstrapMinSharpe, setBootstrapMinSharpe] = useState<string>("");
 
+  // Fee schedule (bd vibe-quant-2gyk1.4): charge the BNB-discounted rate.
+  const [bnbDiscount, setBnbDiscount] = useState(false);
+
   const parsedCrossWindowMonths = crossWindowMonths
     .split(",")
     .map((s) => Number.parseInt(s.trim(), 10))
@@ -203,6 +206,7 @@ export function DiscoveryConfig({ onConvergenceChange }: DiscoveryConfigProps) {
             Number.isFinite(Number(bootstrapMinSharpe)) && {
               bootstrap_min_sharpe: Number(bootstrapMinSharpe),
             }),
+          ...(bnbDiscount && { bnb_discount: true }),
         } as DiscoveryLaunchRequest,
       },
       {
@@ -456,6 +460,17 @@ export function DiscoveryConfig({ onConvergenceChange }: DiscoveryConfigProps) {
               placeholder="End date"
             />
           </div>
+        </div>
+        {/* Fee schedule (bd vibe-quant-2gyk1.4): BNB-discounted rates */}
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="disc-bnb-discount"
+            checked={bnbDiscount}
+            onCheckedChange={(v) => setBnbDiscount(v === true)}
+          />
+          <Label htmlFor="disc-bnb-discount" className="cursor-pointer text-xs">
+            Pay fees in BNB (−10%)
+          </Label>
         </div>
       </div>
 

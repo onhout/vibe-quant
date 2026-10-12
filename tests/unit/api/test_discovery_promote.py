@@ -641,3 +641,117 @@ async def test_promote_without_strategy_type_defaults_to_momentum(
     ).fetchone()
     assert row is not None
     assert row[0] == "momentum"
+
+
+# --- Fee schedule inheritance (bd vibe-quant-2gyk1.4, D3-2) ---
+
+
+def _popen_patches():
+    from unittest.mock import patch
+
+    return (
+        patch("subprocess.Popen"),
+        patch("vibe_quant.jobs.manager.BacktestJobManager.is_process_alive", return_value=True),
+    )
+
+
+_BNB_NOTES = {"fee_schedule": {"fee_tier": "VIP0", "bnb_discount": True}}
+
+
+@pytest.mark.parametrize("mode", ["screening", "validation"])
+async def test_promote_inherits_bnb_schedule_from_discovery_notes(
+    client: tuple[AsyncClient, StateManager], mode: str
+) -> None:
+    """A BNB discovery run's promoted child is judged at the SAME BNB schedule."""
+    ac, state = client
+    run_id = _create_discovery_run_with_results(state, notes_extra=_BNB_NOTES)
+    popen, alive = _popen_patches()
+    with popen as mock_popen, alive:
+        mock_popen.return_value.pid = 4242
+        r = await ac.post(f"/api/discovery/results/{run_id}/promote/0?mode={mode}")
+    assert r.status_code == 201, r.text
+    child = state.get_backtest_run(r.json()["run_id"])
+    assert child is not None
+    assert child["parameters"]["bnb_discount"] is True
+    assert child["parameters"]["promote_source"]["fee_schedule_source"] == "discovery_notes"
+
+
+async def test_promote_default_schedule_adds_no_fee_keys(
+    client: tuple[AsyncClient, StateManager],
+) -> None:
+    ac, state = client
+    run_id = _create_discovery_run_with_results(
+        state, notes_extra={"fee_schedule": {"fee_tier": "VIP0", "bnb_discount": False}}
+    )
+    popen, alive = _popen_patches()
+    with popen as mock_popen, alive:
+        mock_popen.return_value.pid = 4242
+        r = await ac.post(f"/api/discovery/results/{run_id}/promote/0")
+    assert r.status_code == 201, r.text
+    child = state.get_backtest_run(r.json()["run_id"])
+    assert child is not None
+    assert "bnb_discount" not in child["parameters"]
+    assert child["parameters"]["promote_source"]["fee_schedule_source"] == "discovery_notes"
+
+
+async def test_promote_legacy_run_without_schedule_defaults_to_vip0_and_says_so(
+    client: tuple[AsyncClient, StateManager],
+) -> None:
+    ac, state = client
+    run_id = _create_discovery_run_with_results(state)  # no notes.fee_schedule
+    popen, alive = _popen_patches()
+    with popen as mock_popen, alive:
+        mock_popen.return_value.pid = 4242
+        r = await ac.post(f"/api/discovery/results/{run_id}/promote/0")
+    assert r.status_code == 201, r.text
+    child = state.get_backtest_run(r.json()["run_id"])
+    assert child is not None
+    assert "bnb_discount" not in child["parameters"]
+    assert child["parameters"]["promote_source"]["fee_schedule_source"] == "legacy_default_vip0"
+
+
+async def test_promote_rejects_corrupt_recorded_schedule(
+    client: tuple[AsyncClient, StateManager],
+) -> None:
+    """Fail closed: a recorded schedule we cannot parse must not fall back to VIP0."""
+    ac, state = client
+    run_id = _create_discovery_run_with_results(
+        state, notes_extra={"fee_schedule": {"fee_tier": "VIP9", "bnb_discount": True}}
+    )
+    popen, alive = _popen_patches()
+    with popen, alive:
+        r = await ac.post(f"/api/discovery/results/{run_id}/promote/0")
+    assert r.status_code == 409, r.text
+    assert "fee_schedule" in r.json()["detail"]
+
+
+async def test_replay_inherits_bnb_schedule_from_discovery_notes(
+    client: tuple[AsyncClient, StateManager],
+) -> None:
+    ac, state = client
+    run_id = _create_discovery_run_with_results(state, notes_extra=_BNB_NOTES)
+    popen, alive = _popen_patches()
+    with popen as mock_popen, alive:
+        mock_popen.return_value.pid = 4242
+        r = await ac.post(f"/api/discovery/results/{run_id}/replay/0")
+    assert r.status_code == 201, r.text
+    child = state.get_backtest_run(r.json()["replay_run_id"])
+    assert child is not None
+    assert child["parameters"]["bnb_discount"] is True
+    assert child["parameters"]["fee_schedule_source"] == "discovery_notes"
+
+
+async def test_replay_legacy_run_defaults_to_vip0_and_says_so(
+    client: tuple[AsyncClient, StateManager],
+) -> None:
+    ac, state = client
+    run_id = _create_discovery_run_with_results(state)
+    popen, alive = _popen_patches()
+    with popen as mock_popen, alive:
+        mock_popen.return_value.pid = 4242
+        r = await ac.post(f"/api/discovery/results/{run_id}/replay/0")
+    assert r.status_code == 201, r.text
+    child = state.get_backtest_run(r.json()["replay_run_id"])
+    assert child is not None
+    assert "bnb_discount" not in child["parameters"]
+    assert child["parameters"]["fee_schedule_source"] == "legacy_default_vip0"

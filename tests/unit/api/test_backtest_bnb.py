@@ -1,8 +1,8 @@
 """BNB-discount launch field on the backtest API (bd vibe-quant-2gyk1.4, D3-3).
 
-Validation accepts ``bnb_discount`` and stores it in the run parameters;
-screening refuses it (validation-only until D3-2 lands screening support) and a
-non-bool value is rejected before any run is created.
+Validation and screening both accept ``bnb_discount`` and store it in the run
+parameters; a non-bool value is rejected before any run is created. A post-only
+``entry_order`` is validation-only and refused for screening (D3-2).
 """
 
 from __future__ import annotations
@@ -95,17 +95,37 @@ async def test_launch_default_omits_bnb_discount(client) -> None:
     assert "bnb_discount" not in run["parameters"]
 
 
-async def test_screening_rejects_bnb_discount(client) -> None:
-    ac, state, _job_mgr, _db = client
+async def test_screening_accepts_bnb_discount(client) -> None:
+    """D3-2: screening stores top-level bnb_discount, and nothing when default."""
+    ac, state, job_mgr, _db = client
 
-    r = await ac.post("/api/backtest/screening", json=_body(state, bnb=True))
+    opted_body = _body(state, bnb=True)
+    default_body = {k: v for k, v in opted_body.items() if k != "bnb_discount"}
 
-    assert r.status_code == 422
-    assert "validation-only" in r.json()["detail"]
+    with (
+        patch.object(job_mgr, "is_process_alive", return_value=True),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value.pid = 12345
+        opted_in = await ac.post("/api/backtest/screening", json=opted_body)
+        default = await ac.post("/api/backtest/screening", json=default_body)
+
+    assert opted_in.status_code == 201, opted_in.text
+    assert default.status_code == 201, default.text
+    run = state.get_backtest_run(opted_in.json()["id"])
+    assert run is not None
+    assert run["parameters"]["bnb_discount"] is True
+    default_run = state.get_backtest_run(default.json()["id"])
+    assert default_run is not None
+    assert "bnb_discount" not in default_run["parameters"]
 
 
-async def test_screening_rejects_nested_bnb_discount_param(client) -> None:
-    """bnb_discount nested inside ``parameters`` is refused too (fail closed)."""
+async def test_screening_accepts_nested_bnb_discount_param(client) -> None:
+    """D3-2 flips D3-3's refusal: a nested parameters.bnb_discount is applied too.
+
+    The screening CLI derives the venue schedule from the run parameters, so the
+    nested form reaches the runner exactly like the top-level field.
+    """
     ac, state, _job_mgr, _db = client
 
     r = await ac.post(
@@ -113,8 +133,36 @@ async def test_screening_rejects_nested_bnb_discount_param(client) -> None:
         json=_body(state, parameters={"initial_balance": 1000, "bnb_discount": True}),
     )
 
+    assert r.status_code == 201, r.text
+    run = state.get_backtest_run(r.json()["id"])
+    assert run is not None
+    assert run["parameters"]["bnb_discount"] is True
+
+
+async def test_screening_api_refuses_post_only(client) -> None:
+    """D3-2: a post-only entry_order is validation-only (422)."""
+    ac, state, _job_mgr, _db = client
+
+    r = await ac.post(
+        "/api/backtest/screening",
+        json=_body(state, parameters={"initial_balance": 1000, "entry_order": "post_only"}),
+    )
+
     assert r.status_code == 422
     assert "validation-only" in r.json()["detail"]
+
+
+async def test_screening_api_refuses_any_non_market_entry(client) -> None:
+    """Any non-market entry_order is refused, not just the literal post_only."""
+    ac, state, _job_mgr, _db = client
+
+    r = await ac.post(
+        "/api/backtest/screening",
+        json=_body(state, parameters={"initial_balance": 1000, "entry_order": "limit"}),
+    )
+
+    assert r.status_code == 422
+    assert "entry_order='limit'" in r.json()["detail"]
 
 
 async def test_bnb_discount_strict_bool(client) -> None:

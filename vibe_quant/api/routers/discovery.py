@@ -123,6 +123,44 @@ def _load_discovery_payload(state: StateManager, run_id: int) -> dict[str, objec
     return data if isinstance(data, dict) else {}
 
 
+def _inherited_fee_params(
+    state: StateManager, run_id: int
+) -> tuple[dict[str, object], str]:
+    """Fee-schedule run parameters for a child of discovery run ``run_id``.
+
+    The parent's ``notes.fee_schedule`` is authoritative: a promoted or replayed
+    child must be judged at the schedule the champion was found under. A run
+    that predates the schedule (no ``fee_schedule`` in its notes) was found at
+    VIP0 without BNB, so the child gets no fee keys and is tagged
+    ``legacy_default_vip0``. A recorded schedule that cannot be parsed fails
+    closed (409) instead of silently reverting to VIP0.
+
+    Returns:
+        ``(fee run parameters, source tag)``; the parameters are empty for the
+        default schedule so default children keep their stored parameters.
+    """
+    from vibe_quant.fees import DEFAULT_TIER, FeeSchedule
+
+    raw = _load_discovery_payload(state, run_id).get("fee_schedule")
+    if raw is None:
+        return {}, "legacy_default_vip0"
+    try:
+        if not isinstance(raw, dict):
+            raise ValueError(f"expected an object, got {raw!r}")
+        schedule = FeeSchedule.from_params(raw)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"discovery run {run_id} has an unreadable notes.fee_schedule: {exc}",
+        ) from exc
+    fee_params: dict[str, object] = {}
+    if schedule.bnb_discount:
+        fee_params["bnb_discount"] = True
+    if schedule.tier != DEFAULT_TIER:
+        fee_params["fee_tier"] = schedule.tier
+    return fee_params, "discovery_notes"
+
+
 def _validate_seed_run_compiler(state: StateManager, seed_run_id: int) -> None:
     """Reject warm-start when the seed run's compiler hash != current."""
     from vibe_quant.dsl.compiler import compiler_version_hash
@@ -274,6 +312,8 @@ def _discovery_cli_args(body: DiscoveryLaunchRequest, start_date: str, end_date:
         command.append("--no-bootstrap-ci")
     if body.bootstrap_min_sharpe is not None:
         command.extend(["--bootstrap-min-sharpe", str(body.bootstrap_min_sharpe)])
+    if body.bnb_discount:
+        command.append("--bnb-discount")
     return command
 
 
@@ -342,6 +382,8 @@ async def launch_discovery(
         params["no_bootstrap_ci"] = True
     if body.bootstrap_min_sharpe is not None:
         params["bootstrap_min_sharpe"] = body.bootstrap_min_sharpe
+    if body.bnb_discount:
+        params["bnb_discount"] = True
 
     timeframe = body.timeframes[0] if body.timeframes else "4h"
     today = datetime.now()
@@ -891,13 +933,17 @@ async def promote_discovered_strategy(
 
     # promote_source: lets the post-run drift check (bd-l6ml) find the genome
     # and records WHICH range was validated (OOS holdout vs full range).
+    # The child inherits the parent's fee schedule (bd vibe-quant-2gyk1.4).
+    fee_params, fee_source = _inherited_fee_params(state, run_id)
     run_parameters: dict[str, object] = {
         "promote_source": {
             "discovery_run_id": run_id,
             "strategy_index": strategy_index,
             "date_range": date_range,
             "holdout_dates": list(holdout_dates) if holdout_dates else None,
-        }
+            "fee_schedule_source": fee_source,
+        },
+        **fee_params,
     }
     backtest_run_id = state.create_backtest_run(
         strategy_id=strategy_id,
@@ -1004,6 +1050,7 @@ async def replay_discovered_strategy(
                 "trades against full_range_trades_sum and read Sharpe as the worst symbol."
             )
 
+    fee_params, fee_source = _inherited_fee_params(state, run_id)
     replay_run_id = state.create_backtest_run(
         strategy_id=None,
         run_mode="screening",
@@ -1011,7 +1058,12 @@ async def replay_discovered_strategy(
         timeframe=str(discovery_run.get("timeframe", "4h")),
         start_date=str(discovery_run.get("start_date", "")),
         end_date=str(discovery_run.get("end_date", "")),
-        parameters={"dsl_override": translated, "replay_note": metrics_note},
+        parameters={
+            "dsl_override": translated,
+            "replay_note": metrics_note,
+            "fee_schedule_source": fee_source,
+            **fee_params,
+        },
     )
 
     pid = _launch_backtest_job(state, jobs, replay_run_id, "screening")

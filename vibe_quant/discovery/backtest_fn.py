@@ -10,14 +10,16 @@ multiprocessing worker entrypoint, not the discovery CLI).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from vibe_quant.errors import DataUnavailableError
 
 if TYPE_CHECKING:
     from vibe_quant.data.fill_ticks import FillTickSet
     from vibe_quant.discovery.operators import StrategyChromosome
+    from vibe_quant.fees import FeeSchedule
     from vibe_quant.metrics import DailyReturns
+    from vibe_quant.screening.nt_runner import NTScreeningRunner
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,12 @@ class NTBacktestFn:
     see :meth:`_chain_window_series`; worst mode: the equal-weight pool of
     the symbols, plus ``symbol_daily`` per-symbol Sharpe inputs). It is the
     DSR gate's input only -- fitness and ranking never read it.
+
+    ``fee_schedule`` (bd vibe-quant-2gyk1.4) is venue-level and is passed to
+    every :class:`NTScreeningRunner` this callable builds, including the
+    holdout / cross-window / WFA factories. It must survive pickling into the
+    worker processes, so it is a plain picklable attribute. ``entry_order``
+    defaults to ``"market"``; post-only is validation-only and refused here.
     """
 
     def __init__(
@@ -72,7 +80,13 @@ class NTBacktestFn:
         symbol_agg: SymbolAgg = "portfolio",
         fill_ticks: FillTickSet | None = None,
         collect_daily_returns: bool = False,
+        fee_schedule: FeeSchedule | None = None,
+        entry_order: str = "market",
     ) -> None:
+        from vibe_quant.fees import FeeSchedule
+        from vibe_quant.screening.nt_runner import refuse_non_market_entry
+
+        refuse_non_market_entry(entry_order)
         self.symbols = symbols
         self.timeframe = timeframe
         self.start_date = start_date
@@ -85,6 +99,33 @@ class NTBacktestFn:
         # dataclass of paths: cheap to pickle); workers never build ticks.
         self.fill_ticks = fill_ticks
         self.collect_daily_returns = collect_daily_returns
+        self.entry_order = entry_order
+        self.fee_schedule = FeeSchedule() if fee_schedule is None else fee_schedule
+
+    def _make_runner(
+        self,
+        dsl_dict: dict[str, Any],
+        start_date: str,
+        end_date: str,
+        symbols: list[str] | None = None,
+    ) -> NTScreeningRunner:
+        """Build the screening runner for one window (fee schedule + entry order).
+
+        Single construction site: the venue-level fee schedule must reach every
+        runner this callable builds, in the parent or in a worker process.
+        """
+        from vibe_quant.screening.nt_runner import NTScreeningRunner
+
+        return NTScreeningRunner(
+            dsl_dict=dsl_dict,
+            symbols=self.symbols if symbols is None else symbols,
+            start_date=start_date,
+            end_date=end_date,
+            fill_ticks=self.fill_ticks,
+            collect_daily_returns=self.collect_daily_returns,
+            fee_schedule=self.fee_schedule,
+            entry_order=self.entry_order,
+        )
 
     def _run_single(
         self,
@@ -94,19 +135,11 @@ class NTBacktestFn:
         symbols: list[str] | None = None,
     ) -> dict[str, float | int]:
         from vibe_quant.discovery.genome import chromosome_to_dsl
-        from vibe_quant.screening.nt_runner import NTScreeningRunner
 
         dsl_dict = chromosome_to_dsl(chromosome)
         dsl_dict["timeframe"] = self.timeframe
 
-        runner = NTScreeningRunner(
-            dsl_dict=dsl_dict,
-            symbols=self.symbols if symbols is None else symbols,
-            start_date=start_date,
-            end_date=end_date,
-            fill_ticks=self.fill_ticks,
-            collect_daily_returns=self.collect_daily_returns,
-        )
+        runner = self._make_runner(dsl_dict, start_date, end_date, symbols)
         result = runner({})
 
         out: dict[str, float | int] = {

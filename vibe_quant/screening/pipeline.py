@@ -23,6 +23,7 @@ from multiprocessing import cpu_count
 from typing import TYPE_CHECKING, Any
 
 from vibe_quant.errors import DataUnavailableError
+from vibe_quant.fees import FeeSchedule
 from vibe_quant.overfitting.dsr import DeflatedSharpeRatio, deannualize_sharpe
 from vibe_quant.screening.grid import (
     build_parameter_grid,
@@ -39,7 +40,7 @@ from vibe_quant.screening.types import (
 from vibe_quant.utils import compute_day_count
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
     from pathlib import Path
 
     from vibe_quant.data.fill_ticks import FillTickSet
@@ -460,6 +461,7 @@ def create_screening_pipeline(
     start_date: str = "2024-01-01",
     end_date: str = "2024-12-31",
     catalog_path: str | None = None,
+    parameters: Mapping[str, Any] | None = None,
 ) -> ScreeningPipeline:
     """Factory function to create a screening pipeline.
 
@@ -474,10 +476,26 @@ def create_screening_pipeline(
         start_date: Start date (YYYY-MM-DD)
         end_date: End date (YYYY-MM-DD)
         catalog_path: Path to ParquetDataCatalog (uses default if None)
+        parameters: The run's launch parameters. The venue-level fee schedule
+            (``fee_tier`` / ``bnb_discount``) is derived from them with
+            :meth:`FeeSchedule.from_params`, so an API/CLI launch that stored
+            ``bnb_discount`` reaches the runner. A non-``"market"``
+            ``entry_order`` is refused here (post-only is validation-only,
+            bead vibe-quant-7eek0), before any engine exists.
 
     Returns:
         Configured ScreeningPipeline
+
+    Raises:
+        ValueError: ``parameters["entry_order"]`` is not ``"market"``.
     """
+    run_params: Mapping[str, Any] = parameters or {}
+    entry_order = str(run_params.get("entry_order", "market"))
+
+    from vibe_quant.screening.nt_runner import refuse_non_market_entry
+
+    refuse_non_market_entry(entry_order)
+
     if use_mock:
         runner: BacktestRunner = _run_mock_backtest
     else:
@@ -497,6 +515,8 @@ def create_screening_pipeline(
             fill_ticks=resolve_parent_fill_ticks(
                 dsl_dict, effective_symbols, start_date, end_date, catalog_path
             ),
+            fee_schedule=FeeSchedule.from_params(run_params),
+            entry_order=entry_order,
         )
     return ScreeningPipeline(
         dsl=dsl,

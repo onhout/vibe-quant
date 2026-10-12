@@ -337,3 +337,94 @@ async def test_max_workers_zero_rejected(
     with patch.object(job_mgr, "is_process_alive", return_value=True):
         r = await ac.post("/api/discovery/launch", json={**_BASE_BODY, "max_workers": 0})
     assert r.status_code == 422
+
+
+async def test_discovery_launch_bnb_in_params_and_argv(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager],
+) -> None:
+    """D3-2: bnb_discount=True lands in run params AND argv; default adds neither."""
+    ac, state, job_mgr = client
+
+    with (
+        patch.object(job_mgr, "is_process_alive", return_value=True),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value.pid = 12345
+        opted_in = await ac.post("/api/discovery/launch", json={**_BASE_BODY, "bnb_discount": True})
+        default = await ac.post("/api/discovery/launch", json=_BASE_BODY)
+
+    assert opted_in.status_code == 201, opted_in.text
+    assert default.status_code == 201, default.text
+
+    run = state.get_backtest_run(opted_in.json()["run_id"])
+    assert run is not None
+    assert run["parameters"]["bnb_discount"] is True
+    default_run = state.get_backtest_run(default.json()["run_id"])
+    assert default_run is not None
+    assert "bnb_discount" not in default_run["parameters"]
+
+    opted_args, default_args = (c.args[0] for c in mock_popen.call_args_list)
+    assert "--bnb-discount" in opted_args
+    assert "--bnb-discount" not in default_args
+
+
+@pytest.mark.parametrize("value", ["post_only", "POST_ONLY", "limit", "", None])
+async def test_discovery_launch_refuses_non_market_entry_order(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager], value: object
+) -> None:
+    """Discovery is market-only: any provided non-"market" entry_order is a 422, no run row."""
+    ac, state, job_mgr = client
+    before = state.conn.execute("SELECT COUNT(*) FROM backtest_runs").fetchone()[0]
+    with (
+        patch.object(job_mgr, "is_process_alive", return_value=True),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value.pid = 1
+        r = await ac.post("/api/discovery/launch", json={**_BASE_BODY, "entry_order": value})
+    assert r.status_code == 422, r.text
+    assert mock_popen.call_count == 0
+    assert state.conn.execute("SELECT COUNT(*) FROM backtest_runs").fetchone()[0] == before
+
+
+async def test_discovery_launch_accepts_explicit_market_entry_order(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager],
+) -> None:
+    ac, _state, job_mgr = client
+    with (
+        patch.object(job_mgr, "is_process_alive", return_value=True),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value.pid = 1
+        r = await ac.post("/api/discovery/launch", json={**_BASE_BODY, "entry_order": "market"})
+    assert r.status_code == 201, r.text
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"bnb_discounts": True}, {"bnb": True}, {"fee_tier": "VIP0"}, {"post_only": True}],
+)
+async def test_discovery_launch_rejects_unknown_fields(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager], extra: dict[str, object]
+) -> None:
+    """A mistyped knob (bnb_discounts) must 422, not run silently with defaults."""
+    ac, state, job_mgr = client
+    before = state.conn.execute("SELECT COUNT(*) FROM backtest_runs").fetchone()[0]
+    with (
+        patch.object(job_mgr, "is_process_alive", return_value=True),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value.pid = 1
+        r = await ac.post("/api/discovery/launch", json={**_BASE_BODY, **extra})
+    assert r.status_code == 422, r.text
+    assert mock_popen.call_count == 0
+    assert state.conn.execute("SELECT COUNT(*) FROM backtest_runs").fetchone()[0] == before
+
+
+@pytest.mark.parametrize("value", ["true", 1, "yes", None])
+async def test_discovery_launch_bnb_discount_must_be_a_bool(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager], value: object
+) -> None:
+    ac, _state, job_mgr = client
+    with patch.object(job_mgr, "is_process_alive", return_value=True):
+        r = await ac.post("/api/discovery/launch", json={**_BASE_BODY, "bnb_discount": value})
+    assert r.status_code == 422, r.text

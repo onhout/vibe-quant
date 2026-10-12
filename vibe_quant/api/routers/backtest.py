@@ -96,11 +96,23 @@ async def launch_screening(
     ws: WsMgr,
 ) -> BacktestRunResponse:
     _ensure_strategy(state, body.strategy_id)
-    if body.bnb_discount or body.parameters.get("bnb_discount"):
+    # Post-only maker entries are validation-only (screening fills resting
+    # limits against the whole strategy bar, so parity is unproven) — refuse
+    # before any run row exists (bd vibe-quant-2gyk1.4).
+    entry_order = body.parameters.get("entry_order", "market")
+    if entry_order != "market":
         raise HTTPException(
             status_code=422,
-            detail="bnb_discount is validation-only until screening support lands",
+            detail=(
+                f"entry_order={entry_order!r} is validation-only "
+                "(screening maker-fill parity unproven, bead vibe-quant-7eek0)"
+            ),
         )
+    # The fee schedule is venue-level. Store bnb_discount only when set, so
+    # default runs' stored parameters are unchanged.
+    parameters = dict(body.parameters)
+    if body.bnb_discount:
+        parameters["bnb_discount"] = True
     run_id = state.create_backtest_run(
         strategy_id=body.strategy_id,
         run_mode="screening",
@@ -108,7 +120,7 @@ async def launch_screening(
         timeframe=body.timeframe,
         start_date=body.start_date,
         end_date=body.end_date,
-        parameters=body.parameters,
+        parameters=parameters,
         latency_preset=body.latency_preset,
     )
 

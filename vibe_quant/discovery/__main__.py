@@ -20,6 +20,7 @@ from vibe_quant.discovery.pipeline import (
     DiscoveryPipeline,
     DiscoveryResult,
 )
+from vibe_quant.fees import DEFAULT_TIER, FeeSchedule
 from vibe_quant.utils import compute_day_count, log_dir
 
 logger = logging.getLogger(__name__)
@@ -81,11 +82,19 @@ def _make_nt_backtest_fn(
     windows: list[tuple[str, str]] | None = None,
     min_trades: int = 0,
     symbol_agg: SymbolAgg = "portfolio",
+    *,
+    fee_schedule: FeeSchedule,
+    entry_order: str,
 ) -> NTBacktestFn:
-    """Create a picklable backtest function using real NautilusTrader screening runner."""
+    """Create a picklable backtest function using real NautilusTrader screening runner.
+
+    ``fee_schedule`` and ``entry_order`` are required (no defaults) so a new
+    call site cannot silently run at VIP0 while the rest of the run is on BNB
+    (bd vibe-quant-2gyk1.4).
+    """
     return NTBacktestFn(
         symbols, timeframe, start_date, end_date, windows=windows, min_trades=min_trades,
-        symbol_agg=symbol_agg,
+        symbol_agg=symbol_agg, fee_schedule=fee_schedule, entry_order=entry_order,
     )
 
 
@@ -541,9 +550,11 @@ def _run_provenance_notes(
     bootstrap_min_sharpe: float,
     holdout_min_sharpe: float,
     symbols: list[str],
+    fee_schedule: FeeSchedule | None = None,
     prior_run_ids: list[int] | None = None,
 ) -> dict[str, object]:
     """Run-level notes shared by the champion and zero-champion outcomes."""
+    schedule = fee_schedule if fee_schedule is not None else FeeSchedule()
     notes: dict[str, object] = {
         "type": "discovery",
         "generations": len(result.generations),
@@ -580,6 +591,9 @@ def _run_provenance_notes(
         # Single-seed: the GA seed. Multi-seed: base; seed i = base + i * 7919.
         "seed": seed,
         "bootstrap_min_sharpe": bootstrap_min_sharpe,
+        # Venue-level fee schedule (bd vibe-quant-2gyk1.4): the same schedule
+        # every screening backtest of this run used.
+        "fee_schedule": schedule.to_notes(),
     }
     if symbol_agg == "worst":
         # GA rank score over the per-symbol adjusted fitness; champions still
@@ -887,6 +901,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable the fail-closed buy-and-hold champion gate.",
     )
     parser.add_argument(
+        "--fee-tier",
+        type=str,
+        default=DEFAULT_TIER,
+        help="Binance USDT-M VIP fee tier for every screening backtest of this "
+        "run (default: VIP0).",
+    )
+    parser.add_argument(
+        "--bnb-discount",
+        action="store_true",
+        help="Charge the BNB-discounted fee rate (x0.9: VIP0 maker 0.00018 / "
+        "taker 0.00045) instead of the tier rate.",
+    )
+    parser.add_argument(
         "--immigrant-fraction",
         type=float,
         default=0.15,
@@ -973,6 +1000,24 @@ def main() -> int:
             if args.indicator_pool
             else None
         )
+
+        # Venue-level fee schedule (bd vibe-quant-2gyk1.4) shared by every
+        # screening backtest of this run (train, holdout, cross-window, WFA).
+        # The entry-order mode comes from the run parameters: post-only is
+        # validation-only and NTBacktestFn refuses it before any engine runs.
+        fee_schedule = FeeSchedule(tier=args.fee_tier, bnb_discount=args.bnb_discount)
+        raw_run_params = run.get("parameters") or {}
+        if isinstance(raw_run_params, str):
+            import json as _json
+
+            try:
+                raw_run_params = _json.loads(raw_run_params)
+            except (ValueError, TypeError):
+                raw_run_params = {}
+        if not isinstance(raw_run_params, dict):
+            raw_run_params = {}
+        entry_order = str(raw_run_params.get("entry_order", "market"))
+        logger.info("Discovery fee schedule: %s", fee_schedule.to_notes())
 
         # Train/test split + eval/cross/WFA windows: one shared check (the API
         # runs the same plan_from_args before creating a run row).
@@ -1086,6 +1131,8 @@ def main() -> int:
                 windows=eval_windows,
                 min_trades=config.min_trades,
                 symbol_agg=args.symbol_agg,
+                fee_schedule=fee_schedule,
+                entry_order=entry_order,
             )
 
         # Create holdout backtest function if train/test split enabled
@@ -1100,6 +1147,8 @@ def main() -> int:
                     start_date=holdout_start,
                     end_date=holdout_end,
                     symbol_agg=args.symbol_agg,
+                    fee_schedule=fee_schedule,
+                    entry_order=entry_order,
                 )
         elif split_ratio <= 0:
             logger.warning(
@@ -1116,9 +1165,14 @@ def main() -> int:
                 _syms = symbols
                 _tf = args.timeframe
                 _agg: SymbolAgg = args.symbol_agg
+                _fee = fee_schedule
+                _entry = entry_order
 
                 def backtest_fn_factory(s: str, e: str) -> NTBacktestFn:
-                    return NTBacktestFn(_syms, _tf, s, e, symbol_agg=_agg)
+                    return NTBacktestFn(
+                        _syms, _tf, s, e, symbol_agg=_agg, fee_schedule=_fee,
+                        entry_order=_entry,
+                    )
 
         # Load seed chromosomes from prior run if requested
         seed_chromosomes = None
@@ -1192,6 +1246,7 @@ def main() -> int:
             bootstrap_min_sharpe=args.bootstrap_min_sharpe,
             holdout_min_sharpe=args.holdout_min_sharpe,
             symbols=symbols,
+            fee_schedule=fee_schedule,
             prior_run_ids=prior_run_ids,
         )
 
@@ -1274,6 +1329,8 @@ def main() -> int:
                 start_date=args.start_date,
                 end_date=args.end_date,
                 symbol_agg=args.symbol_agg,
+                fee_schedule=fee_schedule,
+                entry_order=entry_order,
             )
             if needs_full_range
             else None
@@ -1358,6 +1415,8 @@ def main() -> int:
                     start_date=result.train_dates[0],
                     end_date=result.train_dates[1],
                     symbol_agg=args.symbol_agg,
+                    fee_schedule=fee_schedule,
+                    entry_order=entry_order,
                 )(best_chrom)
                 train_return = float(train_metrics.get("total_return", 0.0))
             else:

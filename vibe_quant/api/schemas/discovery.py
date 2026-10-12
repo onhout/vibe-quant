@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 
 class DiscoveryLaunchRequest(BaseModel):
+    # Unknown fields are an error: a mistyped knob (``bnb_discounts``) used to be
+    # dropped silently and launch a default-fee run (bd vibe-quant-2gyk1.4).
+    model_config = ConfigDict(extra="forbid")
+
     population: int = Field(default=20, ge=2)
     generations: int = Field(default=15, ge=1)
     mutation_rate: float = Field(default=0.1, ge=0, le=1)
@@ -40,6 +44,26 @@ class DiscoveryLaunchRequest(BaseModel):
     bootstrap_min_sharpe: float | None = None  # override timeframe-aware default (0.5 for 1m, 1.0 otherwise)
     seed: int | None = Field(default=None, ge=0, lt=2**32)  # RNG seed to replay a run; None = random
     max_workers: int = Field(default=4, ge=1, le=64)  # backtest processes for this run
+    # Charge the BNB-discounted (x0.9) fee schedule on every screening backtest
+    # of this discovery (bd vibe-quant-2gyk1.4). Recorded in run parameters and
+    # forwarded to the CLI only when true; the default keeps VIP0.
+    bnb_discount: StrictBool = False
+    # Discovery screens with market entries only: post-only maker entries are
+    # validation-only (screening maker-fill parity unproven, bead
+    # vibe-quant-7eek0). Declared so an explicit non-market value fails loudly
+    # instead of being ignored; never forwarded to the run.
+    entry_order: str = "market"
+
+    @field_validator("entry_order")
+    @classmethod
+    def _market_entries_only(cls, value: str) -> str:
+        if value != "market":
+            msg = (
+                f"entry_order={value!r} is validation-only "
+                "(screening maker-fill parity unproven, bead vibe-quant-7eek0)"
+            )
+            raise ValueError(msg)
+        return value
 
     @model_validator(mode="after")
     def _elite_below_population(self) -> DiscoveryLaunchRequest:

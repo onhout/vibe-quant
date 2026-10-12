@@ -102,6 +102,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         start_date = run_config["start_date"]
         end_date = run_config["end_date"]
         parameters = run_config.get("parameters", {})
+        if not isinstance(parameters, dict):
+            parameters = {}
         sweep_params = parameters.get("sweep", {})
 
         # Apply sweep overrides to DSL if present
@@ -110,11 +112,21 @@ def cmd_run(args: argparse.Namespace) -> int:
             dsl_dict["sweep"] = sweep_params
             dsl = StrategyDSL.model_validate(dsl_dict)
 
+        # Fee schedule is venue-level (bd vibe-quant-2gyk1.4). The run's own
+        # parameters record ``bnb_discount`` when the launch used it and
+        # screening runs have no ``backtest_results`` row to hold a notes
+        # payload, so the effective schedule is logged into the run log.
+        from vibe_quant.fees import FeeSchedule
+
+        fee_schedule = FeeSchedule.from_params(parameters)
+        print(f"Screening fee schedule: {fee_schedule.to_notes()}")
+
         pipeline = create_screening_pipeline(
             dsl,
             symbols=symbols,
             start_date=start_date,
             end_date=end_date,
+            parameters=parameters,
         )
         result = pipeline.run()
         pipeline.save_results(result, state, args.run_id)

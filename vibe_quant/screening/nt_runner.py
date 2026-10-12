@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from vibe_quant.errors import DataUnavailableError
+from vibe_quant.fees import FeeSchedule
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -25,6 +26,24 @@ if TYPE_CHECKING:
     from vibe_quant.validation.venue import VenueConfig
 
 logger = logging.getLogger(__name__)
+
+
+def refuse_non_market_entry(entry_order: str) -> None:
+    """Fail closed on a post-only entry before any engine is built.
+
+    Maker entries are validated only in the validation runner (resting limits
+    priced at release). Screening fills resting limits against the whole
+    strategy bar, so parity with validation is unproven (bead vibe-quant-7eek0)
+    and a post-only screening/discovery run must never silently fall back to
+    market entries.
+    """
+    if entry_order != "market":
+        msg = (
+            f"entry_order={entry_order!r} is validation-only "
+            "(screening maker-fill parity unproven, bead vibe-quant-7eek0)"
+        )
+        raise ValueError(msg)
+
 
 # Process-level compile cache: DSL-content key -> (module_path, strategy_cls,
 # config_cls, timeframes, strategy timeframe). Multi-window evals
@@ -229,6 +248,8 @@ class NTScreeningRunner:
         funding_archive_path: str | None = None,
         fill_ticks: FillTickSet | None = None,
         collect_daily_returns: bool = False,
+        fee_schedule: FeeSchedule | None = None,
+        entry_order: str = "market",
     ) -> None:
         """Initialize NTScreeningRunner.
 
@@ -250,7 +271,21 @@ class NTScreeningRunner:
                 daily balance returns in ``last_daily_returns`` and its daily
                 mark-to-market returns in ``last_mtm_daily_returns`` (neither is
                 ever put into BacktestMetrics).
+            fee_schedule: Binance fee schedule (VIP tier + optional BNB
+                discount) applied to the screening venue. None = the default
+                (VIP0, no BNB), which keeps NT's MakerTakerFeeModel path and
+                every pre-existing number bit-identical (bd vibe-quant-2gyk1.4).
+            entry_order: Entry order type. Only ``"market"`` is supported:
+                post-only maker entries are validation-only (screening
+                maker-fill parity unproven, bead vibe-quant-7eek0) and raise
+                before any engine is built.
+
+        Raises:
+            ValueError: ``entry_order`` is not ``"market"``.
         """
+        refuse_non_market_entry(entry_order)
+        self._entry_order = entry_order
+        self._fee_schedule = FeeSchedule() if fee_schedule is None else fee_schedule
         self._collect_daily_returns = collect_daily_returns
         self.last_daily_returns: DailyReturns | None = None
         self.last_mtm_daily_returns: DailyReturns | None = None
@@ -587,11 +622,14 @@ class NTScreeningRunner:
         )
         return run_config, tick_dirs
 
-    @staticmethod
-    def _venue_config() -> VenueConfig:
+    def _venue_config(self) -> VenueConfig:
+        from dataclasses import replace
+
         from vibe_quant.validation.venue import create_venue_config_for_screening
 
-        return create_venue_config_for_screening()
+        return replace(
+            create_venue_config_for_screening(), fee_schedule=self._fee_schedule
+        )
 
     def _run_backtest(self, params: dict[str, float | int], start_time: float) -> BacktestMetrics:
         """Execute the NautilusTrader backtest."""
@@ -848,6 +886,7 @@ class NTScreeningRunner:
             catalog_path=catalog_path,
             start_ns=start_ns,
             end_ns=end_ns,
+            taker_fee=self._fee_schedule.taker_rate,
         )
         trade_inputs: list[tuple[Any, OpenPositionMark | None]] = [(p, None) for p in closed]
         trade_inputs.extend((mark.position, mark) for mark in open_marks)

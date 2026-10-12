@@ -64,4 +64,6 @@ export interface DiscoveryLaunchRequest {
    * @maximum 64
    */
   max_workers?: number;
+  bnb_discount?: boolean;
+  entry_order?: string;
 }

@@ -5971,8 +5971,19 @@
             "minimum": 1.0,
             "title": "Max Workers",
             "default": 4
+          },
+          "bnb_discount": {
+            "type": "boolean",
+            "title": "Bnb Discount",
+            "default": false
+          },
+          "entry_order": {
+            "type": "string",
+            "title": "Entry Order",
+            "default": "market"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "DiscoveryLaunchRequest"
       },
