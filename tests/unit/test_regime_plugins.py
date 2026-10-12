@@ -278,8 +278,14 @@ def test_real_data_window_before_ref_start_raises() -> None:
 
     if not Path("data/catalog/data/bar/BTCUSDT-PERP.BINANCE-1-DAY-LAST-EXTERNAL").is_dir():
         pytest.skip("BTC 1d catalog data not available")
-    with pytest.raises(AuxDataUnavailableError):
-        _regime_runner("2021-06-01", "2024-12-31")({})
+    # Window starts the day after the first BTC daily close: inside the 3-day
+    # preflight margin whatever history the catalog holds (a fixed date broke
+    # when 2020-21 was ingested).
+    _, ts, _ = aux_data._ref_bars("BTCUSDT", "1d", refresh=True)
+    start = pd.Timestamp(int(ts[0]), unit="ns") + pd.Timedelta(days=1)
+    end = start + pd.Timedelta(days=180)
+    with pytest.raises(AuxDataUnavailableError, match="start after the requested window"):
+        _regime_runner(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))({})
 
 
 def test_context_nan_after_valid_value_blocks_entry_at_bar_level() -> None:
