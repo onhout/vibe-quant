@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from vibe_quant.db.state_manager import StateManager
 from vibe_quant.dsl.compiler import StrategyCompiler
 from vibe_quant.dsl.parser import validate_strategy_dict
+from vibe_quant.fees import FeeSchedule
 from vibe_quant.logging.events import Event, EventType, create_event
 from vibe_quant.logging.writer import EventWriter
 from vibe_quant.paper.config import (
@@ -493,10 +494,27 @@ class PaperTradingNode:
                     f"entry_order={entry_order!r}; paper trading supports only "
                     "'market' entries (post-only maker entries need a risk review)"
                 )
+            # The fee schedule is venue-level: paper trades a real Binance
+            # account whose commission comes from the exchange, so the
+            # validated schedule is reported (never applied to the node or
+            # forwarded to the strategy). An invalid schedule fails closed,
+            # exactly like validation does.
+            raw_params = run.get("parameters")
+            run_params: dict[str, object] = raw_params if isinstance(raw_params, dict) else {}
+            try:
+                fee_schedule = FeeSchedule.from_params(run_params)
+            except ValueError as exc:
+                raise ConfigurationError(
+                    f"Validation run {cfg.validation_run_id} has invalid fee schedule "
+                    f"parameters: {exc}"
+                ) from exc
             base_params = {
                 k: v for k, v in raw.items() if k in fields and k not in _BACKTEST_ONLY_PARAMS
             }
-            dropped = sorted(set(raw) - set(base_params))
+            # Fee keys never reach the strategy config; name them explicitly so a
+            # non-default schedule is not silently dropped from the log either.
+            venue_fields = [k for k in ("fee_tier", "bnb_discount") if k in run_params]
+            dropped = sorted((set(raw) - set(base_params)) | set(venue_fields))
             if dropped:
                 logger.info(
                     "validation run %d params not applied to the live strategy "
@@ -511,6 +529,7 @@ class PaperTradingNode:
                 "strategy_params": dict(base_params),
                 "leverage": leverage_f,
                 "margin_type": "CROSSED",
+                "fee_schedule": fee_schedule.to_notes(),
             }
 
         if not symbols:
@@ -573,6 +592,22 @@ class PaperTradingNode:
         if validated.get("symbols") != resolved.symbols:
             diff.append(
                 {"field": "symbols", "validated": validated.get("symbols"), "paper": resolved.symbols}
+            )
+        # A non-default validated fee schedule cannot be reproduced by paper: the
+        # live Binance account charges the exchange's own commission. Surface it
+        # so a completed BNB run never claims an exact match without fee evidence.
+        fee = validated.get("fee_schedule")
+        if isinstance(fee, dict) and not FeeSchedule.from_params(fee).is_default:
+            diff.append(
+                {
+                    "field": "fee_schedule",
+                    "validated": fee,
+                    "paper": "exchange commission (Binance live fee model)",
+                    "note": (
+                        "live fees come from the exchange; the BNB/fee-tier "
+                        "assumption is unverified"
+                    ),
+                }
             )
         return diff
 

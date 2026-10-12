@@ -96,6 +96,11 @@ async def launch_screening(
     ws: WsMgr,
 ) -> BacktestRunResponse:
     _ensure_strategy(state, body.strategy_id)
+    if body.bnb_discount or body.parameters.get("bnb_discount"):
+        raise HTTPException(
+            status_code=422,
+            detail="bnb_discount is validation-only until screening support lands",
+        )
     run_id = state.create_backtest_run(
         strategy_id=body.strategy_id,
         run_mode="screening",
@@ -148,6 +153,11 @@ async def launch_validation(
     ws: WsMgr,
 ) -> BacktestRunResponse:
     _ensure_strategy(state, body.strategy_id)
+    # The fee schedule is venue-level. Store bnb_discount only when set, so
+    # default runs' stored parameters are unchanged.
+    parameters = dict(body.parameters)
+    if body.bnb_discount:
+        parameters["bnb_discount"] = True
     run_id = state.create_backtest_run(
         strategy_id=body.strategy_id,
         run_mode="validation",
@@ -155,7 +165,7 @@ async def launch_validation(
         timeframe=body.timeframe,
         start_date=body.start_date,
         end_date=body.end_date,
-        parameters=body.parameters,
+        parameters=parameters,
         latency_preset=body.latency_preset,
     )
 

@@ -14,4 +14,5 @@ export interface BacktestLaunchRequest {
   end_date: string;
   parameters: BacktestLaunchRequestParameters;
   latency_preset?: string | null;
+  bnb_discount?: boolean;
 }

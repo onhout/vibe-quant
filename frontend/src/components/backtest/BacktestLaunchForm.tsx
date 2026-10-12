@@ -51,6 +51,7 @@ export function BacktestLaunchForm() {
   const [timeframe, setTimeframe] = useState("1m");
   // Validation-only fields
   const [latencyPreset, setLatencyPreset] = useState("");
+  const [bnbDiscount, setBnbDiscount] = useState(false);
   // Sweep state
   const [sweepEnabled, setSweepEnabled] = useState(false);
   const [sweepConfig, setSweepConfig] = useState<SweepConfig>({ params: [] });
@@ -190,6 +191,7 @@ export function BacktestLaunchForm() {
       },
       ...(mode === "validation" && {
         latency_preset: latencyPreset && latencyPreset !== "__none__" ? latencyPreset : null,
+        ...(bnbDiscount && { bnb_discount: true }),
       }),
     };
 
@@ -442,6 +444,18 @@ export function BacktestLaunchForm() {
                   Validation releases orders on each symbol's next 1m bar; latency presets apply to
                   tick data only.
                 </p>
+              </div>
+
+              {/* BNB fee discount */}
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="bnb-discount"
+                  checked={bnbDiscount}
+                  onCheckedChange={(v) => setBnbDiscount(v === true)}
+                />
+                <Label htmlFor="bnb-discount" className="cursor-pointer">
+                  Pay fees in BNB (−10%)
+                </Label>
               </div>
             </div>
           )}

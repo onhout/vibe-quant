@@ -737,7 +737,14 @@ def extract_trades(
     # Positions still open when the engine stopped (with latency the on_stop
     # flatten order is still in flight) used to vanish from trades and
     # return. Mark them at the last execution-bar close instead, charging an
-    # estimated taker exit fee.
+    # estimated taker exit fee, priced at the run's fee schedule (a real
+    # VenueConfig exposes fee_schedule; fall back to the venue's taker rate).
+    fee_schedule = getattr(venue_config, "fee_schedule", None)
+    open_taker_fee = (
+        fee_schedule.taker_rate
+        if fee_schedule is not None
+        else getattr(venue_config, "taker_fee", None)
+    )
     open_marks = mark_open_positions(
         engine,
         still_open,
@@ -745,6 +752,7 @@ def extract_trades(
         catalog_path=catalog_path,
         start_ns=window_start_ns,
         end_ns=window_end_ns,
+        taker_fee=open_taker_fee,
     )
 
     if not positions and not open_marks:

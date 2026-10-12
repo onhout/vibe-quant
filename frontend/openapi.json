@@ -4509,6 +4509,11 @@
               }
             ],
             "title": "Latency Preset"
+          },
+          "bnb_discount": {
+            "type": "boolean",
+            "title": "Bnb Discount",
+            "default": false
           }
         },
         "additionalProperties": false,

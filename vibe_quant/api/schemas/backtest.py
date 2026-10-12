@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, StrictBool, field_validator, model_validator
 
 from vibe_quant.api.schemas._validators import KNOWN_TIMEFRAMES, check_date_range, clean_symbols
 
@@ -30,6 +30,9 @@ class BacktestLaunchRequest(BaseModel):
     end_date: str
     parameters: dict[str, object]
     latency_preset: str | None = None
+    # Validation-only: charge the BNB-discounted (x0.9) fee schedule. Stored
+    # into the run parameters only when true; screening refuses it (D3-2).
+    bnb_discount: StrictBool = False
 
     @field_validator("symbols")
     @classmethod

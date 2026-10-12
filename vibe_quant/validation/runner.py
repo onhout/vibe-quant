@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from vibe_quant.db.state_manager import StateManager
 from vibe_quant.dsl.compiler import StrategyCompiler
 from vibe_quant.dsl.parser import validate_strategy_dict
+from vibe_quant.fees import FeeSchedule
 from vibe_quant.logging.events import EventType, create_event
 from vibe_quant.logging.writer import EventWriter
 from vibe_quant.metrics import profit_factor
@@ -153,13 +154,18 @@ class ValidationRunner:
         effective_latency = self._resolve_latency(run_config, latency_preset)
 
         # Configure venue (timeframe-aware: no latency model for sub-5m bars
-        # without detail data, nor with detail data -- own-bar release instead)
-        venue_config = self._create_venue_config(
-            run_config,
-            effective_latency,
-            timeframe=dsl.timeframe,
-            has_detail_data=effective_detail is not None,
-        )
+        # without detail data, nor with detail data -- own-bar release instead).
+        # A bad fee parameter fails the run rather than silently defaulting.
+        try:
+            venue_config = self._create_venue_config(
+                run_config,
+                effective_latency,
+                timeframe=dsl.timeframe,
+                has_detail_data=effective_detail is not None,
+            )
+        except ValidationRunnerError as exc:
+            self._state.update_backtest_run_status(run_id, "failed", error_message=str(exc))
+            raise
 
         # Update run status to running
         self._state.update_backtest_run_status(run_id, "running")
@@ -218,6 +224,7 @@ class ValidationRunner:
             if window_note is not None:
                 result.notes["data_window"] = window_note
             result.notes.update(self._execution_notes(run_config, effective_detail))
+            result.notes["fee_schedule"] = venue_config.fee_schedule.to_notes()
             if result.funding_fallback_settlements:
                 result.notes["funding"] = {
                     "fallback_settlements": result.funding_fallback_settlements,
@@ -330,12 +337,16 @@ class ValidationRunner:
             self._state.update_backtest_run_status(run_id, "failed", error_message=str(exc))
             raise
         effective_latency = self._resolve_latency(run_config, latency_preset)
-        venue_config = self._create_venue_config(
-            run_config,
-            effective_latency,
-            timeframe=dsl.timeframe,
-            has_detail_data=effective_detail is not None,
-        )
+        try:
+            venue_config = self._create_venue_config(
+                run_config,
+                effective_latency,
+                timeframe=dsl.timeframe,
+                has_detail_data=effective_detail is not None,
+            )
+        except ValidationRunnerError as exc:
+            self._state.update_backtest_run_status(run_id, "failed", error_message=str(exc))
+            raise
 
         range_start = self._parse_run_date(run_config.get("start_date"), "start_date")
         range_end = self._parse_run_date(run_config.get("end_date"), "end_date")
@@ -429,6 +440,7 @@ class ValidationRunner:
             aggregate.execution_time_seconds = time.monotonic() - start_time
             self._store_results(run_id, aggregate)
             aggregate.notes.update(self._execution_notes(run_config, effective_detail))
+            aggregate.notes["fee_schedule"] = venue_config.fee_schedule.to_notes()
             if aggregate.notes:
                 self._state.update_result_notes(run_id, json.dumps(aggregate.notes))
 
@@ -754,6 +766,13 @@ class ValidationRunner:
         ):
             default_leverage = Decimal(str(leverage_raw))
 
+        # Fee schedule (VIP tier + optional BNB discount) is venue-level. A bad
+        # value fails the run with a clear error instead of silently defaulting.
+        try:
+            fee_schedule = FeeSchedule.from_params(launch_params)
+        except ValueError as exc:
+            raise ValidationRunnerError(f"invalid fee schedule parameters: {exc}") from exc
+
         # Skip latency for sub-5m timeframes ONLY when no detail data
         # provides sub-bar resolution for the matching engine
         if timeframe in self._SUB_BAR_TIMEFRAMES and not has_detail_data:
@@ -764,16 +783,22 @@ class ValidationRunner:
                     latency_preset,
                     timeframe,
                 )
-            return create_venue_config_for_validation(
-                starting_balance_usdt=int(balance),
-                default_leverage=default_leverage,
-                latency_preset=None,
+            return replace(
+                create_venue_config_for_validation(
+                    starting_balance_usdt=int(balance),
+                    default_leverage=default_leverage,
+                    latency_preset=None,
+                ),
+                fee_schedule=fee_schedule,
             )
 
-        venue_config = create_venue_config_for_validation(
-            starting_balance_usdt=int(balance),
-            default_leverage=default_leverage,
-            latency_preset=latency_preset or LatencyPreset.CLOUD,
+        venue_config = replace(
+            create_venue_config_for_validation(
+                starting_balance_usdt=int(balance),
+                default_leverage=default_leverage,
+                latency_preset=latency_preset or LatencyPreset.CLOUD,
+            ),
+            fee_schedule=fee_schedule,
         )
         if has_detail_data:
             # Fill model chosen above from the preset; release is own-bar.
@@ -1160,8 +1185,9 @@ class ValidationRunner:
 
         # Direct parameter overrides (e.g., from validated screening results)
         for key, value in raw_params.items():
-            # Skip meta-keys that aren't strategy parameters
-            if key in ("sweep", "overfitting_filters"):
+            # Skip meta-keys that aren't strategy parameters. The fee schedule
+            # is venue-level; forwarding it would break the generated config.
+            if key in ("sweep", "overfitting_filters", "fee_tier", "bnb_discount"):
                 continue
             params[key] = value
 
