@@ -20,7 +20,7 @@ Events (decision window B = days t with 2022-06-01 <= t <= 2026-09-30)
 - An event belongs to B if its entry day t is in B.
 - Event net return = sum_i q_i * close_i,t+3 - sum_i q_i * close_i,t ... expressed on capital 1:
   gross = sum_i 0.25 * (close_i,t+3 / close_i,t - 1); cost = 0.0005 * (entry notional + exit notional) = 0.0005 * (0.25 * k + sum_i 0.25 * close_i,t+3 / close_i,t), k = #coins held;
-  funding = sum_i sum_{s in settlements_i, T_t < s <= T_t+3} q_i * mark_i(s) * rate_i(s), with T_x = (x+1) * 86_400e9 (close time of day x) and mark_i(s) = close_i of day (s - 1) // 86_400e9 (last daily close at or before s; a settlement exactly at a close uses that close).
+  funding = sum_i sum_{s in settlements_i, T_t < s <= T_t+3} q_i * mark_i(s) * rate_i(s), with T_x = (x+1) * 86_400e9 (close time of day x) and mark_i(s) = close_i of day s // 86_400e9 - 1 (the last daily close at or before s; a settlement exactly at a close T_x uses close x). ERRATUM 2026-10-12 (raised by cc-r3-h13 before its run): the earlier formula (s - 1) // 86_400e9 picked the close AFTER an intraday settlement (look-ahead); the gloss was the intent.
   net = gross - cost - funding.
 
 Daily series for Sharpe (B only, every calendar day 2022-06-01..2026-09-30)
