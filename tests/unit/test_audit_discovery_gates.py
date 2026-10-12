@@ -115,6 +115,15 @@ def test_one_of_five_passes_only_that_one_survives() -> None:
     assert len(pipe._guardrail_rejections) == 4
 
 
+def test_rejected_candidate_keeps_its_dsl_for_manual_validation() -> None:
+    pipe = DiscoveryPipeline(_cfg(timeframe="1h"), backtest_fn=lambda c: _bt())
+    chrom = _chrom(stop_loss_pct=3.5)
+    pipe._validate_top_strategies([(chrom, _fit(trades=10))], total_evaluated=100)
+    (rej,) = pipe._guardrail_rejections
+    assert rej["dsl"] == {**chromosome_to_dsl(chrom), "timeframe": "1h"}
+    assert rej["dsl"]["stop_loss"] == {"type": "fixed_pct", "percent": 3.5}  # type: ignore[index]
+
+
 def _gates(pipe: DiscoveryPipeline, top: list[tuple[StrategyChromosome, FitnessResult]]) -> Any:
     return pipe._apply_validation_gates(
         top, generations=[], total_evaluated=10, converged=False, convergence_gen=None,

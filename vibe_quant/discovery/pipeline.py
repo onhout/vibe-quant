@@ -1041,6 +1041,8 @@ class DiscoveryPipeline:
             "sharpe": round(fitness.sharpe_ratio, 3),
             "trades": fitness.total_trades,
             "reasons": list(reasons),
+            # DSL kept so a near-miss can still be backtested/validated by hand.
+            "dsl": {**chromosome_to_dsl(chrom), "timeframe": self.config.timeframe},
         }
         if dsr is not None:
             entry["dsr"] = dsr
