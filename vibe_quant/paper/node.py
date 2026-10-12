@@ -484,6 +484,15 @@ class PaperTradingNode:
             if not symbols:
                 symbols = run_symbols
             raw = validated_run_strategy_params(run)
+            # Post-only maker entries are validation-only for now: paper has had
+            # no risk review for them, so never drop the param silently below.
+            entry_order = raw.get("entry_order", "market")
+            if entry_order != "market":
+                raise ConfigurationError(
+                    f"Validation run {cfg.validation_run_id} used "
+                    f"entry_order={entry_order!r}; paper trading supports only "
+                    "'market' entries (post-only maker entries need a risk review)"
+                )
             base_params = {
                 k: v for k, v in raw.items() if k in fields and k not in _BACKTEST_ONLY_PARAMS
             }
@@ -600,6 +609,17 @@ class PaperTradingNode:
                 cfg = config_cls.parse(json.dumps(raw_cfg))
             except Exception as e:
                 raise ConfigurationError(f"Invalid strategy config {raw_cfg}: {e}") from e
+            # Second gate, on the EFFECTIVE config: a strategy launched by
+            # strategy_id alone skips the validation branch above and would
+            # otherwise trade the compiled default. Post-only maker entries
+            # have had no risk review for paper, so refuse them here too.
+            effective_entry_order = getattr(cfg, "entry_order", "market")
+            if effective_entry_order != "market":
+                raise ConfigurationError(
+                    f"Effective strategy config used entry_order={effective_entry_order!r}; "
+                    "paper trading supports only 'market' entries (post-only maker "
+                    "entries need a risk review)"
+                )
             strategies.append(strategy_cls(config=cfg))
         return strategies
 
