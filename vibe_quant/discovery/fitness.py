@@ -132,6 +132,13 @@ class FitnessResult:
     # None otherwise, so the run-long fitness cache stays small.
     daily_returns: DailyReturns | None = None
     symbol_daily: dict[str, dict[str, float] | None] | None = None
+    # Output-only market-valued series (bd vibe-quant-wcn55): the same day grid
+    # as ``daily_returns`` but with open positions marked to market, so a
+    # buy-and-hold comparison is fair. Never read by fitness/ranking; kept under
+    # the same ``keep_series`` rule. Worst mode: the equal-weight pool of the
+    # symbols plus each symbol's own series (``symbol_mtm_daily``).
+    mtm_daily_returns: DailyReturns | None = None
+    symbol_mtm_daily: dict[str, DailyReturns | None] | None = None
 
 
 # Pre-compute inverse ranges for normalization to avoid repeated division
@@ -574,6 +581,12 @@ def _evaluate_single(
         symbol_stats=symbol_stats,
         daily_returns=cast("DailyReturns | None", bt.get("daily_returns")) if keep_series else None,
         symbol_daily=cast("dict[str, dict[str, float] | None] | None", bt.get("symbol_daily"))
+        if keep_series
+        else None,
+        mtm_daily_returns=cast("DailyReturns | None", bt.get("mtm_daily_returns"))
+        if keep_series
+        else None,
+        symbol_mtm_daily=cast("dict[str, DailyReturns | None] | None", bt.get("symbol_mtm_daily"))
         if keep_series
         else None,
     )

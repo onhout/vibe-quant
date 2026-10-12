@@ -245,12 +245,15 @@ class NTScreeningRunner:
                 per worker process (see validation.funding).
             fill_ticks: Fill-tick set resolved by the parent (trade_tick
                 mode). None resolves it in-process when the mode needs it.
-            collect_daily_returns: Opt-in (discovery DSR, bd vibe-quant-yul7u.24):
-                keep the run's dense daily balance returns in
-                ``last_daily_returns`` (never in BacktestMetrics).
+            collect_daily_returns: Opt-in (discovery DSR, bd vibe-quant-yul7u.24;
+                market-valued series, bd vibe-quant-wcn55): keep the run's dense
+                daily balance returns in ``last_daily_returns`` and its daily
+                mark-to-market returns in ``last_mtm_daily_returns`` (neither is
+                ever put into BacktestMetrics).
         """
         self._collect_daily_returns = collect_daily_returns
         self.last_daily_returns: DailyReturns | None = None
+        self.last_mtm_daily_returns: DailyReturns | None = None
         self._dsl_dict = dsl_dict
         self._symbols = sorted(symbols)
         self._fill_ticks = fill_ticks
@@ -294,6 +297,10 @@ class NTScreeningRunner:
         from vibe_quant.screening.types import BacktestMetrics
 
         start_time = time.time()
+        # Per-run outputs: a failed run or an unavailable series must not leave
+        # the previous run's series on a reused runner (bd vibe-quant-wcn55).
+        self.last_daily_returns = None
+        self.last_mtm_daily_returns = None
         try:
             return self._run_backtest(params, start_time)
         except (UnknownStrategyParamError, DataUnavailableError, FillTickCatalogModifiedError):
@@ -697,7 +704,12 @@ class NTScreeningRunner:
                 match the venue config: it scales the funding charge in
                 total_return, the daily-balance Sharpe and the drawdown.
         """
-        from vibe_quant.metrics import closed_trade_drawdown, profit_factor
+        from vibe_quant.metrics import (
+            closed_trade_drawdown,
+            mark_to_market_daily_returns,
+            mark_to_market_max_drawdown,
+            profit_factor,
+        )
         from vibe_quant.screening.types import BacktestMetrics
         from vibe_quant.validation.extraction import (
             OpenPositionMark,
@@ -707,7 +719,7 @@ class NTScreeningRunner:
             date_to_ns,
             finest_timeframe,
             mark_open_positions,
-            mark_to_market_drawdown,
+            mark_to_market_paths,
         )
         from vibe_quant.validation.funding import FundingCalculator
 
@@ -902,19 +914,20 @@ class NTScreeningRunner:
         # Compute return distribution moments (skewness/kurtosis) and per-trade returns
         metrics.skewness, metrics.kurtosis, metrics.trade_returns = self._compute_return_moments(engine)
 
-        # Mark-to-market max drawdown incl. open-trade intrabar losses and
-        # funding (bd vibe-quant-e70tl.11). NT's own DD stats are daily
-        # realized-balance figures and are not used.
-        mtm_dd = mark_to_market_drawdown(
+        # Mark-to-market paths, built once: they feed the max drawdown (incl.
+        # open-trade intrabar losses and funding, bd vibe-quant-e70tl.11) and,
+        # when collecting series, the output-only daily MTM return series
+        # (bd vibe-quant-wcn55). NT's own DD stats are daily realized-balance
+        # figures and are not used.
+        mtm_paths = mark_to_market_paths(
             engine,
-            starting_balance,
             execution_timeframe=execution_tf,
             catalog_path=catalog_path,
             start_ns=start_ns,
             end_ns=end_ns,
             extra_cash=funding_cash,
         )
-        if mtm_dd is None:
+        if mtm_paths is None:
             logger.warning(
                 "Mark-to-market drawdown unavailable for params %s (timeframe=%s) — "
                 "using closed-trade drawdown, which ignores open-trade losses",
@@ -922,6 +935,17 @@ class NTScreeningRunner:
                 execution_tf,
             )
             mtm_dd = closed_trade_drawdown(starting_balance, closed_net)
+        else:
+            mtm_dd = mark_to_market_max_drawdown(starting_balance, mtm_paths)
+            if (
+                self._collect_daily_returns
+                and start_ns is not None
+                and end_ns is not None
+                and end_ns > start_ns
+            ):
+                self.last_mtm_daily_returns = mark_to_market_daily_returns(
+                    starting_balance, mtm_paths, start_ns, end_ns
+                )
         metrics.max_drawdown = mtm_dd
 
         return metrics

@@ -459,6 +459,53 @@ def mark_to_market_max_drawdown(
     return min(max(worst, 0.0), 1.0)
 
 
+def mark_to_market_daily_returns(
+    starting_balance: float,
+    paths: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    start_ns: int,
+    end_ns: int,
+) -> DailyReturns | None:
+    """Daily account returns with open positions marked at each day's close.
+
+    Same UTC day grid as :func:`dense_daily_returns` (``start_ns // DAY`` to
+    ``(end_ns - 1) // DAY``, INCLUDING day 0), so the two series are directly
+    comparable. Per instrument the ``pnl_close`` of the last execution bar with
+    ``ts // DAY <= d`` is carried forward (0 before its first bar) and summed
+    across instruments; ``equity_d = starting_balance + total_d`` and
+    ``r_d = equity_d / equity_{d-1} - 1`` with ``equity_{-1} = starting_balance``.
+
+    Unlike the realized series, an overnight position contributes its move on
+    the day it happens instead of on its exit day. ``None`` (fail closed) when
+    the balance is ever non-positive or a return is non-finite, matching
+    :func:`dense_daily_returns`.
+    """
+    if not starting_balance > 0:
+        return None
+    first_day = start_ns // _DAY_NS
+    last_day = max(first_day, (end_ns - 1) // _DAY_NS)
+    n_days = last_day - first_day + 1
+    days = np.arange(first_day, last_day + 1, dtype=np.int64)
+    total = np.zeros(n_days)
+    for ts, pnl_close, _pnl_min in paths:
+        if len(ts) == 0:
+            continue
+        # Last bar at or before each day (bars are sorted by ts).
+        idx = np.searchsorted(ts // _DAY_NS, days, side="right") - 1
+        total += np.where(idx >= 0, pnl_close[np.maximum(idx, 0)], 0.0)
+    out = array("d")
+    prev = starting_balance
+    for i in range(n_days):
+        balance = starting_balance + float(total[i])
+        if not balance > 0:
+            return None
+        ret = balance / prev - 1.0
+        if not math.isfinite(ret):
+            return None
+        out.append(ret)
+        prev = balance
+    return DailyReturns(first_day, out)
+
+
 def closed_trade_drawdown(
     starting_balance: float, closed_pnls: Iterable[tuple[int, float]]
 ) -> float:

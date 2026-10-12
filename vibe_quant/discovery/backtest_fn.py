@@ -124,13 +124,18 @@ class NTBacktestFn:
         if self.collect_daily_returns:
             # Full dense series INCLUDING day 0; trimmed by _chain_window_series.
             out["daily_returns"] = runner.last_daily_returns  # type: ignore[assignment]
+            out["mtm_daily_returns"] = runner.last_mtm_daily_returns  # type: ignore[assignment]
         return out
 
     @staticmethod
-    def _chain_window_series(results: list[dict[str, float | int]]) -> DailyReturns | None:
+    def _chain_window_series(
+        results: list[dict[str, float | int]], key: str = "daily_returns"
+    ) -> DailyReturns | None:
         """One daily series over consecutive windows, keyed like a continuous run.
 
-        A continuous run's series starts the day AFTER its first day (NT's
+        ``key`` selects the series (``"daily_returns"`` or the market-valued
+        ``"mtm_daily_returns"``); both share the day grid and the chaining. A
+        continuous run's series starts the day AFTER its first day (NT's
         Sharpe convention), so the first window drops its day-0 return and
         every later window keeps it (its return vs that window's fresh
         balance): the chain covers exactly the days of one continuous
@@ -139,7 +144,7 @@ class NTBacktestFn:
         """
         from vibe_quant.metrics import concat_daily_returns
 
-        parts = cast("list[DailyReturns | None]", [r.get("daily_returns") for r in results])
+        parts = cast("list[DailyReturns | None]", [r.get(key) for r in results])
         if not parts or parts[0] is None:
             return None
         parts[0] = parts[0].without_first_day()
@@ -271,10 +276,16 @@ class NTBacktestFn:
             agg = self._aggregate_multi_window(results, self.min_trades)
             if self.collect_daily_returns:
                 agg["daily_returns"] = self._chain_window_series(results)  # type: ignore[assignment]
+                agg["mtm_daily_returns"] = self._chain_window_series(  # type: ignore[assignment]
+                    results, key="mtm_daily_returns"
+                )
             return agg
         res = self._run_single(chromosome, self.start_date, self.end_date, **kw)
         if self.collect_daily_returns:
             res["daily_returns"] = self._chain_window_series([res])  # type: ignore[assignment]
+            res["mtm_daily_returns"] = self._chain_window_series(  # type: ignore[assignment]
+                [res], key="mtm_daily_returns"
+            )
         return res
 
     @staticmethod
@@ -298,9 +309,14 @@ class NTBacktestFn:
         trades = tuple(int(r["total_trades"]) for r in results)
         collected = any("daily_returns" in r for r in results)
         series = [cast("DailyReturns | None", r.get("daily_returns")) for r in results]
-        # The per-symbol series feed only the pool + per-symbol stats below;
+        mtm_collected = any("mtm_daily_returns" in r for r in results)
+        mtm_series = [cast("DailyReturns | None", r.get("mtm_daily_returns")) for r in results]
+        # The per-symbol series feed only the pools + per-symbol stats below;
         # they must not ride along in symbol_results (memory, bd yul7u.24).
-        results = [{k: v for k, v in r.items() if k != "daily_returns"} for r in results]
+        results = [
+            {k: v for k, v in r.items() if k not in ("daily_returns", "mtm_daily_returns")}
+            for r in results
+        ]
         out: dict[str, float | int] = {
             "sharpe_ratio": min(0.0 if math.isnan(x) else x for x in sharpes),
             "max_drawdown": max(1.0 if math.isnan(x) else x for x in dds),
@@ -336,8 +352,10 @@ class NTBacktestFn:
             # Worst-of metrics inherit forced values from these symbols -> mark
             # the aggregate synthetic so the fitness sanity check skips it.
             out["synthetic_symbols"] = synthetic  # type: ignore[assignment]
-        if collected:
+        if collected or mtm_collected:
             from vibe_quant.metrics import pool_daily_returns
+
+        if collected:
             from vibe_quant.overfitting.dsr import daily_sharpe_inputs
 
             out["daily_returns"] = pool_daily_returns(series)  # type: ignore[assignment]
@@ -355,6 +373,14 @@ class NTBacktestFn:
                     "mean": sum(sr.values) / len(sr),
                 }
             out["symbol_daily"] = symbol_daily  # type: ignore[assignment]
+        if mtm_collected:
+            # Pooled market-valued series + each symbol's own (worst-mode gate
+            # input, bd vibe-quant-wcn55); neither leaks into symbol_results.
+            out["mtm_daily_returns"] = pool_daily_returns(mtm_series)  # type: ignore[assignment]
+            out["symbol_mtm_daily"] = {  # type: ignore[assignment]
+                sym: (sr if sr is not None and len(sr) > 0 else None)
+                for sym, sr in zip(symbols, mtm_series, strict=True)
+            }
         return out
 
     def _eval_worst_of_symbols(self, chromosome: StrategyChromosome) -> dict[str, float | int]:

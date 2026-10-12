@@ -375,9 +375,8 @@ def mark_open_positions(
     return marks
 
 
-def mark_to_market_drawdown(
+def mark_to_market_paths(
     engine: Any,
-    starting_balance: float,
     *,
     execution_timeframe: str | None,
     catalog_path: Path | str | None = None,
@@ -385,18 +384,19 @@ def mark_to_market_drawdown(
     end_ns: int | None = None,
     extra_cash: dict[str, list[tuple[int, float]]] | None = None,
     adaptive: bool = True,
-) -> float | None:
-    """Mark-to-market max drawdown of the run (intrabar adverse extremes).
+) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]] | None:
+    """Per-instrument MTM PnL paths ``(ts, pnl_close, pnl_min)`` for the run.
 
-    Returns None when it cannot be computed (no fill events / no bars for a
-    traded instrument); callers then fall back to the closed-trade curve and
-    MUST say so in logs.
+    ``[]`` when the run has no positions; ``None`` when a path cannot be built
+    (no fill events / no bars for a traded instrument). Shared by the
+    mark-to-market drawdown and the daily MTM return series so the execution
+    bars are loaded once (bd vibe-quant-wcn55).
     """
     from vibe_quant.data.catalog import INTERVAL_TO_AGGREGATION
 
     positions = all_positions(engine)
     if not positions:
-        return 0.0
+        return []
     try:
         ledgers = position_ledger_events(positions, extra_cash)
     except AttributeError:
@@ -424,6 +424,40 @@ def mark_to_market_drawdown(
             return None
         pnl_close, pnl_min = pnl_path(series, events, adaptive=adaptive)
         paths.append((series.ts, pnl_close, pnl_min))
+    return paths
+
+
+def mark_to_market_drawdown(
+    engine: Any,
+    starting_balance: float,
+    *,
+    execution_timeframe: str | None,
+    catalog_path: Path | str | None = None,
+    start_ns: int | None = None,
+    end_ns: int | None = None,
+    extra_cash: dict[str, list[tuple[int, float]]] | None = None,
+    adaptive: bool = True,
+) -> float | None:
+    """Mark-to-market max drawdown of the run (intrabar adverse extremes).
+
+    Thin wrapper over :func:`mark_to_market_paths`: ``None`` when the paths
+    cannot be computed (no fill events / no bars for a traded instrument),
+    ``0.0`` for a run with no positions. Callers fall back to the closed-trade
+    curve on ``None`` and MUST say so in logs.
+    """
+    paths = mark_to_market_paths(
+        engine,
+        execution_timeframe=execution_timeframe,
+        catalog_path=catalog_path,
+        start_ns=start_ns,
+        end_ns=end_ns,
+        extra_cash=extra_cash,
+        adaptive=adaptive,
+    )
+    if paths is None:
+        return None
+    if not paths:
+        return 0.0
     return mark_to_market_max_drawdown(starting_balance, paths)
 
 
