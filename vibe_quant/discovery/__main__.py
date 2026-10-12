@@ -198,6 +198,7 @@ def _run_multi_seed(
     ] = []
     all_generations: list[GenerationResult] = []
     all_rejections: list[dict[str, object]] = []
+    buy_hold_records: dict[str, dict[str, object]] = {}
     total_evaluated = 0
     pooled_fitness_cache: dict[str, FitnessResult] = {}
     seed_stats: list[dict[str, float]] = []
@@ -251,6 +252,7 @@ def _run_multi_seed(
         )
         all_generations.extend(result.generations)
         all_rejections.extend(result.guardrail_rejections)
+        buy_hold_records.update(result.buy_hold_records)
         total_evaluated += result.total_candidates_evaluated
         if result.converged:
             any_converged = True
@@ -399,6 +401,10 @@ def _run_multi_seed(
         # Pooled trial record: raw = pooled N, gate_n/prior_n = what the pooled
         # gate used (the per-seed results' own dsr_trials are not the pick's N).
         dsr_trials=pooled_checker._dsr_trials,
+        # Per-seed buy-and-hold records unioned across seeds (the pooled champion
+        # re-check above runs guardrails only, never the buy-hold gate).
+        buy_hold_records=buy_hold_records,
+        buy_hold_gate=result_metadata.buy_hold_gate if result_metadata else None,
     )
 
 
@@ -534,6 +540,7 @@ def _run_provenance_notes(
     seed: int,
     bootstrap_min_sharpe: float,
     holdout_min_sharpe: float,
+    symbols: list[str],
     prior_run_ids: list[int] | None = None,
 ) -> dict[str, object]:
     """Run-level notes shared by the champion and zero-champion outcomes."""
@@ -580,6 +587,17 @@ def _run_provenance_notes(
         notes["worst_mode_score"] = "0.5*min+0.5*median"
     if result.dsr_trials is not None:
         notes["dsr_trials"] = _dsr_trials_note(result, prior_run_ids or [])
+    # Buy-and-hold gate provenance (bd vibe-quant-wcn55). ``enforced`` comes from
+    # the pipeline (False only for a non-NT backtest fn); the rest is the gate's
+    # fixed configuration. A run with --no-buy-hold-gate has enforced False.
+    notes["buy_hold_gate"] = {
+        "enforced": bool((result.buy_hold_gate or {}).get("enforced", False)),
+        "benchmark": "equal_weight_daily_rebalanced_1d_close",
+        "candidate_series": "mark_to_market_daily",
+        "symbols": list(symbols),
+        "ann_factor": 365,
+        "per_symbol": symbol_agg == "worst",
+    }
     return notes
 
 
@@ -862,6 +880,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable the Deflated Sharpe Ratio soft guardrail.",
     )
     parser.add_argument(
+        "--no-buy-hold-gate",
+        dest="require_buy_hold",
+        action="store_false",
+        default=True,
+        help="Disable the fail-closed buy-and-hold champion gate.",
+    )
+    parser.add_argument(
         "--immigrant-fraction",
         type=float,
         default=0.15,
@@ -1019,6 +1044,7 @@ def main() -> int:
             bootstrap_min_sharpe=args.bootstrap_min_sharpe,
             bootstrap_ci_level=args.bootstrap_ci_level,
             require_dsr=args.require_dsr,
+            require_buy_hold=args.require_buy_hold,
             use_crowding=args.use_crowding,
             immigrant_fraction=args.immigrant_fraction,
             entropy_threshold=args.entropy_threshold,
@@ -1165,6 +1191,7 @@ def main() -> int:
             seed=seed,
             bootstrap_min_sharpe=args.bootstrap_min_sharpe,
             holdout_min_sharpe=args.holdout_min_sharpe,
+            symbols=symbols,
             prior_run_ids=prior_run_ids,
         )
 
@@ -1274,6 +1301,8 @@ def main() -> int:
             }
             if chrom.uid in result.dsr_records:
                 entry["dsr"] = result.dsr_records[chrom.uid]
+            if chrom.uid in result.buy_hold_records:
+                entry["buy_hold"] = result.buy_hold_records[chrom.uid]
             if fitness.symbol_scores is not None:
                 entry["symbol_scores"] = {
                     sym: round(sc, 6) for sym, sc in fitness.symbol_scores.items()

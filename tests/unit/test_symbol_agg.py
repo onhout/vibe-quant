@@ -613,8 +613,11 @@ def test_worst_mode_notes_soft_score_and_symbol_scores(
     monkeypatch.setattr(
         "sys.argv",
         _argv(
+            # This test checks worst-mode notes/soft scores, not the buy-hold
+            # gate; FakeFn emits no MTM series, so the gate correctly rejects.
             db, rid, "--symbol-agg", "worst", "--max-generations", "1", "--eval-windows", "1",
             "--train-test-split", "0", "--max-workers", "-1", "--no-dsr", "--no-bootstrap-ci",
+            "--no-buy-hold-gate",
         ),  # fmt: skip
     )
     assert main() == 0

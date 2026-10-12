@@ -154,6 +154,10 @@ class DiscoveryConfig:
     bootstrap_min_sharpe: float = 1.0  # Reject if CI lower bound (t-stat) < this
     bootstrap_ci_level: float = 0.95  # Confidence level for bootstrap CI
     require_dsr: bool = True  # Deflated Sharpe Ratio guardrail
+    # Fail-closed buy-and-hold champion gate (bd vibe-quant-wcn55): a champion's
+    # mark-to-market daily Sharpe must beat the equal-weight daily-rebalanced
+    # buy-and-hold of its symbols over the train window (direction-aware bar).
+    require_buy_hold: bool = True
     # Cumulative DSR trial count (bd vibe-quant-yul7u.28): called with this
     # run's train window ``(start, end)``; returns the summed ``notes.evaluated``
     # of earlier non-mock discovery runs with the SAME timeframe whose train
@@ -347,6 +351,11 @@ class DiscoveryResult:
     # uid (champions and rejected alike) and run-level trial counts.
     dsr_records: dict[str, dict[str, object]] = field(default_factory=dict)
     dsr_trials: dict[str, object] | None = None
+    # Buy-and-hold gate bookkeeping (bd vibe-quant-wcn55): per-candidate gate
+    # record by uid (champions and rejected alike; the champion entry and the
+    # rejection row both carry it) and the run-level ``{"enforced": ...}`` status.
+    buy_hold_records: dict[str, dict[str, object]] = field(default_factory=dict)
+    buy_hold_gate: dict[str, object] | None = None
 
 
 def _select_diverse_top_k(
@@ -456,6 +465,7 @@ class DiscoveryPipeline:
         holdout_backtest_fn: Callable[[StrategyChromosome], dict[str, float | int]] | None = None,
         backtest_fn_factory: Callable[[str, str], Callable[[StrategyChromosome], dict[str, float | int]]] | None = None,
         seed_chromosomes: list[StrategyChromosome] | None = None,
+        buy_hold_closes_fn: Callable[[list[str]], dict[str, dict[int, float]]] | None = None,
     ) -> None:
         self.config = config
         self._backtest_fn = backtest_fn
@@ -464,6 +474,10 @@ class DiscoveryPipeline:
         self._holdout_backtest_fn = holdout_backtest_fn
         self._backtest_fn_factory = backtest_fn_factory
         self._seed_chromosomes = seed_chromosomes
+        # Test seam: loads ``{symbol: {day: close}}`` for the buy-and-hold bar.
+        # None -> an NT backtest fn falls back to ``buyhold.load_daily_closes``
+        # (the default catalog); non-NT fns skip the gate entirely (fail closed).
+        self._buy_hold_closes_fn = buy_hold_closes_fn
         self._guardrail_rejections: list[dict[str, object]] = []
         self._direction_constraint: Direction | None = None
         # Evaluation bookkeeping (reset per run)
@@ -474,15 +488,21 @@ class DiscoveryPipeline:
         self._ok_evals: int = 0  # evaluations without `error` this run
         self._dsr_records: dict[str, dict[str, object]] = {}
         self._dsr_trials: dict[str, object] | None = None
+        self._buy_hold_records: dict[str, dict[str, object]] = {}
+        self._buy_hold_gate: dict[str, object] | None = None
         # DSR tests the candidate's daily return series (bd vibe-quant-yul7u.24).
         # A real NT backtest fn is told to collect it, and a candidate without
         # one then fails DSR closed; mock/synthetic fns keep the legacy input.
+        # The buy-and-hold gate reads the same series (mtm_daily_returns), so a
+        # run with --no-dsr but the buy-hold gate on must still collect it --
+        # without touching ``_dsr_requires_returns`` (DSR's own fail-closed rule).
         from vibe_quant.discovery.backtest_fn import NTBacktestFn
 
         self._dsr_requires_returns = False
-        if config.require_dsr and isinstance(backtest_fn, NTBacktestFn):
-            backtest_fn.collect_daily_returns = True
-            self._dsr_requires_returns = True
+        if isinstance(backtest_fn, NTBacktestFn):
+            if config.require_dsr or config.require_buy_hold:
+                backtest_fn.collect_daily_returns = True
+            self._dsr_requires_returns = config.require_dsr
 
     # -- public API ---------------------------------------------------------
 
@@ -816,6 +836,8 @@ class DiscoveryPipeline:
         self._guardrail_rejections = []
         self._dsr_records = {}
         self._dsr_trials = None
+        self._buy_hold_records = {}
+        self._buy_hold_gate = None
 
         converged = False
         convergence_gen: int | None = None
@@ -1032,6 +1054,7 @@ class DiscoveryPipeline:
         stage: str,
         reasons: list[str],
         dsr: dict[str, object] | None = None,
+        buy_hold: dict[str, object] | None = None,
     ) -> None:
         """Record a rejected candidate (persisted with the run, shown in the UI)."""
         entry: dict[str, object] = {
@@ -1046,6 +1069,8 @@ class DiscoveryPipeline:
         }
         if dsr is not None:
             entry["dsr"] = dsr
+        if buy_hold is not None:
+            entry["buy_hold"] = buy_hold
         self._guardrail_rejections.append(entry)
         logger.info("Gate FAIL [%s]: %s reasons=%s", stage, chrom.uid, reasons)
 
@@ -1100,6 +1125,12 @@ class DiscoveryPipeline:
             train_dates = (cfg.start_date, cfg.end_date)
             if cfg.has_holdout:
                 holdout_dates = (cfg.holdout_start_date, cfg.holdout_end_date)
+
+        # Gate 1b: fail-closed buy-and-hold (bd vibe-quant-wcn55). Runs BEFORE
+        # cross-window: every gate only rejects, so the champion set is
+        # order-invariant and the holdout stays the final gate.
+        if cfg.require_buy_hold:
+            survivors = self._apply_buy_hold_gate(survivors)
 
         # Gate 2: cross-window (shifted sub-windows of the train range)
         if cfg.cross_window_months:
@@ -1228,7 +1259,77 @@ class DiscoveryPipeline:
             holdout_min_trades=holdout_min_trades,
             dsr_records=dict(self._dsr_records),
             dsr_trials=self._dsr_trials,
+            buy_hold_records=dict(self._buy_hold_records),
+            buy_hold_gate=self._buy_hold_gate,
         )
+
+    def _apply_buy_hold_gate(
+        self,
+        survivors: list[tuple[StrategyChromosome, FitnessResult]],
+    ) -> list[tuple[StrategyChromosome, FitnessResult]]:
+        """Gate 1b: reject candidates that do not beat buy-and-hold. Fails closed.
+
+        A non-NT backtest fn cannot produce a market-valued daily series, so the
+        gate records ``{"enforced": False, "reason": "non-NT backtest fn"}`` and
+        skips. An NT fn without an injected ``buy_hold_closes_fn`` loads the
+        catalog daily closes itself (once, in the parent). ANY load exception
+        rejects EVERY survivor (stage ``"buy_hold"``): a champion whose benchmark
+        cannot be built is never promoted.
+        """
+        from vibe_quant.discovery.backtest_fn import NTBacktestFn
+
+        if not isinstance(self._backtest_fn, NTBacktestFn):
+            self._buy_hold_gate = {"enforced": False, "reason": "non-NT backtest fn"}
+            logger.info("Buy-hold gate skipped: non-NT backtest fn")
+            return survivors
+
+        if not survivors:
+            self._buy_hold_gate = {"enforced": True}
+            return survivors
+
+        symbols = list(self._backtest_fn.symbols)
+        try:
+            if self._buy_hold_closes_fn is not None:
+                closes = self._buy_hold_closes_fn(symbols)
+            else:
+                from vibe_quant.data.catalog import DEFAULT_CATALOG_PATH
+                from vibe_quant.discovery.buyhold import load_daily_closes
+
+                closes = load_daily_closes(symbols, DEFAULT_CATALOG_PATH)
+        except Exception as exc:
+            reason = f"Buy-hold: benchmark closes unavailable: {exc}"
+            logger.warning("Buy-hold gate failing closed on %d candidates: %s", len(survivors), exc)
+            for chrom, fit in survivors:
+                self._reject(chrom, fit, "buy_hold", [reason])
+            self._buy_hold_gate = {"enforced": True, "error": str(exc)}
+            return []
+
+        from vibe_quant.discovery.buyhold import buy_hold_gate
+
+        per_symbol = self.config.symbol_agg == "worst"
+        kept: list[tuple[StrategyChromosome, FitnessResult]] = []
+        for chrom, fit in survivors:
+            direction = chrom.direction.value
+            if per_symbol:
+                passed, record, reasons = buy_hold_gate(
+                    fit.mtm_daily_returns,
+                    direction,
+                    closes,
+                    symbols,
+                    per_symbol=fit.symbol_mtm_daily if fit.symbol_mtm_daily is not None else {},
+                )
+            else:
+                passed, record, reasons = buy_hold_gate(
+                    fit.mtm_daily_returns, direction, closes, symbols
+                )
+            self._buy_hold_records[chrom.uid] = record
+            if passed:
+                kept.append((chrom, fit))
+            else:
+                self._reject(chrom, fit, "buy_hold", reasons, buy_hold=record)
+        self._buy_hold_gate = {"enforced": True}
+        logger.info("Buy-hold gate: %d/%d passed", len(kept), len(survivors))
+        return kept
 
     def _evaluate_holdout(
         self,
