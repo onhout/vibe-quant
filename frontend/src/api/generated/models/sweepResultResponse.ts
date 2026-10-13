@@ -24,4 +24,6 @@ export interface SweepResultResponse {
   passed_deflated_sharpe: boolean | null;
   passed_walk_forward: boolean | null;
   passed_purged_kfold: boolean | null;
+  liquidation_count?: number | null;
+  liquidation_forfeited?: number | null;
 }

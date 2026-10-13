@@ -7,6 +7,7 @@
 
 export * from './backtestLaunchRequest';
 export * from './backtestLaunchRequestEntryOrder';
+export * from './backtestLaunchRequestLiquidationMode';
 export * from './backtestLaunchRequestParameters';
 export * from './backtestResultResponse';
 export * from './backtestResultResponseCrossRegimeResults';
@@ -36,6 +37,7 @@ export * from './dataStatusResponse';
 export * from './discoveryJobResponse';
 export * from './discoveryJobResponseProgress';
 export * from './discoveryLaunchRequest';
+export * from './discoveryLaunchRequestLiquidationMode';
 export * from './discoveryLaunchRequestSymbolAgg';
 export * from './discoveryResultResponse';
 export * from './discoveryResultResponseGuardrailRejections';

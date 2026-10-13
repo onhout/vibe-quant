@@ -4,6 +4,7 @@
  * vibe-quant API
  * OpenAPI spec version: 0.1.0
  */
+import type { DiscoveryLaunchRequestLiquidationMode } from './discoveryLaunchRequestLiquidationMode';
 import type { DiscoveryLaunchRequestSymbolAgg } from './discoveryLaunchRequestSymbolAgg';
 
 export interface DiscoveryLaunchRequest {
@@ -66,4 +67,10 @@ export interface DiscoveryLaunchRequest {
   max_workers?: number;
   bnb_discount?: boolean;
   entry_order?: string;
+  liquidation_mode?: DiscoveryLaunchRequestLiquidationMode;
+  /**
+   * @maximum 125
+   * @exclusiveMinimum 0
+   */
+  liquidation_leverage?: number;
 }

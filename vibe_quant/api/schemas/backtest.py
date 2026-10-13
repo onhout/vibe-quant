@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from vibe_quant.api.schemas._validators import KNOWN_TIMEFRAMES, check_date_range, clean_symbols
+from vibe_quant.liquidation_settings import MAX_LEVERAGE
 
 
 def _positive_number(params: dict[str, object], key: str, upper: float | None = None) -> None:
@@ -43,6 +44,10 @@ class BacktestLaunchRequest(BaseModel):
     entry_order: Literal["market", "post_only"] = "market"
     maker_offset_ticks: int = Field(1, ge=1)
     maker_entry_timeout_bars: int = Field(3, ge=1)
+    # Run-level liquidation mode. Stored into the run parameters only when on,
+    # so default runs' stored params are unchanged (E1). The run's existing
+    # parameters.leverage is the venue/liquidation leverage (vibe-quant-2gyk1.1.10).
+    liquidation_mode: Literal["off", "isolated", "cross"] = "off"
 
     @field_validator("symbols")
     @classmethod
@@ -59,8 +64,16 @@ class BacktestLaunchRequest(BaseModel):
     @model_validator(mode="after")
     def _ranges(self) -> BacktestLaunchRequest:
         check_date_range(self.start_date, self.end_date, allow_equal=False)
+        # The mode is a top-level field: a nested parameters.liquidation_mode
+        # would be silently ignored, so reject it loudly (E4).
+        if "liquidation_mode" in self.parameters:
+            msg = (
+                "parameters.liquidation_mode is not allowed; "
+                "use the top-level liquidation_mode field"
+            )
+            raise ValueError(msg)
         # Runners fall back to 10x / 1000 USDT on non-positive values — reject instead.
-        _positive_number(self.parameters, "leverage", upper=125)
+        _positive_number(self.parameters, "leverage", upper=MAX_LEVERAGE)
         _positive_number(self.parameters, "initial_balance")
         return self
 

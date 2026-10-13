@@ -102,6 +102,10 @@ class SweepResultResponse(BaseModel):
     passed_deflated_sharpe: bool | None
     passed_walk_forward: bool | None
     passed_purged_kfold: bool | None
+    # Opt-in liquidation summary, written by the screening sweep only when the
+    # run's liquidation mode is on; NULL on mode-off and older rows (D1).
+    liquidation_count: int | None = None
+    liquidation_forfeited: float | None = None
 
 
 class RunSummaryItem(BaseModel):

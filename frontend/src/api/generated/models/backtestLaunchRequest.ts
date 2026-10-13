@@ -5,6 +5,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { BacktestLaunchRequestEntryOrder } from './backtestLaunchRequestEntryOrder';
+import type { BacktestLaunchRequestLiquidationMode } from './backtestLaunchRequestLiquidationMode';
 import type { BacktestLaunchRequestParameters } from './backtestLaunchRequestParameters';
 
 export interface BacktestLaunchRequest {
@@ -21,4 +22,5 @@ export interface BacktestLaunchRequest {
   maker_offset_ticks?: number;
   /** @minimum 1 */
   maker_entry_timeout_bars?: number;
+  liquidation_mode?: BacktestLaunchRequestLiquidationMode;
 }

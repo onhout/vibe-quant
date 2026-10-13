@@ -115,6 +115,11 @@ async def launch_screening(
     parameters = dict(body.parameters)
     if body.bnb_discount:
         parameters["bnb_discount"] = True
+    # Run-level liquidation mode, stored only when on so default runs' stored
+    # parameters are unchanged (E1/E2). The mode-off run imports no liquidation
+    # code and its parameters are byte-identical to today (X1).
+    if body.liquidation_mode != "off":
+        parameters["liquidation_mode"] = body.liquidation_mode
     run_id = state.create_backtest_run(
         strategy_id=body.strategy_id,
         run_mode="screening",
@@ -172,6 +177,10 @@ async def launch_validation(
     parameters = dict(body.parameters)
     if body.bnb_discount:
         parameters["bnb_discount"] = True
+    # Run-level liquidation mode, stored only when on so default runs' stored
+    # parameters are unchanged (E1/E2).
+    if body.liquidation_mode != "off":
+        parameters["liquidation_mode"] = body.liquidation_mode
     # Post-only maker entries are validation-only and opt-in; store the three
     # maker params only for a post_only run so default runs are unchanged.
     if body.entry_order == "post_only":

@@ -161,6 +161,41 @@ def _inherited_fee_params(
     return fee_params, "discovery_notes"
 
 
+def _inherited_liquidation_params(state: StateManager, run_id: int) -> dict[str, object]:
+    """Liquidation run parameters for a child of discovery run ``run_id``.
+
+    The parent's ``notes.liquidation`` is authoritative: a promoted or replayed
+    child must run at the same liquidation settings the champion was found
+    under. A run that predates liquidation (no ``liquidation`` in its notes) ran
+    with the mode off, so the child gets no liquidation keys and keeps its
+    stored parameters unchanged. A recorded payload that cannot be parsed fails
+    closed (409) instead of silently reverting to the mode off.
+
+    Returns:
+        The liquidation run parameters (``{}`` when the parent ran mode-off).
+    """
+    from vibe_quant.liquidation_settings import DEFAULT_LEVERAGE, LiquidationSettings
+
+    raw = _load_discovery_payload(state, run_id).get("liquidation")
+    if raw is None:
+        return {}
+    try:
+        if not isinstance(raw, dict):
+            raise ValueError(f"expected an object, got {raw!r}")
+        settings = LiquidationSettings.from_params(
+            {
+                "liquidation_mode": raw.get("mode"),
+                "leverage": raw.get("leverage", DEFAULT_LEVERAGE),
+            }
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"discovery run {run_id} has an unreadable notes.liquidation: {exc}",
+        ) from exc
+    return settings.to_params()
+
+
 def _validate_seed_run_compiler(state: StateManager, seed_run_id: int) -> None:
     """Reject warm-start when the seed run's compiler hash != current."""
     from vibe_quant.dsl.compiler import compiler_version_hash
@@ -314,6 +349,11 @@ def _discovery_cli_args(body: DiscoveryLaunchRequest, start_date: str, end_date:
         command.extend(["--bootstrap-min-sharpe", str(body.bootstrap_min_sharpe)])
     if body.bnb_discount:
         command.append("--bnb-discount")
+    # Run-level liquidation settings are forwarded only when on, so a mode-off
+    # launch keeps its argv identical to today (E6/E7).
+    if body.liquidation_mode != "off":
+        command.extend(["--liquidation-mode", body.liquidation_mode])
+        command.extend(["--liquidation-leverage", str(body.liquidation_leverage)])
     return command
 
 
@@ -384,6 +424,12 @@ async def launch_discovery(
         params["bootstrap_min_sharpe"] = body.bootstrap_min_sharpe
     if body.bnb_discount:
         params["bnb_discount"] = True
+    # Record the liquidation settings only when on, so default runs' stored
+    # parameters are unchanged (E6). The CLI reads its argv, but the run's
+    # parameters carry the settings for replay/promote inheritance (RP1).
+    if body.liquidation_mode != "off":
+        params["liquidation_mode"] = body.liquidation_mode
+        params["leverage"] = body.liquidation_leverage
 
     timeframe = body.timeframes[0] if body.timeframes else "4h"
     today = datetime.now()
@@ -935,6 +981,7 @@ async def promote_discovered_strategy(
     # and records WHICH range was validated (OOS holdout vs full range).
     # The child inherits the parent's fee schedule (bd vibe-quant-2gyk1.4).
     fee_params, fee_source = _inherited_fee_params(state, run_id)
+    liquidation_params = _inherited_liquidation_params(state, run_id)
     run_parameters: dict[str, object] = {
         "promote_source": {
             "discovery_run_id": run_id,
@@ -944,6 +991,7 @@ async def promote_discovered_strategy(
             "fee_schedule_source": fee_source,
         },
         **fee_params,
+        **liquidation_params,
     }
     backtest_run_id = state.create_backtest_run(
         strategy_id=strategy_id,
@@ -1051,6 +1099,7 @@ async def replay_discovered_strategy(
             )
 
     fee_params, fee_source = _inherited_fee_params(state, run_id)
+    liquidation_params = _inherited_liquidation_params(state, run_id)
     replay_run_id = state.create_backtest_run(
         strategy_id=None,
         run_mode="screening",
@@ -1063,6 +1112,7 @@ async def replay_discovered_strategy(
             "replay_note": metrics_note,
             "fee_schedule_source": fee_source,
             **fee_params,
+            **liquidation_params,
         },
     )
 

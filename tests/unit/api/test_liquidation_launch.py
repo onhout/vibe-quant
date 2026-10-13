@@ -1,0 +1,395 @@
+"""Liquidation launch plumbing on the API (bead vibe-quant-2gyk1.1.10, task D1).
+
+Contract rows E1-E8, RP1-RP3 and the two optional ``SweepResultResponse``
+fields: ``liquidation_mode`` is a top-level request field, stored into the run
+parameters only when on; a nested ``parameters.liquidation_mode`` is refused;
+discovery forwards ``--liquidation-mode`` / ``--liquidation-leverage`` only when
+on; and promote/replay inherit the parent's authoritative ``notes.liquidation``.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator  # noqa: TCH003
+from pathlib import Path  # noqa: TCH003
+from typing import Any  # noqa: TCH003
+from unittest.mock import patch
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from vibe_quant.api.app import create_app
+from vibe_quant.api.ws.manager import ConnectionManager
+from vibe_quant.db.state_manager import StateManager
+from vibe_quant.jobs.manager import BacktestJobManager
+
+
+@pytest.fixture()
+def tmp_db(tmp_path: Path) -> Path:
+    return tmp_path / "test.db"
+
+
+@pytest.fixture()
+async def client(
+    tmp_db: Path,
+) -> AsyncIterator[tuple[AsyncClient, StateManager, BacktestJobManager, Path]]:
+    app = create_app()
+    state_mgr = StateManager(db_path=tmp_db)
+    _ = state_mgr.conn
+
+    job_mgr = BacktestJobManager(db_path=tmp_db)
+    ws_mgr = ConnectionManager()
+    await ws_mgr.start()
+
+    app.state.state_manager = state_mgr
+    app.state.job_manager = job_mgr
+    app.state.ws_manager = ws_mgr
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac, state_mgr, job_mgr, tmp_db
+
+    await ws_mgr.stop()
+    job_mgr.close()
+    state_mgr.close()
+
+
+def _launch_body(
+    state: StateManager,
+    *,
+    mode: str | None = None,
+    parameters: dict[str, object] | None = None,
+) -> dict[str, object]:
+    strategy_id = state.create_strategy(name="liq_api", dsl_config={})
+    body: dict[str, object] = {
+        "strategy_id": strategy_id,
+        "symbols": ["BTCUSDT"],
+        "timeframe": "1m",
+        "start_date": "2025-01-01",
+        "end_date": "2025-02-01",
+        "parameters": parameters if parameters is not None else {"initial_balance": 1000},
+    }
+    if mode is not None:
+        body["liquidation_mode"] = mode
+    return body
+
+
+def _run_count(state: StateManager) -> int:
+    return int(state.conn.execute("SELECT COUNT(*) FROM backtest_runs").fetchone()[0])
+
+
+class _PopenPatch:
+    """Patch subprocess.Popen + liveness so a launch creates a real run row."""
+
+    def __init__(self, job_mgr: BacktestJobManager, pid: int = 12345) -> None:
+        self._alive = patch.object(job_mgr, "is_process_alive", return_value=True)
+        self._popen = patch("subprocess.Popen")
+        self._pid = pid
+
+    def __enter__(self) -> Any:
+        self._alive.start()
+        mock_popen = self._popen.start()
+        mock_popen.return_value.pid = self._pid
+        return mock_popen
+
+    def __exit__(self, *exc: object) -> None:
+        self._popen.stop()
+        self._alive.stop()
+
+
+# --- E1/E2: screening & validation storage ---
+
+
+@pytest.mark.parametrize("endpoint", ["screening", "validation"])
+@pytest.mark.parametrize("mode", [None, "off"])
+async def test_mode_off_stored_params_unchanged(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path],
+    endpoint: str,
+    mode: str | None,
+) -> None:
+    """E1: field absent or "off" -> stored parameters identical to today."""
+    ac, state, job_mgr, _db = client
+    body = _launch_body(state, mode=mode)
+
+    with _PopenPatch(job_mgr) as popen:
+        r = await ac.post(f"/api/backtest/{endpoint}", json=body)
+
+    assert r.status_code == 201, r.text
+    run = state.get_backtest_run(r.json()["id"])
+    assert run is not None
+    assert run["parameters"] == {"initial_balance": 1000}
+    assert "liquidation_mode" not in run["parameters"]
+    assert popen.call_count == 1
+
+
+@pytest.mark.parametrize("endpoint", ["screening", "validation"])
+async def test_mode_on_stored_in_params_leverage_untouched(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path],
+    endpoint: str,
+) -> None:
+    """E2: "cross" -> parameters.liquidation_mode="cross"; leverage stays as sent."""
+    ac, state, job_mgr, _db = client
+    body = _launch_body(state, mode="cross", parameters={"initial_balance": 1000, "leverage": 20})
+
+    with _PopenPatch(job_mgr):
+        r = await ac.post(f"/api/backtest/{endpoint}", json=body)
+
+    assert r.status_code == 201, r.text
+    run = state.get_backtest_run(r.json()["id"])
+    assert run is not None
+    assert run["parameters"]["liquidation_mode"] == "cross"
+    assert run["parameters"]["leverage"] == 20
+
+
+async def test_uppercase_mode_is_422_with_no_run_row(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path],
+) -> None:
+    """E3: "ISOLATED" is not a valid mode -> 422, no run row."""
+    ac, state, job_mgr, _db = client
+    body = _launch_body(state, mode="ISOLATED")
+    before = _run_count(state)
+
+    with _PopenPatch(job_mgr) as popen:
+        r = await ac.post("/api/backtest/validation", json=body)
+
+    assert r.status_code == 422, r.text
+    assert _run_count(state) == before
+    assert popen.call_count == 0
+
+
+async def test_params_key_rejected(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path],
+) -> None:
+    """E4: a nested parameters.liquidation_mode is refused, no run row.
+
+    The mode is a top-level field; the nested key used to be silently ignored.
+    """
+    ac, state, job_mgr, _db = client
+    body = _launch_body(
+        state, parameters={"initial_balance": 1000, "liquidation_mode": "isolated"}
+    )
+    before = _run_count(state)
+
+    with _PopenPatch(job_mgr) as popen:
+        r = await ac.post("/api/backtest/validation", json=body)
+
+    assert r.status_code == 422, r.text
+    assert "use the top-level liquidation_mode field" in r.text
+    assert _run_count(state) == before
+    assert popen.call_count == 0
+
+
+async def test_mode_on_leverage_over_max_is_422(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path],
+) -> None:
+    """E5: mode on with parameters.leverage=200 -> 422 (MAX_LEVERAGE), no run row."""
+    ac, state, job_mgr, _db = client
+    body = _launch_body(
+        state, mode="isolated", parameters={"initial_balance": 1000, "leverage": 200}
+    )
+    before = _run_count(state)
+
+    with _PopenPatch(job_mgr) as popen:
+        r = await ac.post("/api/backtest/screening", json=body)
+
+    assert r.status_code == 422, r.text
+    assert _run_count(state) == before
+    assert popen.call_count == 0
+
+
+# --- E6/E7/E8: discovery launch ---
+
+
+_DISCOVERY_BODY: dict[str, object] = {
+    "symbols": ["BTCUSDT"],
+    "timeframes": ["4h"],
+    "population": 12,
+    "generations": 10,
+}
+
+
+async def test_discovery_off_no_flags_no_params_keys(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path],
+) -> None:
+    """E6: mode off with an explicit leverage -> no CLI flags, no params keys."""
+    ac, state, job_mgr, _db = client
+
+    with _PopenPatch(job_mgr) as popen:
+        r = await ac.post(
+            "/api/discovery/launch", json={**_DISCOVERY_BODY, "liquidation_leverage": 50}
+        )
+
+    assert r.status_code == 201, r.text
+    run = state.get_backtest_run(r.json()["run_id"])
+    assert run is not None
+    assert "liquidation_mode" not in run["parameters"]
+    assert "leverage" not in run["parameters"]
+    argv = popen.call_args.args[0]
+    assert "--liquidation-mode" not in argv
+    assert "--liquidation-leverage" not in argv
+
+
+async def test_discovery_on_flags_and_params(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path],
+) -> None:
+    """E7: isolated 20 -> argv flags + params {"liquidation_mode","leverage"}."""
+    ac, state, job_mgr, _db = client
+
+    with _PopenPatch(job_mgr) as popen:
+        r = await ac.post(
+            "/api/discovery/launch",
+            json={**_DISCOVERY_BODY, "liquidation_mode": "isolated", "liquidation_leverage": 20},
+        )
+
+    assert r.status_code == 201, r.text
+    run = state.get_backtest_run(r.json()["run_id"])
+    assert run is not None
+    assert run["parameters"]["liquidation_mode"] == "isolated"
+    assert run["parameters"]["leverage"] == 20.0
+
+    argv = popen.call_args.args[0]
+    assert argv[argv.index("--liquidation-mode") + 1] == "isolated"
+    assert argv[argv.index("--liquidation-leverage") + 1] == "20.0"
+
+
+@pytest.mark.parametrize("bad", [0, 126])
+async def test_discovery_bad_leverage_is_422(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path], bad: float
+) -> None:
+    """E8: leverage 0 or 126 -> 422, no run row."""
+    ac, state, job_mgr, _db = client
+    before = _run_count(state)
+
+    with _PopenPatch(job_mgr) as popen:
+        r = await ac.post(
+            "/api/discovery/launch",
+            json={**_DISCOVERY_BODY, "liquidation_mode": "isolated", "liquidation_leverage": bad},
+        )
+
+    assert r.status_code == 422, r.text
+    assert _run_count(state) == before
+    assert popen.call_count == 0
+
+
+# --- RP1/RP2/RP3: promote & replay inheritance ---
+
+_GENOME_DSL: dict[str, object] = {
+    "name": "ga_liq_1",
+    "strategy_type": "momentum",
+    "entry_conditions": {"long": ["rsi < 30"]},
+    "exit_conditions": {"long": ["rsi > 70"]},
+}
+
+
+def _create_discovery_run(state: StateManager, *, notes_extra: dict[str, object] | None = None) -> int:
+    run_id = state.create_backtest_run(
+        strategy_id=None,
+        run_mode="discovery",
+        symbols=["BTCUSDT"],
+        timeframe="4h",
+        start_date="2024-01-01",
+        end_date="2025-01-01",
+        parameters={"population": 20, "generations": 10},
+    )
+    state.update_backtest_run_status(run_id, "completed")
+    payload: dict[str, object] = {"top_strategies": [{"dsl": dict(_GENOME_DSL), "score": 1.5, "trades": 42}]}
+    if notes_extra:
+        payload.update(notes_extra)
+    state.conn.execute(
+        "INSERT INTO backtest_results (run_id, notes) VALUES (?, ?)",
+        (run_id, json.dumps(payload)),
+    )
+    state.conn.commit()
+    return run_id
+
+
+@pytest.mark.parametrize("endpoint", ["promote/0", "replay/0"])
+async def test_child_inherits_liquidation_from_notes(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path], endpoint: str
+) -> None:
+    """RP1: a mode-on champion's child gets {"liquidation_mode": m, "leverage": L}."""
+    ac, state, job_mgr, _db = client
+    run_id = _create_discovery_run(
+        state, notes_extra={"liquidation": {"mode": "isolated", "leverage": 20.0}}
+    )
+
+    with _PopenPatch(job_mgr, pid=4242):
+        r = await ac.post(f"/api/discovery/results/{run_id}/{endpoint}")
+
+    assert r.status_code == 201, r.text
+    child_id = r.json()["run_id"] if "promote" in endpoint else r.json()["replay_run_id"]
+    child = state.get_backtest_run(child_id)
+    assert child is not None
+    assert child["parameters"]["liquidation_mode"] == "isolated"
+    assert child["parameters"]["leverage"] == 20.0
+
+
+@pytest.mark.parametrize("endpoint", ["promote/0", "replay/0"])
+async def test_child_without_liquidation_notes_gets_no_keys(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path], endpoint: str
+) -> None:
+    """RP2: a parent without notes.liquidation -> child gets no liquidation keys."""
+    ac, state, job_mgr, _db = client
+    run_id = _create_discovery_run(state)  # no notes.liquidation
+
+    with _PopenPatch(job_mgr, pid=4242):
+        r = await ac.post(f"/api/discovery/results/{run_id}/{endpoint}")
+
+    assert r.status_code == 201, r.text
+    child_id = r.json()["run_id"] if "promote" in endpoint else r.json()["replay_run_id"]
+    child = state.get_backtest_run(child_id)
+    assert child is not None
+    assert "liquidation_mode" not in child["parameters"]
+    assert "leverage" not in child["parameters"]
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    ["junk", {"mode": "Isolated"}, {"mode": "isolated", "leverage": 0}, {"leverage": 20}],
+)
+async def test_child_malformed_liquidation_notes_is_409(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path],
+    malformed: object,
+) -> None:
+    """RP3: an unreadable parent notes.liquidation fails closed (409)."""
+    ac, state, job_mgr, _db = client
+    run_id = _create_discovery_run(state, notes_extra={"liquidation": malformed})
+
+    with _PopenPatch(job_mgr, pid=4242):
+        r = await ac.post(f"/api/discovery/results/{run_id}/promote/0")
+
+    assert r.status_code == 409, r.text
+    assert f"discovery run {run_id} has an unreadable notes.liquidation" in r.json()["detail"]
+
+
+# --- SweepResultResponse optional fields ---
+
+
+async def test_sweep_response_exposes_optional_liquidation_fields(
+    client: tuple[AsyncClient, StateManager, BacktestJobManager, Path],
+) -> None:
+    """The sweep response carries liquidation_count/forfeited; NULL rows -> None."""
+    ac, state, _job_mgr, _db = client
+    run_id = state.create_backtest_run(
+        strategy_id=None,
+        run_mode="screening",
+        symbols=["BTCUSDT"],
+        timeframe="1m",
+        start_date="2025-01-01",
+        end_date="2025-02-01",
+        parameters={"liquidation_mode": "isolated", "leverage": 20.0},
+    )
+    state.save_sweep_result(
+        run_id,
+        {"parameters": {"leverage": 20.0}, "liquidation_count": 3, "liquidation_forfeited": 1.5},
+    )
+    state.save_sweep_result(run_id, {"parameters": {"leverage": 10.0}})
+
+    r = await ac.get(f"/api/results/runs/{run_id}/sweeps")
+
+    assert r.status_code == 200, r.text
+    rows = {row["parameters"]["leverage"]: row for row in r.json()}
+    assert rows[20.0]["liquidation_count"] == 3
+    assert rows[20.0]["liquidation_forfeited"] == 1.5
+    assert rows[10.0]["liquidation_count"] is None
+    assert rows[10.0]["liquidation_forfeited"] is None

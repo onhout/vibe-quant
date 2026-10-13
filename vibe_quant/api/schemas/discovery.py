@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
+from vibe_quant.liquidation_settings import DEFAULT_LEVERAGE, MAX_LEVERAGE
+
 
 class DiscoveryLaunchRequest(BaseModel):
     # Unknown fields are an error: a mistyped knob (``bnb_discounts``) used to be
@@ -53,6 +55,13 @@ class DiscoveryLaunchRequest(BaseModel):
     # vibe-quant-7eek0). Declared so an explicit non-market value fails loudly
     # instead of being ignored; never forwarded to the run.
     entry_order: str = "market"
+    # Run-level liquidation mode for every screening backtest of this discovery
+    # (vibe-quant-2gyk1.1.10). Forwarded to the CLI only when on; the default
+    # keeps the mode off and the stored params unchanged (E6).
+    liquidation_mode: Literal["off", "isolated", "cross"] = "off"
+    # Venue/liquidation leverage for a mode-on run: bound-checked at the request
+    # (E8) but only recorded/forwarded when the mode is on (E6).
+    liquidation_leverage: float = Field(DEFAULT_LEVERAGE, gt=0, le=MAX_LEVERAGE)
 
     @field_validator("entry_order")
     @classmethod

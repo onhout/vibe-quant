@@ -4535,6 +4535,16 @@
             "minimum": 1.0,
             "title": "Maker Entry Timeout Bars",
             "default": 3
+          },
+          "liquidation_mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "isolated",
+              "cross"
+            ],
+            "title": "Liquidation Mode",
+            "default": "off"
           }
         },
         "additionalProperties": false,
@@ -6002,6 +6012,23 @@
             "type": "string",
             "title": "Entry Order",
             "default": "market"
+          },
+          "liquidation_mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "isolated",
+              "cross"
+            ],
+            "title": "Liquidation Mode",
+            "default": "off"
+          },
+          "liquidation_leverage": {
+            "type": "number",
+            "maximum": 125.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Liquidation Leverage",
+            "default": 10.0
           }
         },
         "additionalProperties": false,
@@ -9321,6 +9348,28 @@
               }
             ],
             "title": "Passed Purged Kfold"
+          },
+          "liquidation_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Liquidation Count"
+          },
+          "liquidation_forfeited": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Liquidation Forfeited"
           }
         },
         "type": "object",
