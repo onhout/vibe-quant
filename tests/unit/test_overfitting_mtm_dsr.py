@@ -510,7 +510,13 @@ def test_screening_save_results_round_trips_mtm_stats_into_recheck(tmp_path: Pat
         strategy_name="s", total_combinations=1, passed_filters=1,
         execution_time_seconds=0.0, results=[m], pareto_optimal_indices=[0],
     )  # fmt: skip
-    ScreeningPipeline.__new__(ScreeningPipeline).save_results(result, sm, rid)
+    pipeline = ScreeningPipeline.__new__(ScreeningPipeline)
+    # save_results reads the run's liquidation settings from the instance; this
+    # test bypasses __init__, so set the mode-off default explicitly.
+    from vibe_quant.liquidation_settings import LiquidationSettings
+
+    pipeline._liquidation = LiquidationSettings()
+    pipeline.save_results(result, sm, rid)
     (row,) = sm.get_sweep_results(rid)
     sm.close()
     assert (row["mtm_sharpe_daily"], row["mtm_skewness"], row["mtm_kurtosis"], row["mtm_days"]) == (

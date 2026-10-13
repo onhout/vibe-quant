@@ -105,6 +105,8 @@ _SWEEP_RESULTS_COLUMNS: frozenset[str] = frozenset(
         "passed_deflated_sharpe",
         "passed_walk_forward",
         "passed_purged_kfold",
+        "liquidation_count",
+        "liquidation_forfeited",
     }
 )
 

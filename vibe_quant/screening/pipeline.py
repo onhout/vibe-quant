@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from vibe_quant.errors import DataUnavailableError
 from vibe_quant.fees import FeeSchedule
+from vibe_quant.liquidation_settings import LiquidationSettings
 from vibe_quant.overfitting.dsr import DeflatedSharpeRatio, mtm_dsr_calculate
 from vibe_quant.screening.grid import (
     build_parameter_grid,
@@ -165,6 +166,7 @@ class ScreeningPipeline:
         start_date: str | None = None,
         end_date: str | None = None,
         stall_timeout_s: float | None = None,
+        liquidation: LiquidationSettings | None = None,
     ) -> None:
         """Initialize screening pipeline.
 
@@ -176,6 +178,9 @@ class ScreeningPipeline:
             end_date: Backtest end date (YYYY-MM-DD) for DSR day count.
             stall_timeout_s: Seconds with zero completions before pending
                 combos are abandoned with sentinel metrics.
+            liquidation: Validated run-level liquidation settings (bead
+                vibe-quant-2gyk1.1.8). Off by default; when on, ``save_results``
+                records the per-row liquidation summary (D1).
         """
         self.dsl = dsl
         self._runner = backtest_runner or _run_mock_backtest
@@ -183,6 +188,7 @@ class ScreeningPipeline:
         self._start_date = start_date
         self._end_date = end_date
         self._stall_timeout_s = stall_timeout_s or self.DEFAULT_STALL_TIMEOUT_S
+        self._liquidation = liquidation or LiquidationSettings()
 
         # Build parameter grid
         self._param_grid = build_parameter_grid(dsl.sweep)
@@ -432,28 +438,32 @@ class ScreeningPipeline:
 
         for i, metrics in enumerate(result.results):
             is_pareto = i in pareto_set
-            result_dicts.append(
-                {
-                    "parameters": metrics.parameters,
-                    "sharpe_ratio": metrics.sharpe_ratio,
-                    "sortino_ratio": metrics.sortino_ratio,
-                    "max_drawdown": metrics.max_drawdown,
-                    "total_return": metrics.total_return,
-                    "profit_factor": metrics.profit_factor,
-                    "win_rate": metrics.win_rate,
-                    "total_trades": metrics.total_trades,
-                    "total_fees": metrics.total_fees,
-                    "total_funding": metrics.total_funding,
-                    "execution_time_seconds": metrics.execution_time_seconds,
-                    "skewness": metrics.skewness,
-                    "kurtosis": metrics.kurtosis,
-                    "mtm_sharpe_daily": metrics.mtm_sharpe_daily,
-                    "mtm_skewness": metrics.mtm_skewness,
-                    "mtm_kurtosis": metrics.mtm_kurtosis,
-                    "mtm_days": metrics.mtm_days,
-                    "is_pareto_optimal": is_pareto,
-                }
-            )
+            row: dict[str, Any] = {
+                "parameters": metrics.parameters,
+                "sharpe_ratio": metrics.sharpe_ratio,
+                "sortino_ratio": metrics.sortino_ratio,
+                "max_drawdown": metrics.max_drawdown,
+                "total_return": metrics.total_return,
+                "profit_factor": metrics.profit_factor,
+                "win_rate": metrics.win_rate,
+                "total_trades": metrics.total_trades,
+                "total_fees": metrics.total_fees,
+                "total_funding": metrics.total_funding,
+                "execution_time_seconds": metrics.execution_time_seconds,
+                "skewness": metrics.skewness,
+                "kurtosis": metrics.kurtosis,
+                "mtm_sharpe_daily": metrics.mtm_sharpe_daily,
+                "mtm_skewness": metrics.mtm_skewness,
+                "mtm_kurtosis": metrics.mtm_kurtosis,
+                "mtm_days": metrics.mtm_days,
+                "is_pareto_optimal": is_pareto,
+            }
+            # D1: the liquidation summary is written ONLY when the mode is on, so
+            # a mode-off run (and every older row) keeps both columns NULL.
+            if self._liquidation.on:
+                row["liquidation_count"] = int(metrics.liquidation_count)
+                row["liquidation_forfeited"] = float(metrics.liquidation_forfeited)
+            result_dicts.append(row)
 
         # Batch save
         state_manager.save_sweep_results_batch(run_id, result_dicts)
@@ -493,15 +503,23 @@ def create_screening_pipeline(
             :meth:`FeeSchedule.from_params`, so an API/CLI launch that stored
             ``bnb_discount`` reaches the runner. A non-``"market"``
             ``entry_order`` is refused here (post-only is validation-only,
-            bead vibe-quant-7eek0), before any engine exists.
+            bead vibe-quant-7eek0), before any engine exists. The run-level
+            liquidation settings are derived from the same parameters with
+            :meth:`LiquidationSettings.from_params` (the single source; there
+            is no screening CLI flag) and reach the runner and the pipeline.
 
     Returns:
         Configured ScreeningPipeline
 
     Raises:
         ValueError: ``parameters["entry_order"]`` is not ``"market"``.
+        LiquidationConfigError: the stored ``liquidation_mode`` / ``leverage``
+            is invalid (E10: the run fails before any engine exists).
     """
     run_params: Mapping[str, Any] = parameters or {}
+    # Parse ONCE, before the mock/real split, so an invalid stored mode fails
+    # the run even when no engine would be built.
+    liquidation = LiquidationSettings.from_params(run_params)
     entry_order = str(run_params.get("entry_order", "market"))
 
     from vibe_quant.screening.nt_runner import refuse_non_market_entry
@@ -529,6 +547,8 @@ def create_screening_pipeline(
             ),
             fee_schedule=FeeSchedule.from_params(run_params),
             entry_order=entry_order,
+            liquidation_mode=liquidation.mode,
+            liquidation_leverage=liquidation.leverage,
         )
     return ScreeningPipeline(
         dsl=dsl,
@@ -536,6 +556,7 @@ def create_screening_pipeline(
         max_workers=max_workers,
         start_date=start_date,
         end_date=end_date,
+        liquidation=liquidation,
     )
 
 

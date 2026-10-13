@@ -121,6 +121,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         fee_schedule = FeeSchedule.from_params(parameters)
         print(f"Screening fee schedule: {fee_schedule.to_notes()}")
 
+        # Run-level liquidation settings come from the run's own parameters (no
+        # screening CLI flag). Log the effective settings the way the fee
+        # schedule is logged; an invalid stored mode raises here (E10) before
+        # any engine exists.
+        from vibe_quant.liquidation_settings import LiquidationSettings
+
+        liquidation = LiquidationSettings.from_params(parameters)
+        print(f"Screening liquidation: {liquidation.to_notes()}")
+
         pipeline = create_screening_pipeline(
             dsl,
             symbols=symbols,

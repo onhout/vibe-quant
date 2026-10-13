@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when adding new migrations to _migrate_add_columns. One-time data
 # migrations are additionally gated by ``PRAGMA user_version`` markers.
-SCHEMA_VERSION: int = 18
+SCHEMA_VERSION: int = 19
 
 SCHEMA_SQL = """
 -- Strategy definitions (DSL configs)
@@ -155,7 +155,11 @@ CREATE TABLE IF NOT EXISTS sweep_results (
     is_pareto_optimal BOOLEAN DEFAULT 0,
     passed_deflated_sharpe BOOLEAN,
     passed_walk_forward BOOLEAN,
-    passed_purged_kfold BOOLEAN
+    passed_purged_kfold BOOLEAN,
+    -- Opt-in liquidation summary (bead vibe-quant-2gyk1.1.8): written only when the
+    -- run's liquidation_mode is on; NULL on mode-off and older rows (D1).
+    liquidation_count INTEGER,
+    liquidation_forfeited REAL
 );
 
 -- Background job tracking for process management
@@ -399,6 +403,10 @@ def _migrate_add_columns(conn: sqlite3.Connection) -> None:
         ("research_extraction_jobs", "cancel_requested_at", "TEXT"),
         ("backtest_results", "user_notes", "TEXT"),
         ("background_jobs", "pid_start_time", "TEXT"),
+        # Opt-in liquidation summary per sweep row (bead vibe-quant-2gyk1.1.8):
+        # NULL on mode-off and older rows, written only when the mode is on (D1).
+        ("sweep_results", "liquidation_count", "INTEGER"),
+        ("sweep_results", "liquidation_forfeited", "REAL"),
     ]
     applied = 0
     for table, column, col_type in migrations:
