@@ -86,7 +86,7 @@
 
 ### Core Design Principles
 
-1. **Single-engine, two-tier fidelity**: NautilusTrader for both screening (simplified execution, parallel parameter sweeps) and validation (realistic fills, own-1m-detail-bar order release, full cost modeling; latency presets apply to tick data only). One engine means leverage, funding rates, and liquidation are always modeled -- even during screening.
+1. **Single-engine, two-tier fidelity**: NautilusTrader for both screening (simplified execution, parallel parameter sweeps) and validation (realistic fills, own-1m-detail-bar order release, full cost modeling; latency presets apply to tick data only). One engine means leverage and funding rates are always modeled; liquidation is an opt-in per-run overlay for screening, validation and discovery (OFF by default, §7).
 2. **Single source of truth**: Strategy logic defined once in a declarative DSL, auto-translated to NautilusTrader Strategy subclasses. DSL supports multi-timeframe conditions, time-based filters, and position management.
 3. **Separation of concerns**: Strategy signals are decoupled from position sizing, risk management, and execution. Each is a pluggable module.
 4. **Incremental complexity**: Start with manual strategies and parameter sweeps. Build toward automated strategy discovery with genetic optimization.
@@ -163,8 +163,8 @@ This is the standard and accepted way to use LGPL libraries from MIT-licensed pr
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Backtesting engine | NautilusTrader (single engine) | Rust performance, execution realism critical at 20x leverage, backtest-live parity, always models leverage/funding/liquidation |
-| Parameter screening | NautilusTrader screening mode + multiprocessing | Simplified fills for speed, but still models margin/funding/liquidation unlike vectorized alternatives which lack these features |
+| Backtesting engine | NautilusTrader (single engine) | Rust performance, execution realism critical at 20x leverage, backtest-live parity, models leverage/funding always and liquidation as an opt-in per-run overlay (off by default) |
+| Parameter screening | NautilusTrader screening mode + multiprocessing | Simplified fills for speed, but still models margin/funding, and liquidation as an opt-in overlay (off by default), unlike vectorized alternatives which lack these features |
 | Strategy format | Declarative DSL | Single source auto-translates to NautilusTrader Strategy, UI form generation |
 | DSL expressiveness | Indicator + Condition + Action + Multi-TF + Time Filters + Position Mgmt | Covers most crypto perp futures strategies; multi-timeframe confirmation is essential |
 | Technical indicators | pandas-ta-classic + NautilusTrader built-in | pandas-ta-classic is community-maintained with CI/CD; NautilusTrader has Rust-native indicators for core TA |
@@ -694,7 +694,7 @@ parameters_schema:
 
 ### Architecture
 
-The screening pipeline uses NautilusTrader in a **simplified execution mode** for fast parameter sweeps. Unlike vectorized alternatives, this approach correctly models leverage, margin, funding rates, and liquidation even during screening -- critical for perpetual futures at 20x.
+The screening pipeline uses NautilusTrader in a **simplified execution mode** for fast parameter sweeps. Unlike vectorized alternatives, this approach correctly models leverage, margin and funding rates even during screening -- critical for perpetual futures at 20x -- with liquidation available as an opt-in per-run overlay (OFF by default; see §7).
 
 **Screening mode simplifications** (vs full validation):
 - Basic `FillModel` with simple probabilistic slippage (no custom volume-based model)
@@ -707,7 +707,7 @@ The screening pipeline uses NautilusTrader in a **simplified execution mode** fo
 **What screening mode still models** (the key advantage):
 - Leverage and margin mechanics
 - Funding rate payments (8-hourly for Binance)
-- Liquidation risk at configured leverage
+- Liquidation risk at the configured leverage -- only when the opt-in overlay is on (off by default)
 - Position sizing with configured method
 - All DSL conditions including multi-TF and time filters
 
@@ -907,10 +907,30 @@ Custom fill model loaded via `ImportableFillModelConfig` (specifying `fill_model
 - Negative rate: short positions pay, long positions receive
 - Accrual: `position_notional * funding_rate` per period
 
-**Liquidation simulation:**
-- Isolated margin: `Liq_Price(long) = entry * (1 - 1/leverage + MMR)`
-- Maintenance margin rate: Tiered by position size (Binance schedule)
-- When mark price crosses liquidation price: position force-closed, remaining margin lost
+**Liquidation simulation (opt-in, OFF by default):**
+- A per-run overlay available to screening, validation and discovery: mode `off` (default), `isolated` or `cross`; leverage in `(0, 125]`. With the mode on, every metric is recomputed from the truncated ledgers (trades, return, win rate, PF, return moments, Sharpe/Sortino and the daily series, MTM max DD), not NT's raw path.
+- The venue leverage differs by tier. In **screening and discovery** (one shared path) the venue's `default_leverage` is the chosen liquidation leverage when the mode is on and stays fixed at 10x when it is off (`screening/nt_runner.py`). In **validation** the venue always runs at `parameters.leverage` (default 10) in both modes -- turning the mode on does not change validation's venue leverage (`validation/runner.py`). The liquidation distance itself uses the chosen leverage in every tier. NT's own margin checks and rejections therefore run at that venue leverage, so a mode-on run at `L != 10` can differ from mode off even with zero hits: in screening/discovery because the venue leverage moves as well as the liquidation, in validation because of the liquidation alone.
+- The scan walks Binance **MARK-price 1m klines** over the half-open run window `[start, end)`: a position is liquidated when the mark crosses its liquidation price. Only MARK bars opening inside the window are seen (plus one carry bar before `start`), so a position still open at the run end is never liquidated by a later price, and a fill, funding or other cash flow at `ts >= end` is refused.
+- Liquidation prices, isolated/cross margin math and the maintenance-margin rate use a versioned per-symbol **snapshot of the Binance USDT-M maintenance-margin tier tables** (`vibe_quant/liquidation/binance_um_brackets.json`, version `2026-10-12`, from the Binance futures `brackets` endpoint). Historical bracket changes are not modelled; a notional at or beyond the last bracket is an error.
+- The **clearance fee is a cost**: `total_fees` includes it and `fee_drag` counts it. `liquidation_forfeited` (lost margin) overlaps `total_fees` and must never be added to it.
+- **Integrity errors fail the run (fail closed):** missing or incomplete MARK 1m coverage, an unpriceable open survivor, or a fill/funding/cash flow at `ts >= end` ends the run `failed` with `LiquidationIntegrityError: ...` (never a `-999`/`-inf` row). This holds for screening, validation, discovery (every stage) and the overfitting runners.
+
+### How to turn liquidation on
+
+OFF by default: a run without `liquidation_mode` is off and stays byte-identical to before (import-isolated -- a mode-off run never imports `vibe_quant.liquidation`). It needs MARK 1m klines in the archive (and, for the engine, in the catalog):
+
+```bash
+python -m vibe_quant.data download-mark --start 2024-01-01 --end 2026-03-17 --catalog
+# --start is required; --end defaults to today; --symbols defaults to all supported symbols
+# --catalog also rebuilds the MARK 1m bars in the ParquetDataCatalog from the archive
+```
+
+- **Screening** -- API/UI: set the top-level `liquidation_mode` (`off|isolated|cross`) on the launch request. The launch form has a **Liquidation** select (Off/Isolated/Cross) and reuses the existing **Leverage** input as the liquidation leverage; `Off` sends nothing. With the mode on, the screening venue and the liquidation distance run at `parameters.leverage`; with the mode off the screening venue stays fixed at 10x and the Leverage input has no effect. There is no screening CLI flag.
+- **Validation** -- API/UI: the same top-level `liquidation_mode` field; the launch form has the same **Liquidation** select (Off/Isolated/Cross) reusing the existing **Leverage** input. Turning the mode on does not change validation's venue leverage.
+- **Discovery** -- CLI: `--liquidation-mode isolated --liquidation-leverage 20` (report-only: no score term, no gate). API/UI: `liquidation_mode` + `liquidation_leverage`; the launch form has the same **Liquidation** select plus a **Liquidation leverage** input shown only when the mode is on.
+- **Promote / replay** inherit the parent discovery run's `notes.liquidation` into the child validation run.
+- **Results:** a mode-on run's results show a liquidation chip and counts.
+- **Paper/live trading:** not supported yet.
 
 ### Strategy Code Generation
 
