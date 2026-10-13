@@ -7,6 +7,7 @@ import json
 import multiprocessing as mp
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from types import ModuleType
 
 _BUS_PATH = Path(__file__).resolve().parents[2] / "scripts" / "agents" / "bus.py"
@@ -446,3 +448,458 @@ def test_needs_user_answer_refuses_non_questions(
             bus.needs_user_answer(gdir, "chief", str(bad["id"]), "x")
         assert e.value.code == 2
         assert f"{bad['id']} is not a needs-user question" in capsys.readouterr().err
+
+
+# --- durable tail (never miss a message across a watcher restart) -------------
+
+
+def _tail_proc(bus_dir: Path, timeout: float, durable: bool = True) -> subprocess.Popen[str]:
+    args = [
+        sys.executable, str(_BUS_PATH), "--bus", str(bus_dir), "--as", "chief",
+        "tail", "--to", "chief", "--timeout", str(timeout),
+    ]
+    if durable:
+        args.append("--durable")
+    return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def _wait_for(path: Path, deadline_s: float = 15.0) -> None:
+    deadline = time.monotonic() + deadline_s
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert path.exists(), f"{path} never appeared"
+
+
+def test_durable_tail_skips_history_and_replays_across_a_kill(tmp_path: Path) -> None:
+    bus.post(tmp_path, "w", "chief", "info", "old history")  # before the watcher: must not replay
+    first = _tail_proc(tmp_path, 30)
+    try:
+        _wait_for(bus._tail_cursor_path(tmp_path, "chief", "chief"))  # baseline persisted at start
+    finally:
+        first.kill()
+        first.wait(timeout=10)
+    for i in range(3):
+        bus.post(tmp_path, "w", "chief", "info", f"m{i}")  # arrive while the watcher is dead
+    second = _tail_proc(tmp_path, 1.0)
+    out, _ = second.communicate(timeout=30)
+    bodies = [ln.split("): ", 1)[1] for ln in out.splitlines() if "): " in ln]
+    assert bodies == ["m0", "m1", "m2"]  # each undelivered message exactly once
+    assert "old history" not in out
+    third = _tail_proc(tmp_path, 1.0)
+    out3, _ = third.communicate(timeout=30)
+    assert out3.strip() == ""  # nothing new
+
+
+def test_durable_tail_cursor_not_advanced_before_printing(tmp_path: Path) -> None:
+    for i in range(3):
+        bus.post(tmp_path, "w", "chief", "info", f"m{i}")
+    seen: list[str] = []
+
+    def emit(line: str) -> None:
+        seen.append(line)
+        raise RuntimeError("crash after the first delivered line")
+
+    with pytest.raises(RuntimeError):
+        bus._durable_tail(tmp_path, "chief", "chief", True, 1.0, emit=emit)
+    assert len(seen) == 1
+    # the cursor still points at the start: the two unprinted messages must replay
+    assert bus._read_cursor(bus._tail_cursor_path(tmp_path, "chief", "chief")) == 0
+
+
+# --- atomic cursors -----------------------------------------------------------
+
+
+def test_set_cursor_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bus._set_cursor(tmp_path, "sa", 5)
+    p = bus._cursor_path(tmp_path, "sa")
+    assert p.read_text() == "5"
+
+    def boom(src: object, dst: object) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(bus.os, "replace", boom)
+    with pytest.raises(OSError):
+        bus._set_cursor(tmp_path, "sa", 9)
+    assert p.read_text() == "5"  # old value intact (no torn write)
+    assert [f.name for f in p.parent.iterdir()] == [p.name]  # no temp leftovers
+
+
+def test_garbled_cursor_is_a_clear_error(tmp_path: Path) -> None:
+    bus._set_cursor(tmp_path, "sa", 7)
+    p = bus._cursor_path(tmp_path, "sa")
+    p.write_text("")  # a crash mid-write leaves an empty cursor file
+    with pytest.raises(SystemExit) as exc:
+        bus._get_cursor(tmp_path, "sa")
+    assert str(p) in str(exc.value)
+
+
+# --- pending questions --------------------------------------------------------
+
+
+def test_pending_lists_questions_without_a_reply(tmp_path: Path) -> None:
+    q = bus.post(tmp_path, "chief", "sa", "question", "which lookback?")
+    bus.post(tmp_path, "chief", "sa", "blocker", "need the catalog")
+    bus.post(tmp_path, "chief", "all", "question", "broadcast: not a DM")  # not addressed to me
+    assert [m["body"] for m in bus.pending(tmp_path, "sa")] == ["which lookback?", "need the catalog"]
+    bus.reply(tmp_path, "sa", str(q["id"]), "2*period")
+    assert [m["body"] for m in bus.pending(tmp_path, "sa")] == ["need the catalog"]
+
+
+def test_pending_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    bus.post(tmp_path, "chief", "sa", "question", "which lookback?")
+    assert bus.main(["--bus", str(tmp_path), "--as", "sa", "pending"]) == 0
+    out = capsys.readouterr().out
+    assert "which lookback?" in out and "old)" in out
+    assert [m["body"] for m in bus.pending(tmp_path, "sa")]  # still unread (pending never advances)
+
+
+def test_digest_shows_pending_questions_first(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    g = bus.global_board_dir()  # the autouse fixture points SWARM_BOARD at a tmp board
+    bus.post(g, "w", "chief", "question", "still open?")
+    assert bus.main(["--as", "chief", "digest"]) == 0
+    out = capsys.readouterr().out
+    assert "PENDING QUESTIONS FOR chief (1):" in out and "still open?" in out
+    assert out.index("PENDING QUESTIONS FOR chief") < out.index("== persistent board")
+
+
+# --- idempotent posts (--client-id) -------------------------------------------
+
+
+def test_client_id_makes_posts_idempotent(tmp_path: Path) -> None:
+    a = bus.post(tmp_path, "sa", "chief", "info", "hello", client_id="c1")
+    b = bus.post(tmp_path, "sa", "chief", "info", "hello", client_id="c1")
+    assert a["id"] == b["id"]  # the existing message is returned, not a duplicate
+    bus.post(tmp_path, "sa", "chief", "info", "hello", client_id="c2")  # new id -> new line
+    bus.post(tmp_path, "sb", "chief", "info", "hello", client_id="c1")  # other sender -> new line
+    lines = (tmp_path / "messages.jsonl").read_text().splitlines()
+    assert len(lines) == 3
+    assert json.loads(lines[0])["client_id"] == "c1"
+
+
+def test_post_cli_accepts_client_id(tmp_path: Path) -> None:
+    for _ in range(2):
+        assert bus.main(
+            ["--bus", str(tmp_path), "--as", "sa", "post", "--to", "chief", "--body", "x", "--client-id", "z"]
+        ) == 0
+    assert len((tmp_path / "messages.jsonl").read_text().splitlines()) == 1
+
+
+# --- regression: findings from the harden review ------------------------------
+
+
+def test_durable_baseline_is_the_end_of_the_last_complete_line(tmp_path: Path) -> None:
+    """A writer mid-append (partial last line) must not push the first-run baseline past it."""
+    bus.post(tmp_path, "w", "chief", "info", "old history")
+    path = tmp_path / "messages.jsonl"
+    complete = path.stat().st_size
+    full = json.dumps({"id": "p1", "from": "w", "to": "chief", "kind": "info", "body": "half-written"}) + "\n"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(full[:20])  # the writer is mid-append: no newline yet
+    sent: list[str] = []
+    bus._durable_tail(tmp_path, "chief", "chief", False, 0, emit=sent.append)  # timeout 0: baseline only
+    assert bus._read_cursor(bus._tail_cursor_path(tmp_path, "chief", "chief")) == complete
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(full[20:])  # the append finishes
+    bus._durable_tail(tmp_path, "chief", "chief", False, 0.3, emit=sent.append)
+    assert [ln.split("): ", 1)[1] for ln in sent] == ["half-written"]  # delivered, not lost
+
+
+def test_overlapping_durable_tails_do_not_both_deliver(tmp_path: Path) -> None:
+    import fcntl
+
+    bus.post(tmp_path, "w", "chief", "info", "m0")
+    first = bus._tail_lock_path(tmp_path, "chief", "chief")
+    first.parent.mkdir(parents=True, exist_ok=True)
+    with first.open("a") as held:  # a live tail for the same (as, to) holds this lock
+        fcntl.flock(held, fcntl.LOCK_EX)
+        sent: list[str] = []
+        with pytest.raises(SystemExit) as exc:
+            bus._durable_tail(tmp_path, "chief", "chief", True, 0.3, emit=sent.append)
+    assert "already running" in str(exc.value) and str(first) in str(exc.value)
+    assert sent == []  # the second tail delivered nothing
+    bus._durable_tail(tmp_path, "chief", "chief", True, 0.3, emit=sent.append)  # lock released: runs
+    assert len(sent) == 1
+
+
+def test_overlapping_tail_for_another_cursor_is_not_blocked(tmp_path: Path) -> None:
+    import fcntl
+
+    other = bus._tail_lock_path(tmp_path, "chief", "sa")
+    other.parent.mkdir(parents=True, exist_ok=True)
+    with other.open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        bus._durable_tail(tmp_path, "chief", "chief", True, 0, emit=lambda line: None)
+
+
+def test_ask_retry_with_same_client_id_returns_the_existing_answer(tmp_path: Path) -> None:
+    q = bus.post(tmp_path, "sa", "chief", "question", "which lookback?", client_id="ask-1")
+    bus.reply(tmp_path, "chief", str(q["id"]), "2*period")  # answered before the retry
+    ans = bus.ask(tmp_path, "sa", "chief", "which lookback?", timeout=0.3, client_id="ask-1")
+    assert ans is not None and ans["body"] == "2*period"
+    assert len((tmp_path / "messages.jsonl").read_text().splitlines()) == 2  # no duplicate question
+
+
+def _same_key_writer(path: str, barrier: object, rounds: int) -> None:
+    for r in range(rounds):
+        barrier.wait()  # type: ignore[attr-defined]  # every process posts the SAME key at once
+        bus.post(Path(path), "sa", "chief", "info", "retry", client_id=f"k{r}")
+
+
+def test_concurrent_same_client_id_retries_store_one_line_each(tmp_path: Path) -> None:
+    rounds, procs = 25, 6
+    ctx = mp.get_context("fork")
+    barrier = ctx.Barrier(procs)
+    workers = [ctx.Process(target=_same_key_writer, args=(str(tmp_path), barrier, rounds)) for _ in range(procs)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join(timeout=60)
+        assert w.exitcode == 0
+    msgs = [json.loads(ln) for ln in (tmp_path / "messages.jsonl").read_text().splitlines()]
+    assert sorted(m["client_id"] for m in msgs) == sorted(f"k{r}" for r in range(rounds))
+
+
+def test_durable_tail_delivers_only_what_is_addressed_to_it(tmp_path: Path) -> None:
+    bus.post(tmp_path, "w", "chief", "info", "for chief")
+    bus.post(tmp_path, "w", "sa", "info", "for sa")
+    bus.post(tmp_path, "w", "all", "info", "for all")
+    bus.post(tmp_path, "w", "board", "info", "board post", topic="chat")
+    sent: list[str] = []
+    bus._durable_tail(tmp_path, "chief", "chief", True, 0.3, emit=sent.append)
+    assert [ln.split("): ", 1)[1] for ln in sent] == ["for chief", "for all", "board post"]
+
+
+def test_foreign_reply_does_not_close_a_pending_question(tmp_path: Path) -> None:
+    q = bus.post(tmp_path, "chief", "sa", "question", "which lookback?")
+    bus.post(tmp_path, "other", "chief", "answer", "I think 20", ref=str(q["id"]))  # not sa's reply
+    assert [m["body"] for m in bus.pending(tmp_path, "sa")] == ["which lookback?"]
+
+
+def test_read_from_leaves_an_unfinished_line_for_later(tmp_path: Path) -> None:
+    path = tmp_path / "messages.jsonl"
+    path.write_text('{"id": "a", "from": "w", "to": "chief", "kind": "info", "body": "x"}\n{"id": "b"', encoding="utf-8")
+    msgs, off = bus._read_from(tmp_path, 0)
+    assert [m["id"] for m in msgs] == ["a"] and off == path.read_text().index("\n") + 1
+
+
+def test_pending_global_cli_spans_the_board_and_every_job_bus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs = tmp_path / "jobs"
+    monkeypatch.setenv("SWARM_JOBS", str(jobs))
+    other_job = jobs / "20261012-other" / "bus"
+    other_job.mkdir(parents=True)
+    mine = jobs / "20261012-mine" / "bus"
+    mine.mkdir(parents=True)
+    bus.post(bus.global_board_dir(), "w", "worker", "question", "global-only-unanswered-question")
+    bus.post(other_job, "w", "worker", "question", "other-job-question")
+    bus.post(mine, "w", "worker", "question", "my-job-question")
+    base = ["--bus", str(mine), "--as", "worker", "pending"]
+    assert bus.main(base) == 0
+    plain = capsys.readouterr().out
+    assert "my-job-question" in plain and "global-only" not in plain and "other-job" not in plain
+    assert bus.main([*base, "--global"]) == 0
+    wide = capsys.readouterr().out
+    assert all(b in wide for b in ("global-only-unanswered-question", "other-job-question", "my-job-question"))
+    assert "@20261012-other" in wide  # job-tagged
+
+
+def _delivered(tmp_path: Path) -> list[str]:
+    sent: list[str] = []
+    bus._durable_tail(tmp_path, "chief", "chief", True, 0.3, emit=sent.append)
+    return [ln.split("): ", 1)[1] for ln in sent]
+
+
+def test_append_after_a_crashed_writer_fragment_is_still_delivered(tmp_path: Path) -> None:
+    path = tmp_path / "messages.jsonl"
+    old = json.dumps({"id": "a", "from": "w", "to": "chief", "kind": "info", "body": "before"}, ensure_ascii=False)
+    # a writer died mid-record: a torn tail with no newline, cut inside a multibyte character
+    path.write_bytes(old.encode() + b"\n" + b'{"id": "torn", "body": "\xe2\x82')
+    stored = bus.post(tmp_path, "sa", "chief", "info", "after", client_id="c1")
+    assert _delivered(tmp_path) == ["before", "after"]  # the new record did not get glued to the fragment
+    assert bus.post(tmp_path, "sa", "chief", "info", "after", client_id="c1")["id"] == stored["id"]
+    assert _delivered(tmp_path) == []  # the retry stored nothing new: the durable cursor has nothing to deliver
+    assert len([ln for ln in path.read_bytes().split(b"\n") if ln]) == 3  # old, fragment, new
+
+
+def test_client_id_retry_over_an_unterminated_complete_record_delivers_once(tmp_path: Path) -> None:
+    path = tmp_path / "messages.jsonl"
+    rec = {"id": "orig", "from": "sa", "to": "chief", "kind": "info", "body": "once", "client_id": "c1"}
+    path.write_text(json.dumps(rec), encoding="utf-8")  # fully written, newline lost to a crash
+    assert bus.post(tmp_path, "sa", "chief", "info", "once", client_id="c1")["id"] == "orig"
+    assert _delivered(tmp_path) == ["once"]  # the acknowledged message is deliverable, exactly once
+    assert path.read_bytes().endswith(b"\n")
+
+
+def test_cursor_inside_a_torn_fragment_does_not_wedge_the_durable_tail(tmp_path: Path) -> None:
+    path = tmp_path / "messages.jsonl"
+    path.write_bytes(b'{"id":"torn","body":"123')  # a crashed writer's fragment; "123" is valid JSON by itself
+    cpath = bus._tail_cursor_path(tmp_path, "chief", "chief")
+    bus._write_cursor(cpath, 21)  # the cursor sits INSIDE the fragment (at the digits)
+    bus.post(tmp_path, "sa", "chief", "info", "acknowledged")  # repairs the tail, then appends
+    assert _delivered_resume(tmp_path) == ["acknowledged"]
+    assert bus._read_cursor(cpath) == path.stat().st_size  # advanced past the junk
+    assert _delivered_resume(tmp_path) == []  # a restart neither crashes nor repeats
+
+
+def _delivered_resume(tmp_path: Path) -> list[str]:
+    sent: list[str] = []
+    bus._durable_tail(tmp_path, "chief", "chief", False, 0.3, emit=sent.append)
+    return [ln.split("): ", 1)[1] for ln in sent]
+
+
+@pytest.mark.parametrize("junk", [b"123", b"null", b'"str"', b"[1, 2]", b'{"id": "x"}', b'{"id": "x", "from": "w"}'])
+def test_read_from_keeps_only_complete_message_records(tmp_path: Path, junk: bytes) -> None:
+    good = json.dumps({"id": "g", "from": "w", "to": "chief", "kind": "info", "body": "ok"}).encode()
+    (tmp_path / "messages.jsonl").write_bytes(junk + b"\n" + good + b"\n" + junk + b"\n")
+    msgs, off = bus._read_from(tmp_path, 0)
+    assert [m["id"] for m in msgs] == ["g"] and off == (tmp_path / "messages.jsonl").stat().st_size
+
+
+@pytest.mark.parametrize("value", ["999999", "-5"])
+def test_out_of_bounds_cursor_is_a_clear_error_on_every_reader(tmp_path: Path, value: str) -> None:
+    bus.post(tmp_path, "chief", "sa", "info", "must-read")
+    size = (tmp_path / "messages.jsonl").stat().st_size
+    assert int(value) != size
+    cases: dict[str, tuple[Path, Callable[[], object]]] = {
+        "inbox": (bus._cursor_path(tmp_path, "sa"), lambda: bus.inbox(tmp_path, "sa")),
+        "board": (bus._cursor_path(tmp_path, "sa.board._all"), lambda: bus.board_read(tmp_path, "sa")),
+        "tail": (
+            bus._tail_cursor_path(tmp_path, "sa", "sa"),
+            lambda: bus._durable_tail(tmp_path, "sa", "sa", False, 0.2, emit=lambda line: None),
+        ),
+    }
+    for name, (cpath, call) in cases.items():
+        cpath.parent.mkdir(parents=True, exist_ok=True)
+        cpath.write_text(value, encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            call()
+        assert str(cpath) in str(exc.value) and value in str(exc.value), name
+        assert cpath.read_text() == value  # never silently repaired or advanced
+
+
+def test_cursor_exactly_at_eof_is_valid(tmp_path: Path) -> None:
+    bus.post(tmp_path, "chief", "sa", "info", "seen")
+    size = (tmp_path / "messages.jsonl").stat().st_size
+    bus._set_cursor(tmp_path, "sa", size)
+    assert bus.inbox(tmp_path, "sa") == []
+    bus._write_cursor(bus._tail_cursor_path(tmp_path, "sa", "sa"), size)
+    bus._durable_tail(tmp_path, "sa", "sa", False, 0.2, emit=lambda line: None)
+
+
+def test_client_id_retry_over_an_incomplete_record_appends_a_deliverable_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "messages.jsonl"
+    path.write_text('{"id":"bad","from":"sa","client_id":"retry"}\n', encoding="utf-8")  # no to/kind/body
+    stored = bus.post(tmp_path, "sa", "chief", "info", "real", client_id="retry")
+    assert stored["id"] != "bad"  # the junk record is not "already posted": no reader would deliver it
+    assert [m["body"] for m in bus.inbox(tmp_path, "chief")] == ["real"]
+    assert bus.inbox(tmp_path, "chief") == []  # exactly once
+    assert bus.main(["--bus", str(tmp_path), "--as", "chief2", "tail", "--to", "chief", "--since-start", "--timeout", "0.2"]) == 0
+    assert "real" in capsys.readouterr().out  # the CLI renders it (no KeyError)
+    again = bus.post(tmp_path, "sa", "chief", "info", "real", client_id="retry")
+    assert again["id"] == stored["id"]  # a real record still dedupes
+
+
+def test_file_shrinking_under_a_running_durable_tail_is_an_explicit_error(tmp_path: Path) -> None:
+    bus.post(tmp_path, "w", "chief", "info", "a long first message " * 5)
+    bus.post(tmp_path, "w", "chief", "info", "a long second message " * 5)
+    path = tmp_path / "messages.jsonl"
+    old_size = path.stat().st_size
+    sent: list[str] = []
+
+    def emit(line: str) -> None:
+        sent.append(line)
+        if len(sent) == 2:  # a checkout/rebase shrinks the file while the tail follows
+            path.write_text("", encoding="utf-8")
+            bus.post(tmp_path, "w", "chief", "info", "short")  # acknowledged, but behind the held offset
+
+    with pytest.raises(SystemExit) as exc:
+        bus._durable_tail(tmp_path, "chief", "chief", True, 5.0, emit=emit)
+    assert str(path) in str(exc.value) and str(old_size) in str(exc.value)
+    assert not any("short" in ln for ln in sent)  # never silently skipped past, never reset
+
+
+def test_read_from_refuses_an_offset_beyond_eof(tmp_path: Path) -> None:
+    bus.post(tmp_path, "w", "chief", "info", "x")
+    size = (tmp_path / "messages.jsonl").stat().st_size
+    assert bus._read_from(tmp_path, size)[1] == size  # exactly EOF is fine
+    with pytest.raises(SystemExit) as exc:
+        bus._read_from(tmp_path, size + 1)
+    assert str(size + 1) in str(exc.value)
+    with pytest.raises(SystemExit):  # a vanished file is shorter than any positive offset too
+        bus._read_from(tmp_path / "nowhere", 5)
+
+
+_NO_TS = [
+    # passes _is_message (id/from/to/kind/body) but carries none of the optional fields (ts, topic, ref, ...)
+    {"id": "bad", "from": "sa", "to": "chief", "kind": "question", "body": "old", "client_id": "retry"},
+    {"id": "nu", "from": "sa", "to": "board", "kind": "question", "body": "needs the user", "topic": "needs-user"},
+    {"id": "bp", "from": "sa", "to": "board", "kind": "info", "body": "board post w/o topic"},
+]
+
+
+@pytest.mark.parametrize(
+    ("argv", "expect"),
+    [
+        (["--as", "chief", "pending"], "old"),
+        (["--as", "chief", "pending", "--global"], "old"),
+        (["--as", "chief", "needs-user", "open"], "needs the user"),
+        (["--as", "chief", "digest"], "needs the user"),
+        (["--as", "chief", "digest", "--recent", "5"], "board post w/o topic"),
+        (["--as", "chief", "tail", "--to", "chief", "--since-start", "--timeout", "0.2"], "old"),
+        (["--as", "chief", "board", "render"], "board post w/o topic"),
+        (["--as", "chief", "board", "topics"], "needs-user"),
+        (["--as", "chief", "board", "brief"], "needs the user"),
+        (["--as", "chief", "board", "read", "--all"], "board post w/o topic"),
+        (["--as", "chief", "roster"], "sa"),
+        (["--as", "chief", "thread", "nu"], "needs the user"),
+    ],
+)
+def test_records_without_optional_fields_work_in_every_consumer(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], argv: list[str], expect: str
+) -> None:
+    g = bus.global_board_dir()  # SWARM_BOARD (autouse) -> a tmp board
+    (g / "messages.jsonl").write_text("".join(json.dumps(r) + "\n" for r in _NO_TS), encoding="utf-8")
+    assert bus.main(["--bus", str(g), *argv]) == 0
+    out = capsys.readouterr().out
+    assert expect in out
+
+
+def test_retry_over_a_record_without_ts_returns_it_and_it_stays_listable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    g = bus.global_board_dir()
+    (g / "messages.jsonl").write_text(json.dumps(_NO_TS[0]) + "\n", encoding="utf-8")
+    assert bus.post(g, "sa", "chief", "question", "old", client_id="retry")["id"] == "bad"
+    assert [m["id"] for m in bus.pending(g, "chief")] == ["bad"]
+    assert bus.main(["--bus", str(g), "--as", "chief", "pending"]) == 0
+    assert "(? old)" in capsys.readouterr().out  # an unknown age renders as ?
+
+
+def test_missing_ts_keeps_file_order_among_themselves(tmp_path: Path) -> None:
+    g = bus.global_board_dir()
+    recs = [{"id": f"q{i}", "from": "sa", "to": "chief", "kind": "question", "body": f"b{i}"} for i in range(3)]
+    (g / "messages.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+    assert [m["id"] for m in bus.pending(g, "chief")] == ["q0", "q1", "q2"]
+
+
+def test_reply_to_a_board_question_without_a_topic_is_always_stored(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    g = bus.global_board_dir()
+    (g / "messages.jsonl").write_text(json.dumps(_NO_TS[2] | {"id": "bq", "kind": "question"}) + "\n", encoding="utf-8")
+    ans = bus.reply(g, "chief", "bq", "answered")  # must not exit "board posts need --topic"
+    assert ans["ref"] == "bq" and ans["to"] == "board" and ans["topic"] == "general"
+    assert [(d, m["body"]) for d, m in bus.thread(g, "bq")] == [(0, "board post w/o topic"), (1, "answered")]
+    assert bus.main(["--bus", str(g), "--as", "chief", "reply", "--ref", "bq", "--body", "again"]) == 0
+    assert "answered" in "".join(m["body"] for _, m in bus.thread(g, "bq"))
+    capsys.readouterr()
+    # a board question WITH a topic keeps it
+    bus.post(g, "sa", "board", "question", "q2", topic="design")
+    q2 = next(m for m in bus._all(g) if m["body"] == "q2")
+    assert bus.reply(g, "chief", str(q2["id"]), "a2")["topic"] == "design"
+    # a NEW board post still requires an explicit topic
+    with pytest.raises(SystemExit):
+        bus.post(g, "sa", "board", "info", "no topic")

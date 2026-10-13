@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -454,9 +454,10 @@ class TestRunChecks:
         checks = swarm_check.run_checks(cfg, runner)
         by_name = {c.name: c for c in checks}
         assert [c.name for c in checks] == [
-            "scope", "clean", "ruff", "mypy", "tests", "exactness", "frontend",
+            "scope", "clean", "bus-inbox", "ruff", "mypy", "tests", "exactness", "frontend",
         ]
         assert by_name["scope"].status == "SKIP"
+        assert by_name["bus-inbox"].status == "SKIP"
         assert by_name["tests"].status == "SKIP"
         assert by_name["exactness"].status == "SKIP"
         assert by_name["frontend"].status == "SKIP"
@@ -1237,6 +1238,7 @@ class TestPassCache:
         """N3: a cached PASS is announced to the chief like a normal run."""
         repo = self._unstamped_pass_repo(tmp_path)
         bus = tmp_path / "bus"
+        bus.mkdir()  # a real job bus exists; the gate never creates one
         monkeypatch.setenv("SWARM_BUS", str(bus))
         assert self._main(repo, self._runner()) == 0
         head = _git(repo, "rev-parse", "HEAD").strip()
@@ -1336,3 +1338,146 @@ class TestIntegration:
         assert proc.stdout.strip().endswith("GATE FAIL (2 failed)")
         data = json.loads(out_json.read_text())
         assert data["gate"] == "FAIL"
+
+
+class TestBusInbox:
+    """The gate must refuse a hand-back while the chief has an unread DM to the agent."""
+
+    def _bus(self, tmp_path: Path, messages: list[dict[str, object]] | None = None) -> Path:
+        d = tmp_path / "bus"
+        d.mkdir()
+        if messages:
+            (d / "messages.jsonl").write_text(
+                "".join(json.dumps(m) + "\n" for m in messages), encoding="utf-8"
+            )
+        return d
+
+    def _check(self, tmp_path: Path, **kwargs: object) -> tuple[Any, Path]:
+        repo = _init_repo(tmp_path)
+        cfg = _cfg(tmp_path, repo, exactness="never", frontend="never", **kwargs)
+        chk = {c.name: c for c in swarm_check.run_checks(cfg, FakeRunner())}["bus-inbox"]
+        return chk, repo
+
+    def test_skip_without_agent_or_bus(self, tmp_path: Path) -> None:
+        assert self._check(tmp_path)[0].status == "SKIP"
+
+    def test_pass_when_no_unread_chief_message(self, tmp_path: Path) -> None:
+        d = self._bus(tmp_path, [{"id": "p1", "from": "peer", "to": "sa", "kind": "info", "body": "hi"}])
+        chk = self._check(tmp_path, bus=str(d), bus_agent="sa")[0]
+        assert chk.status == "PASS"
+        assert not (d / "cursors" / "sa.offset").exists()  # peek never advances a cursor
+
+    def test_fail_on_unread_chief_message(self, tmp_path: Path) -> None:
+        d = self._bus(tmp_path, [{"id": "m1", "from": "chief", "to": "sa", "kind": "question", "body": "x" * 100}])
+        chk = self._check(tmp_path, bus=str(d), bus_agent="sa")[0]
+        assert chk.status == "FAIL"
+        assert "m1" in chk.detail and "x" * 80 in chk.detail and "x" * 81 not in chk.detail
+        assert not (d / "cursors" / "sa.offset").exists()  # a FAIL must not consume the DM
+
+    def test_cached_pass_plus_unread_chief_dm_is_gate_fail(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _init_pass_repo(tmp_path)  # a clean tree with a valid PASS stamp: reuse path
+        d = self._bus(tmp_path, [{"id": "m1", "from": "chief", "to": "sa", "kind": "question", "body": "reread the brief"}])
+        rc = swarm_check.main(
+            [str(repo), "--base", "main", "--exactness", "never", "--frontend", "never",
+             "--bus", str(d), "--bus-agent", "sa"],
+            run=FakeRunner(),
+        )
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "PASS cache: reused stamp from" in out  # the tool checks really were cached
+        assert "FAIL bus-inbox:" in out and "m1" in out
+        assert out.strip().endswith("GATE FAIL (1 failed)")
+
+
+class TestBusInboxHardening:
+    """Review findings: late DMs, misconfigured buses, corrupt cursors, --bus telemetry."""
+
+    @staticmethod
+    def _chief_dm(bus_dir: Path, mid: str = "late1") -> None:
+        with (bus_dir / "messages.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"id": mid, "from": "chief", "to": "sa", "kind": "info", "body": "stop"}) + "\n")
+
+    def test_chief_dm_arriving_while_the_tools_run_fails_the_gate(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        d = tmp_path / "bus"
+        d.mkdir()
+        runner = FakeRunner()
+
+        def ruff_then_dm(cmd: Sequence[str], cwd: Path) -> tuple[int, str]:
+            self._chief_dm(d)  # lands after any early peek, before the verdict
+            return 0, "All checks passed!"
+
+        runner.responses["ruff"] = ruff_then_dm
+        cfg = _cfg(tmp_path, repo, exactness="never", frontend="never", bus=str(d), bus_agent="sa")
+        chk = {c.name: c for c in swarm_check.run_checks(cfg, runner)}["bus-inbox"]
+        assert chk.status == "FAIL" and "late1" in chk.detail
+
+    def test_missing_configured_bus_dir_fails(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        cfg = _cfg(tmp_path, repo, bus=str(tmp_path / "nope"), bus_agent="sa")
+        chk = swarm_check.bus_inbox_check(cfg)
+        assert chk.status == "FAIL" and "nope" in chk.detail
+        assert not (tmp_path / "nope").exists()  # the check must not create it
+
+    def test_agent_without_a_bus_fails_but_bus_alone_skips(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        assert swarm_check.bus_inbox_check(_cfg(tmp_path, repo, bus_agent="sa")).status == "FAIL"
+        assert swarm_check.bus_inbox_check(_cfg(tmp_path, repo, bus=str(tmp_path))).status == "SKIP"
+
+    def test_corrupt_cursor_is_reported_as_a_fail_with_the_reason(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        d = tmp_path / "bus"
+        (d / "cursors").mkdir(parents=True)
+        (d / "cursors" / "sa.offset").write_text("")
+        chk = swarm_check.bus_inbox_check(_cfg(tmp_path, repo, bus=str(d), bus_agent="sa"))
+        assert chk.status == "FAIL" and "sa.offset" in chk.detail
+
+    def test_gate_telemetry_goes_to_the_bus_flag_not_the_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SWARM_BUS", raising=False)
+        monkeypatch.delenv("SWARM_AGENT", raising=False)
+        repo = _init_pass_repo(tmp_path)
+        d = tmp_path / "bus"
+        d.mkdir()
+        rc = swarm_check.main(
+            [str(repo), "--base", "main", "--exactness", "never", "--frontend", "never",
+             "--bus", str(d), "--bus-agent", "sa"],
+            run=FakeRunner(),
+        )
+        assert rc == 0
+        bodies = [json.loads(ln)["body"] for ln in (d / "messages.jsonl").read_text().splitlines()]
+        assert len(bodies) == 1 and "GATE PASS" in bodies[0]
+
+    def test_mistyped_bus_is_never_created_and_keeps_failing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("SWARM_BUS", raising=False)
+        repo = _init_pass_repo(tmp_path)
+        typo = tmp_path / "jobs" / "20261012-typo" / "bus"
+        for _ in range(2):  # the first run must not create the dir that makes the second one pass
+            rc = swarm_check.main(
+                [str(repo), "--base", "main", "--exactness", "never", "--frontend", "never",
+                 "--bus", str(typo), "--bus-agent", "sa"],
+                run=FakeRunner(),
+            )
+            cap = capsys.readouterr()
+            assert rc == 1 and "FAIL bus-inbox:" in cap.out and cap.out.strip().endswith("GATE FAIL (1 failed)")
+            assert "not posting" in cap.err and str(typo) in cap.err
+            assert not typo.exists() and not typo.parent.exists()
+
+
+class TestBusInboxCursorBounds:
+    @pytest.mark.parametrize("value", ["999999", "-5"])
+    def test_out_of_bounds_cursor_is_a_fail_naming_file_and_value(self, tmp_path: Path, value: str) -> None:
+        repo = _init_repo(tmp_path)
+        d = tmp_path / "bus"
+        (d / "cursors").mkdir(parents=True)
+        (d / "messages.jsonl").write_text(
+            json.dumps({"id": "m1", "from": "chief", "to": "sa", "kind": "info", "body": "must-read"}) + "\n"
+        )
+        (d / "cursors" / "sa.offset").write_text(value)
+        chk = swarm_check.bus_inbox_check(_cfg(tmp_path, repo, bus=str(d), bus_agent="sa"))
+        assert chk.status == "FAIL" and "sa.offset" in chk.detail and value in chk.detail

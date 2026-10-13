@@ -3,11 +3,20 @@
 
     swarm-check.sh <worktree> [--base REF] [--scope glob,glob,...]
                    [--exactness auto|always|never] [--frontend auto|always|never]
-                   [--json out.json] [--no-cache]
+                   [--json out.json] [--no-cache] [--bus DIR] [--bus-agent NAME]
 
 Checks (each prints "PASS|FAIL|SKIP <name>: <detail>"), then "GATE PASS" /
 "GATE FAIL (n failed)" as the last line; exit 0/1. Default base: main;
 default exactness/frontend: auto (run only when relevant paths changed).
+
+bus-inbox: with --bus (or $SWARM_BUS) and --bus-agent (or $SWARM_AGENT) both known the gate
+peeks that agent's swarm inbox and FAILs while any message from "chief" is unread (id + first
+80 chars listed); it never advances a cursor. It is evaluated after every tool check, right
+before the verdict, so a DM that lands mid-run still blocks. SKIP only when neither is
+configured (or only a bus, no agent); an agent without a bus, a bus dir that does not exist,
+or an unreadable/garbled cursor is a FAIL with the reason. The gate result is posted to the
+resolved bus (flag or env) and never creates a bus dir: a missing one is skipped with a note on stderr. Time-dependent, so it runs even when the tool
+checks are served from a cached PASS and is never written into the stamp.
 
 PASS-stamp cache: a GATE PASS on a clean worktree writes
 `<git-dir>/swarm-check/pass-<key[:16]>.json` in that worktree's git dir (per-worktree,
@@ -58,6 +67,7 @@ import argparse
 import contextlib
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -99,7 +109,7 @@ EXACTNESS_FILES = (
 )
 EXACTNESS_SCRIPT = "scripts/agents/exactness_239.py"
 CHECK_ORDER = (
-    "scope", "clean", "ruff", "mypy", "tests", "exactness", "frontend", "stubs", "internal",
+    "scope", "clean", "bus-inbox", "ruff", "mypy", "tests", "exactness", "frontend", "stubs", "internal",
 )
 UNTRACKED_OK = ("cmd-report.md",)
 LINT_ERROR_RE = re.compile(r"^Found (\d+) errors?\.", re.MULTILINE)
@@ -141,6 +151,8 @@ class Config:
     exactness: str = "auto"
     frontend: str = "auto"
     json_out: Path | None = None
+    bus: str = ""  # job bus dir (--bus / SWARM_BUS) for the bus-inbox check
+    bus_agent: str = ""  # whose inbox to peek (--bus-agent / SWARM_AGENT)
 
 
 @dataclass(frozen=True)
@@ -688,6 +700,10 @@ def run_checks(cfg: Config, run: RunFn = real_run) -> list[Check]:
     else:
         checks.append(Check("frontend", "SKIP", "auto: nothing under frontend/ changed"))
 
+    # bus-inbox LAST of the evaluations: a chief DM that lands while the tools run must still
+    # block the hand-back (time-dependent, never cached)
+    checks.append(bus_inbox_check(cfg))
+
     order = {name: i for i, name in enumerate(CHECK_ORDER)}
     checks.sort(key=lambda c: order.get(c.name, len(order)))
     return checks
@@ -704,9 +720,49 @@ def _derive_main_root(wt: Path) -> Path:
     return Path(proc.stdout.strip()).parent
 
 
+def _bus_module() -> Any:
+    """The bus.py next to this gate: the same file the worktree's workers use."""
+    path = Path(__file__).resolve().parent / "bus.py"
+    spec = importlib.util.spec_from_file_location("swarm_gate_bus", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def bus_inbox_check(cfg: Config) -> Check:
+    """FAIL when the agent still has an unread message from the chief; never advances cursors.
+
+    A worker must not hand back while a chief DM is unread, so this runs on EVERY invocation,
+    including a cached PASS: it is time-dependent (a DM can arrive at any moment), so it is
+    NOT part of the PASS-stamp cache key. It peeks (never consumes) the agent's inbox.
+    """
+    if not cfg.bus_agent and not cfg.bus:
+        return Check("bus-inbox", "SKIP", "no --bus-agent/SWARM_AGENT or --bus/SWARM_BUS")
+    if not cfg.bus_agent:
+        return Check("bus-inbox", "SKIP", f"bus {cfg.bus} given but no --bus-agent/SWARM_AGENT to peek")
+    if not cfg.bus:
+        return Check("bus-inbox", "FAIL", f"agent {cfg.bus_agent} given but no --bus/SWARM_BUS to peek")
+    if not Path(cfg.bus).is_dir():
+        return Check("bus-inbox", "FAIL", f"configured bus {cfg.bus} is not a directory")
+    try:
+        msgs = _bus_module().inbox(Path(cfg.bus), cfg.bus_agent, peek=True)
+    except (Exception, SystemExit) as exc:  # fail closed (bus.py exits on a garbled cursor)
+        reason = str(exc) if isinstance(exc, SystemExit) else f"{type(exc).__name__}: {exc}"
+        return Check("bus-inbox", "FAIL", f"cannot read bus {cfg.bus}: {reason}")
+    unread = [m for m in msgs if m.get("from") == "chief" and m.get("to") in (cfg.bus_agent, "all")]
+    if not unread:
+        return Check("bus-inbox", "PASS", f"no unread message from chief to {cfg.bus_agent}")
+    listed = "; ".join(f"{m['id']} {str(m['body'])[:80]}" for m in unread)
+    return Check("bus-inbox", "FAIL", f"{len(unread)} unread from chief: {listed}")
+
+
 def bus_post(cfg: Config, checks: Sequence[Check], cached_head: str = "") -> None:
-    bus = os.environ.get("SWARM_BUS")
+    bus = cfg.bus  # the resolved --bus / $SWARM_BUS, so a flag-only invocation reports too
     if not bus:
+        return
+    if not Path(bus).is_dir():  # bus.py would create it, turning a typo into a configured bus
+        print(f"swarm-check: bus {bus} does not exist; not posting the gate result", file=sys.stderr)
         return
     gate, _ = gate_summary(checks)
     failed = [c.name for c in checks if c.status == "FAIL"]
@@ -738,6 +794,8 @@ def main(argv: Sequence[str] | None = None, run: RunFn | None = None) -> int:
     parser.add_argument("--frontend", choices=("auto", "always", "never"), default="auto")
     parser.add_argument("--json", dest="json_out", default=None)
     parser.add_argument("--no-cache", dest="no_cache", action="store_true")
+    parser.add_argument("--bus", default=None, help="job bus dir for the bus-inbox check (else $SWARM_BUS)")
+    parser.add_argument("--bus-agent", dest="bus_agent", default=None, help="whose inbox to peek (else $SWARM_AGENT)")
     args = parser.parse_args(argv)
 
     wt = Path(args.worktree).resolve()
@@ -755,25 +813,33 @@ def main(argv: Sequence[str] | None = None, run: RunFn | None = None) -> int:
         exactness=args.exactness,
         frontend=args.frontend,
         json_out=Path(args.json_out) if args.json_out else None,
+        bus=args.bus or os.environ.get("SWARM_BUS") or "",
+        bus_agent=args.bus_agent or os.environ.get("SWARM_AGENT") or "",
     )
 
     runner: RunFn = run or real_run
     key, _ = _cache_probe(cfg, runner) if not args.no_cache else ("", None)  # PRE-run key
     stamp = load_stamp(wt, runner, key)
 
+    # bus-inbox is time-dependent, so it is re-evaluated even when the tool checks are cached:
+    # a cached PASS with an unread chief DM is still a GATE FAIL (run_checks adds it otherwise).
     if stamp is not None:
         for check in stamp.checks:
             print(f"(cached) {format_line(check)}")
         print(f"PASS cache: reused stamp from {stamp.ts} for {stamp.head[:12]}")
-        print("GATE PASS")
+        bus_check = bus_inbox_check(cfg)
+        checks = [*stamp.checks, bus_check]
+        print(format_line(bus_check))
+        gate, failed = gate_summary(checks)
+        print(gate)
         if cfg.json_out:
-            cached = to_json_dict(stamp.checks)
+            cached = to_json_dict(checks)
             cached["cached"] = True
             with open(cfg.json_out, "w", encoding="utf-8") as fh:
                 json.dump(cached, fh, indent=2)
                 fh.write("\n")
-        bus_post(cfg, stamp.checks, cached_head=stamp.head)
-        return 0
+        bus_post(cfg, checks, cached_head=stamp.head)
+        return 1 if failed else 0
 
     # A commit+reset --hard made while the tools run puts HEAD and the tree back where they
     # started, so the pre/post key compare cannot see it; the reflog length can (see N1 doc).
@@ -799,8 +865,10 @@ def main(argv: Sequence[str] | None = None, run: RunFn | None = None) -> int:
         post_key, _ = _cache_probe(cfg, runner)
         reflog_after = head_reflog_count(wt, runner)
         if post_key == key and reflog_before is not None and reflog_after == reflog_before:
+            # bus-inbox is time-dependent and not part of the key: never store it as a cached PASS/SKIP
+            stamped = [c for c in checks if c.name != "bus-inbox"]
             with contextlib.suppress(Exception):
-                write_stamp(wt, runner, cfg, key, checks)
+                write_stamp(wt, runner, cfg, key, stamped)
 
     bus_post(cfg, checks)
     return 1 if failed else 0

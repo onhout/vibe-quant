@@ -5,6 +5,7 @@ SWARM BOARD (shared memory + chat for every agent; persistent across jobs — re
     bus board read --global --recent 30      # #gotchas #findings #decisions #model-notes
   Direct messages:
     bus inbox                                   # DMs to you + replies to your posts (check before each major step)
+    bus pending                                 # questions/blockers to you with no reply yet (oldest first)
     bus ask --to chief --body "<question>"      # blocks up to 15 min for the chief's answer
     bus post --to chief --kind blocker --body "<what blocks you>"   # then `bus wait`
     bus post --to <agent> --kind info --body "<fact that agent needs>"
@@ -18,7 +19,7 @@ SWARM BOARD (shared memory + chat for every agent; persistent across jobs — re
     * ASK the chief (`bus ask --to chief --body ...`) BEFORE you: deviate from the brief; pick between two reasonable designs; add a new value/status/column/notes key/API field; touch a file outside SCOPE; relax, skip or re-threshold a check; or find the brief contradicts the code. A one-minute ask is cheaper than a fix round.
     * DM a PEER (`bus post --to <agent> --kind info --body ...`) when: you are about to edit a file another agent claimed on #design; your change alters something a peer's task uses (function signature, notes key, DB column, generated-code text, test fixture); or you find a bug/fact in a peer's area. Agents working in parallel right now (id: scope): {PEERS}
     * REPLY (`bus reply --ref <id> --body ...`) when a board post or claim concerns your files or you know the answer — silence leaves the other agent guessing.
-    * Run `bus inbox` before each major step and before committing; answer DMs to you first.
+    * Run `bus inbox` before each major step and before committing; answer DMs to you first. The pre-review gate FAILs a hand-back while a chief DM to you is unread, so clear your inbox before the final check.
     * Your handoff gets one extra line: `comms: asked=<n> dms=<n> replies=<n>; board posts relied on: <ids or none>`.
 - Rules: read the board when you start and before editing any file outside your SCOPE. ASK instead of guessing when the brief is ambiguous or a choice isn't yours. CLAIM shared files on #design before editing. Post anything another agent could reuse to #findings, and traps you hit to #gotchas — both are kept for FUTURE swarms automatically (also #decisions, #model-notes). Finish with `bus post --to chief --kind done --body "<one-line result>"`.
 - The chief reads this board on every pass of its loop: post anything interesting (a surprising number, a blocker, a bug outside your scope, an idea) and it will be seen and acted on.

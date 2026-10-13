@@ -4,14 +4,20 @@
 Any agent with a shell can use it (Claude subagents, `cmd` workers). One bus per job:
 ``data/swarm/<job>/bus/messages.jsonl`` (append-only, flock-guarded) plus per-agent read cursors.
 
-    bus.py post  --to chief|all|<agent> --kind info|question|blocker|answer|claim|done --body TEXT [--ref MSG_ID]
+    bus.py post  --to chief|all|<agent> --kind info|question|blocker|answer|claim|done --body TEXT [--ref MSG_ID] [--client-id TEXT]
     bus.py inbox [--peek]            # new messages for me (to me or to all), advances my cursor
-    bus.py ask   --to chief --body TEXT [--timeout 900]   # post a question, block until an answer refs it
+    bus.py pending [--global]        # questions/blockers addressed to me with no reply yet, oldest first;
+                                     # --global = persistent board + every job bus (job-tagged), as digest does
+    bus.py ask   --to chief --body TEXT [--timeout 900] [--client-id TEXT]   # post a question, block until an answer refs it
     bus.py wait  [--timeout 600]     # block until my inbox has something new
-    bus.py tail  [--to chief] [--since-start]  # follow messages (chief: run under a Monitor)
+    bus.py tail  [--to chief] [--since-start] [--durable] [--timeout SECONDS]  # follow messages (chief: run under a Monitor)
+                                     # --durable persists its own delivery cursor, so a restart
+                                     # replays everything that arrived while the watcher was dead;
+                                     # one durable tail per (--as, --to): a second exits with an error.
+                                     # Deleting its cursor loses the backlog: re-run with --since-start
     bus.py roster                    # agents seen, message counts, last activity
   Message board (persistent topics everyone can browse; threads via --ref):
-    bus.py board post   --topic design --body TEXT [--kind info|question|claim|...]
+    bus.py board post   --topic design --body TEXT [--kind info|question|claim|...] [--client-id TEXT]
     bus.py board read   [--topic design] [--all]   # unread posts (per-agent, per-topic cursor); --all = full history
     bus.py board topics                            # topics with post counts + latest post
     bus.py reply  --ref MSG_ID --body TEXT          # threads under a board post, or answers a DM
@@ -39,18 +45,21 @@ Stdlib only; runs with any python3.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import json
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-    from typing import NoReturn
+    from collections.abc import Callable, Iterator
+    from typing import NoReturn, TypeGuard
 
+_MSG_KEYS = frozenset(("id", "from", "to", "kind", "body"))  # a readable record carries all of these
 KINDS = ("info", "question", "blocker", "answer", "claim", "done")
 PERSISTENT_TOPICS = ("findings", "gotchas", "decisions", "model-notes", "thoughts", "self-improvement", "needs-user")
 
@@ -99,25 +108,73 @@ def _refuse(msg: str) -> NoReturn:
     raise SystemExit(2)
 
 
-def _append(bus: Path, msg: dict[str, object]) -> None:
+def _append(bus: Path, msg: dict[str, object]) -> dict[str, object]:
+    """Append ``msg`` under an exclusive lock; return the stored message.
+
+    With a ``client_id`` the append is idempotent per ``(from, client_id)``: an existing
+    message with the same sender and client id is returned instead of a duplicate line.
+    """
     path = bus / "messages.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
+    client_id = msg.get("client_id")
+    with path.open("ab+") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         try:
-            fh.write(json.dumps(msg, ensure_ascii=False) + "\n")
+            fh.seek(0)
+            data = fh.read()
+            if data and not data.endswith(b"\n"):
+                # a crashed writer left a torn tail: terminate it, so it is its own line (an
+                # undecodable fragment is skipped by readers, a complete record is delivered)
+                # instead of swallowing the record appended below
+                fh.write(b"\n")
+                data += b"\n"
+            if client_id:
+                for line in data.splitlines():
+                    try:
+                        existing = json.loads(line)
+                    except ValueError:  # torn fragments (incl. a cut multibyte character)
+                        continue
+                    if _is_message(existing) and existing.get("client_id") == client_id and existing.get("from") == msg.get("from"):
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                        return existing
+            fh.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
             fh.flush()
             os.fsync(fh.fileno())
+            return msg
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _beyond_eof(path: Path, offset: int, size: int) -> NoReturn:
+    """Refuse an offset past the end of the log: never reset it or wait for the file to grow back."""
+    sys.exit(
+        f"bus: offset {offset} is beyond the end of {path} ({size} bytes): the log shrank or was replaced "
+        "under a reader; delete its cursor file to reset (a durable tail also needs --since-start "
+        "to replay its backlog)"
+    )
+
+
+def _is_message(rec: object) -> TypeGuard[dict[str, object]]:
+    """A record a reader would deliver: a dict carrying every message key.
+
+    Shared by readers and the client-id dedupe, so a record counts as already posted only
+    if some reader can deliver it.
+    """
+    return isinstance(rec, dict) and rec.keys() >= _MSG_KEYS
 
 
 def _read_from(bus: Path, offset: int) -> tuple[list[dict[str, object]], int]:
     """Messages after byte ``offset`` (complete lines only) and the new offset."""
     path = bus / "messages.jsonl"
     if not path.exists():
+        if offset > 0:
+            _beyond_eof(path, offset, 0)
         return [], offset
     with path.open("rb") as fh:
+        size = os.fstat(fh.fileno()).st_size
+        if offset > size:  # the file shrank under a reader (git checkout/rebase of a tracked board)
+            _beyond_eof(path, offset, size)
         fh.seek(offset)
         data = fh.read()
     end = data.rfind(b"\n")
@@ -127,10 +184,33 @@ def _read_from(bus: Path, offset: int) -> tuple[list[dict[str, object]], int]:
     msgs = []
     for line in chunk.splitlines():
         try:
-            msgs.append(json.loads(line))
-        except json.JSONDecodeError:
+            rec = json.loads(line)
+        except ValueError:  # JSONDecodeError and UnicodeDecodeError (a terminated torn fragment)
             continue
+        # a cursor inside a torn fragment can decode its suffix as a scalar/list/partial dict
+        # (e.g. ``123``): skip it like an undecodable line so the cursor still advances
+        if _is_message(rec):
+            msgs.append(rec)
     return msgs, offset + len(chunk)
+
+
+def _complete_end(bus: Path) -> int:
+    """Byte offset just past the last COMPLETE line of messages.jsonl (0 when absent/empty).
+
+    Taken under a shared lock, so a writer mid-append (it holds the exclusive lock) has
+    finished first; a partial tail left by a crashed writer is still excluded, because
+    a baseline past it would make that message undeliverable forever.
+    """
+    path = bus / "messages.jsonl"
+    if not path.exists():
+        return 0
+    with path.open("rb") as fh:
+        fcntl.flock(fh, fcntl.LOCK_SH)
+        try:
+            data = fh.read()
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+    return data.rfind(b"\n") + 1
 
 
 def _for_me(msg: dict[str, object], me: str) -> bool:
@@ -141,15 +221,77 @@ def _cursor_path(bus: Path, me: str) -> Path:
     return bus / "cursors" / f"{me}.offset"
 
 
+def _tail_cursor_path(bus: Path, me: str, to: str) -> Path:
+    """A durable tail's delivery cursor — separate from the inbox cursor of ``me``."""
+    return bus / "cursors" / f"{me}.tail.{to}"
+
+
+def _tail_lock_path(bus: Path, me: str, to: str) -> Path:
+    """Held for a durable tail's whole lifetime: two tails on one cursor would both deliver."""
+    p = _tail_cursor_path(bus, me, to)
+    return p.with_name(p.name + ".lock")
+
+
+def _read_cursor(path: Path) -> int | None:
+    """The byte offset stored in ``path``, or None when the file does not exist.
+
+    A present but empty/garbled cursor (a crash mid-write, or an old non-atomic writer) is a
+    hard error naming the file: reading it as 0 would silently replay everything, and reading
+    it as EOF would silently drop what arrived while the reader was down. None has meaning in
+    one place only — the durable tail's first-run rule (no cursor yet -> start at EOF).
+    """
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8").strip()
+    if text.isdigit():
+        return int(text)
+    sys.exit(f"bus: cursor file {path} is empty or garbled (holds {text!r}); delete it to reset")
+
+
+def _checked_cursor(bus: Path, path: Path) -> int | None:
+    """``_read_cursor`` plus a bounds check against ``bus``'s messages.jsonl.
+
+    An offset past EOF (a truncated/rotated file, a hand edit) would silently hide every
+    message up to it: refused like a garbled cursor. Exactly EOF is valid. To recover,
+    delete the cursor (a durable tail also needs --since-start to replay its backlog).
+    """
+    value = _read_cursor(path)
+    if value is None:
+        return None
+    messages = bus / "messages.jsonl"
+    size = messages.stat().st_size if messages.exists() else 0
+    if value > size:
+        sys.exit(
+            f"bus: cursor file {path} holds {value}, beyond the end of {messages} ({size} bytes); "
+            "delete it to reset (a durable tail also needs --since-start to replay its backlog)"
+        )
+    return value
+
+
 def _get_cursor(bus: Path, me: str) -> int:
-    p = _cursor_path(bus, me)
-    return int(p.read_text()) if p.exists() else 0
+    value = _checked_cursor(bus, _cursor_path(bus, me))
+    return 0 if value is None else value
+
+
+def _write_cursor(path: Path, off: int) -> None:
+    """Persist a cursor atomically: a temp file in the same dir, then ``os.replace``.
+
+    A crash mid-write therefore leaves the previous cursor intact, never a torn/empty file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-cursor-", suffix=".txt")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(str(int(off)))
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def _set_cursor(bus: Path, me: str, off: int) -> None:
-    p = _cursor_path(bus, me)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(str(off))
+    _write_cursor(_cursor_path(bus, me), off)
 
 
 def fmt(msg: dict[str, object]) -> str:
@@ -162,7 +304,7 @@ def fmt(msg: dict[str, object]) -> str:
 
 def post(
     bus: Path, me: str, to: str, kind: str, body: str, ref: str | None = None, topic: str | None = None,
-    mirror: bool = True, extra: dict[str, object] | None = None,
+    mirror: bool = True, extra: dict[str, object] | None = None, client_id: str | None = None,
 ) -> dict[str, object]:
     if kind not in KINDS:
         sys.exit(f"bus: kind must be one of {KINDS}")
@@ -176,18 +318,20 @@ def post(
     }
     if ref:
         msg["ref"] = ref
+    if client_id:
+        msg["client_id"] = client_id
     if extra:
         msg.update(extra)
     if to == "board":
         if not topic:
             sys.exit("bus: board posts need --topic")
         msg["topic"] = topic.lstrip("#").lower()
-    _append(bus, msg)
+    stored = _append(bus, msg)
     if mirror and to == "board" and msg["topic"] in PERSISTENT_TOPICS:
         gdir = global_board_dir()
         if gdir.resolve() != bus.resolve():
-            _append(gdir, {**msg, "job": bus.resolve().parent.name})
-    return msg
+            _append(gdir, {**stored, "job": bus.resolve().parent.name})
+    return stored
 
 
 def _all(bus: Path) -> list[dict[str, object]]:
@@ -222,22 +366,56 @@ def topics(bus: Path) -> dict[str, dict[str, object]]:
     for m in _all(bus):
         if m.get("to") != "board":
             continue
-        t = seen.setdefault(str(m["topic"]), {"posts": 0})
+        t = seen.setdefault(str(m.get("topic", "")), {"posts": 0})
         t["posts"] = int(t["posts"]) + 1  # type: ignore[call-overload]
         t["last"] = m
     return seen
 
 
-def reply(bus: Path, me: str, ref: str, body: str, kind: str = "info") -> dict[str, object]:
+def reply(
+    bus: Path, me: str, ref: str, body: str, kind: str = "info", client_id: str | None = None
+) -> dict[str, object]:
     parent = next((m for m in _all(bus) if m["id"] == ref), None)
     if parent is None:
         sys.exit(f"bus: no message {ref}")
-    if parent.get("to") == "board":
-        return post(bus, me, "board", kind, body, ref=ref, topic=str(parent["topic"]))
+    if parent.get("to") == "board":  # inherit the parent's topic; a topic-less parent never blocks a reply
+        return post(bus, me, "board", kind, body, ref=ref, topic=str(parent.get("topic") or "general"), client_id=client_id)
     target = parent["from"] if parent["from"] != me else parent["to"]
     if kind == "info" and parent.get("kind") == "question":
         kind = "answer"
-    return post(bus, me, str(target), kind, body, ref=ref)
+    return post(bus, me, str(target), kind, body, ref=ref, client_id=client_id)
+
+
+def pending(bus: Path, me: str) -> list[dict[str, object]]:
+    """Messages addressed to ``me`` that still expect a reply, oldest first.
+
+    Kind ``question`` (what ``ask`` posts) or ``blocker``, with no message from ``me`` ref'ing
+    it yet. Broadcasts (to ``all``) are not listed: only direct messages to ``me``.
+    """
+    msgs = _all(bus)
+    answered = {str(m.get("ref")) for m in msgs if m.get("from") == me and m.get("ref")}
+    out = [
+        m
+        for m in msgs
+        if m.get("to") == me and m.get("kind") in ("question", "blocker") and str(m.get("id")) not in answered
+    ]
+    return sorted(out, key=_ts_key)
+
+
+def pending_all(me: str) -> list[dict[str, object]]:
+    """Pending questions for ``me`` across the global board and every job bus (job-tagged)."""
+    out = pending(global_board_dir(), me)
+    for jb in _job_buses():
+        out.extend({**m, "job": jb.parent.name} for m in pending(jb, me))
+    return sorted(out, key=_ts_key)
+
+
+def _pending_section(msgs: list[dict[str, object]], me: str, max_items: int = 10) -> list[str]:
+    """'PENDING QUESTIONS FOR <me>' block for digest; empty when there are none."""
+    if not msgs:
+        return []
+    lines = [f"PENDING QUESTIONS FOR {me} ({len(msgs)}):"]
+    return lines + [f"  [PENDING] {fmt(m)} ({_age_of(m)} old)" for m in msgs[:max_items]]
 
 
 def thread(bus: Path, msg_id: str) -> list[tuple[int, dict[str, object]]]:
@@ -264,9 +442,21 @@ def thread(bus: Path, msg_id: str) -> list[tuple[int, dict[str, object]]]:
     return out
 
 
+def _ts_key(m: dict[str, object]) -> str:
+    """Sort key by timestamp; a record without ``ts`` (it is optional) sorts first, in file order."""
+    return str(m.get("ts") or "")
+
+
+def _age_of(m: dict[str, object]) -> str:
+    return _age(str(m.get("ts") or ""))
+
+
 def _age(ts: str) -> str:
-    """Compact age of a message timestamp: 30s / 12m / 5h / 3d."""
-    s = int(time.time() - time.mktime(time.strptime(ts, "%Y-%m-%dT%H:%M:%S")))
+    """Compact age of a message timestamp: 30s / 12m / 5h / 3d; ``?`` when it is missing/unparseable."""
+    try:
+        s = int(time.time() - time.mktime(time.strptime(ts, "%Y-%m-%dT%H:%M:%S")))
+    except ValueError:
+        return "?"
     if s < 60:
         return f"{max(s, 0)}s"
     if s < 3600:
@@ -315,7 +505,7 @@ def needs_user_open(bus: Path) -> list[dict[str, object]]:
     """
     out = [m for m in _all(bus) if m.get("to") == "board" and m.get("topic") == "needs-user" and m.get("kind") == "question"]
     open_ = [m for m in out if not any(r.get("user_answer") for _, r in thread(bus, str(m["id"])))]
-    return sorted(open_, key=lambda m: str(m["ts"]))
+    return sorted(open_, key=_ts_key)
 
 
 def needs_user_open_all() -> list[dict[str, object]]:
@@ -327,7 +517,7 @@ def needs_user_open_all() -> list[dict[str, object]]:
         for m in needs_user_open(jb):
             if m["id"] not in seen:  # a mirrored copy on the global board is authoritative
                 out.append({**m, "job": jb.parent.name})
-    return sorted(out, key=lambda m: str(m["ts"]))
+    return sorted(out, key=_ts_key)
 
 
 def _needs_user_section(msgs: list[dict[str, object]], max_items: int = 5) -> list[str]:
@@ -335,20 +525,20 @@ def _needs_user_section(msgs: list[dict[str, object]], max_items: int = 5) -> li
     if not msgs:
         return []
     lines = [f"OPEN DECISIONS FOR THE USER ({len(msgs)}):"]
-    return lines + [f"  [OPEN] {fmt(m)} ({_age(str(m['ts']))} old)" for m in msgs[:max_items]]
+    return lines + [f"  [OPEN] {fmt(m)} ({_age_of(m)} old)" for m in msgs[:max_items]]
 
 
 def render(bus: Path) -> str:
     msgs = [m for m in _all(bus) if m.get("to") == "board"]
     ids = {m["id"] for m in msgs}
     lines = ["# Swarm board", ""]
-    for t in sorted({str(m["topic"]) for m in msgs}):
+    for t in sorted({str(m.get("topic", "")) for m in msgs}):
         lines += [f"## #{t}", ""]
-        for root in (m for m in msgs if m.get("topic") == t and m.get("ref") not in ids):
+        for root in (m for m in msgs if str(m.get("topic", "")) == t and m.get("ref") not in ids):
             for depth, m in thread(bus, str(root["id"])):
                 tag = "" if m["kind"] == "info" else f" **{m['kind']}**"
                 job = f" @{m['job']}" if m.get("job") else ""
-                lines.append(f"{'  ' * depth}- `{m['ts']}` **{m['from']}**{job}{tag}: {m['body']}  <sub>{m['id']}</sub>")
+                lines.append(f"{'  ' * depth}- `{m.get('ts', '?')}` **{m['from']}**{job}{tag}: {m['body']}  <sub>{m['id']}</sub>")
         lines.append("")
     return "\n".join(lines)
 
@@ -361,13 +551,59 @@ def _follow(bus: Path, offset: int, timeout: float | None) -> Iterator[dict[str,
         time.sleep(POLL_S)
 
 
-def ask(bus: Path, me: str, to: str, body: str, timeout: float) -> dict[str, object] | None:
+def ask(bus: Path, me: str, to: str, body: str, timeout: float, client_id: str | None = None) -> dict[str, object] | None:
     start = (bus / "messages.jsonl").stat().st_size if (bus / "messages.jsonl").exists() else 0
-    q = post(bus, me, to, "question", body)
+    q = post(bus, me, to, "question", body, client_id=client_id)
+    # a retried ask (same client id) returns the EXISTING question: its answer may already be
+    # on the bus, before ``start``, so look there first; ``start`` still covers the post->follow race
+    for m in _all(bus):
+        if m.get("ref") == q["id"] and m.get("from") != me:
+            return m
     for m in _follow(bus, start, timeout):
         if m.get("ref") == q["id"] and m.get("from") != me:
             return m
     return None
+
+
+def _durable_tail(
+    bus: Path, me: str, to: str, since_start: bool, timeout: float | None,
+    emit: Callable[[str], None] | None = None,
+) -> None:
+    """A tail that survives a restart: its own cursor, advanced only after printing.
+
+    First run (no cursor file) starts at the current EOF, so old history is not replayed
+    (``--since-start`` overrides to 0), and persists that baseline immediately — so messages
+    posted while the watcher was dead are replayed on the next start, not skipped. Each
+    fetched batch is emitted (and flushed) before the cursor advances: at-least-once, never a
+    silent loss. The baseline is the end of the last complete line (an unfinished record is
+    delivered once it completes), and an exclusive lock on ``<cursor>.lock`` makes a second
+    tail for the same (as, to) refuse to start. ``emit`` is injectable so tests can simulate
+    a crash between those two steps.
+    """
+    send = emit if emit is not None else (lambda line: print(line, flush=True))
+    cpath = _tail_cursor_path(bus, me, to)
+    lpath = _tail_lock_path(bus, me, to)
+    lpath.parent.mkdir(parents=True, exist_ok=True)
+    with lpath.open("a") as lock:  # closed (= released) when the tail ends or is killed
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.exit(f"bus: another durable tail for {me}/{to or '*'} is already running (lock {lpath})")
+        offset = _checked_cursor(bus, cpath)
+        if offset is None:
+            offset = 0 if since_start else _complete_end(bus)
+            _write_cursor(cpath, offset)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while deadline is None or time.monotonic() < deadline:
+            msgs, new_offset = _read_from(bus, offset)
+            for m in msgs:
+                if to and m.get("to") not in (to, "all", "board"):
+                    continue
+                send(fmt(m))
+            if new_offset != offset:
+                _write_cursor(cpath, new_offset)
+                offset = new_offset
+            time.sleep(POLL_S)
 
 
 def _job_buses() -> list[Path]:
@@ -415,7 +651,7 @@ def brief(per_topic: int = 3) -> str:
     msgs = [m for m in _all(g) if m.get("to") == "board"]
     by_topic: dict[str, list[dict[str, object]]] = {}
     for m in msgs:
-        by_topic.setdefault(str(m["topic"]), []).append(m)
+        by_topic.setdefault(str(m.get("topic", "")), []).append(m)
     lines += _needs_user_section(needs_user_open_all())
     by_topic = {t: ms for t, ms in by_topic.items() if t != "needs-user"}  # shown in the OPEN section above
     if by_topic:
@@ -437,12 +673,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--kind", default="info", choices=KINDS)
     p.add_argument("--body", required=True)
     p.add_argument("--ref")
+    p.add_argument("--client-id", help="idempotency key: a repeat post with the same (sender, id) is a no-op")
     i = sub.add_parser("inbox")
     i.add_argument("--peek", action="store_true")
+    pd = sub.add_parser("pending")
+    pd.add_argument("--global", dest="glob", action="store_true")
     a = sub.add_parser("ask")
     a.add_argument("--to", default="chief")
     a.add_argument("--body", required=True)
     a.add_argument("--timeout", type=float, default=900)
+    a.add_argument("--client-id")
     w = sub.add_parser("wait")
     w.add_argument("--timeout", type=float, default=600)
     au = sub.add_parser("ask-user")
@@ -463,6 +703,8 @@ def main(argv: list[str] | None = None) -> int:
     t = sub.add_parser("tail")
     t.add_argument("--to", help="only messages addressed to this name (plus 'all')")
     t.add_argument("--since-start", action="store_true", help="replay history first")
+    t.add_argument("--durable", action="store_true", help="persist a delivery cursor so a restart replays undelivered messages")
+    t.add_argument("--timeout", type=float, default=None, help="stop after SECONDS (default: forever)")
     sub.add_parser("roster")
     dg = sub.add_parser("digest")
     dg.add_argument("--recent", type=int)
@@ -470,6 +712,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--ref", required=True)
     r.add_argument("--body", required=True)
     r.add_argument("--kind", default="info", choices=KINDS)
+    r.add_argument("--client-id")
     th = sub.add_parser("thread")
     th.add_argument("msg_id")
     th.add_argument("--global", dest="glob", action="store_true")
@@ -479,6 +722,7 @@ def main(argv: list[str] | None = None) -> int:
     bp.add_argument("--topic", required=True)
     bp.add_argument("--body", required=True)
     bp.add_argument("--kind", default="info", choices=KINDS)
+    bp.add_argument("--client-id")
     br = bsub.add_parser("read")
     br.add_argument("--topic")
     br.add_argument("--all", action="store_true")
@@ -497,15 +741,23 @@ def main(argv: list[str] | None = None) -> int:
     bus = _bus_dir(args)
 
     if args.cmd == "post":
-        print(fmt(post(bus, _me(args), args.to, args.kind, args.body, args.ref)))
+        print(fmt(post(bus, _me(args), args.to, args.kind, args.body, args.ref, client_id=args.client_id)))
     elif args.cmd == "inbox":
         msgs = inbox(bus, _me(args), args.peek)
         for m in msgs:
             print(fmt(m))
         if not msgs:
             print("(inbox empty)")
+    elif args.cmd == "pending":
+        me = _me(args)
+        msgs = pending_all(me) if args.glob else pending(bus, me)  # --global = board + every job bus
+        for m in msgs:
+            job = f" @{m['job']}" if m.get("job") else ""
+            print(f"{fmt(m)}{job} ({_age_of(m)} old)")
+        if not msgs:
+            print(f"(no pending questions for {me})")
     elif args.cmd == "ask":
-        ans = ask(bus, _me(args), args.to, args.body, args.timeout)
+        ans = ask(bus, _me(args), args.to, args.body, args.timeout, client_id=args.client_id)
         if ans is None:
             print(f"(no answer within {args.timeout:.0f}s — proceed with your best judgement and say so in your report)")
             return 3
@@ -516,7 +768,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.ncmd == "open":
             open_qs = needs_user_open(bus)
             for m in open_qs:
-                print(f"{fmt(m)} ({_age(str(m['ts']))} old)")
+                print(f"{fmt(m)} ({_age_of(m)} old)")
             if not open_qs:
                 print("(no open decisions for the user)")
         else:
@@ -534,19 +786,22 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     elif args.cmd == "tail":
         path = bus / "messages.jsonl"
-        start = 0 if args.since_start or not path.exists() else path.stat().st_size
-        for m in _follow(bus, start, None):
-            if args.to and m.get("to") not in (args.to, "all", "board"):
-                continue
-            print(fmt(m), flush=True)
+        if args.durable:
+            _durable_tail(bus, _me(args), str(args.to or ""), args.since_start, args.timeout)
+        else:
+            start = 0 if args.since_start or not path.exists() else path.stat().st_size
+            for m in _follow(bus, start, args.timeout):
+                if args.to and m.get("to") not in (args.to, "all", "board"):
+                    continue
+                print(fmt(m), flush=True)
     elif args.cmd == "reply":
-        print(fmt(reply(bus, _me(args), args.ref, args.body, args.kind)))
+        print(fmt(reply(bus, _me(args), args.ref, args.body, args.kind, client_id=args.client_id)))
     elif args.cmd == "thread":
         for depth, m in thread(bus, args.msg_id):
             print("  " * depth + fmt(m))
     elif args.cmd == "board":
         if args.bcmd == "post":
-            print(fmt(post(bus, _me(args), "board", args.kind, args.body, topic=args.topic)))
+            print(fmt(post(bus, _me(args), "board", args.kind, args.body, topic=args.topic, client_id=args.client_id)))
         elif args.bcmd == "read":
             msgs = board_read(bus, _me(args), args.topic, args.all, args.recent)
             for m in msgs:
@@ -557,7 +812,7 @@ def main(argv: list[str] | None = None) -> int:
             for name, info in sorted(topics(bus).items()):
                 last = info["last"]
                 assert isinstance(last, dict)
-                print(f"#{name:16} posts={info['posts']:<4} last={last['ts']} {last['from']}: {str(last['body'])[:60]}")
+                print(f"#{name:16} posts={info['posts']:<4} last={last.get('ts', '?')} {last['from']}: {str(last['body'])[:60]}")
         elif args.bcmd == "brief":
             print(brief(args.per_topic))
         elif args.bcmd == "render":
@@ -568,9 +823,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(md)
     elif args.cmd == "digest":
+        me = _me(args)
+        for line in _pending_section(pending_all(me), me):
+            print(line)
         for line in _needs_user_section(needs_user_open_all()):
             print(line)
-        groups = digest(_me(args), args.recent)
+        groups = digest(me, args.recent)
         for label, msgs in groups:
             print(f"== {label} ({len(msgs)} new)")
             for m in msgs:
@@ -583,7 +841,7 @@ def main(argv: list[str] | None = None) -> int:
         for m in msgs:
             s = seen.setdefault(str(m["from"]), [0, ""])
             s[0] = int(s[0]) + 1  # type: ignore[call-overload]
-            s[1] = m["ts"]
+            s[1] = m.get("ts", "?")
         for name, (n, ts) in sorted(seen.items()):
             print(f"{name:24} msgs={n:<4} last={ts}")
     return 0
