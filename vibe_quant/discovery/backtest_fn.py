@@ -13,6 +13,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from vibe_quant.errors import DataUnavailableError
+from vibe_quant.liquidation_settings import LiquidationSettings
 
 if TYPE_CHECKING:
     from vibe_quant.data.fill_ticks import FillTickSet
@@ -24,6 +25,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SymbolAgg = Literal["portfolio", "worst"]
+
+# Default settings for a callable built without one: mode off (B008 wants a
+# module-level singleton, not a call in the signature default).
+_LIQUIDATION_OFF = LiquidationSettings()
 
 
 def _finite_or_none(value: float | int) -> float | None:
@@ -41,6 +46,27 @@ def _sum_fee_fields(results: list[dict[str, float | int]]) -> dict[str, float]:
     return {
         "total_fees": sum(float(r.get("total_fees", 0.0)) for r in results),
         "gross_pnl": sum(float(r.get("gross_pnl", 0.0)) for r in results),
+    }
+
+
+def _sum_liquidation_fields(
+    results: list[dict[str, float | int]],
+) -> dict[str, float | int]:
+    """Summed report-only liquidation counts/flows over windows or symbols.
+
+    Empty when the mode is off: :meth:`NTBacktestFn._run_single` writes the keys
+    only when it is on, so a mode-off aggregate stays byte-identical to today
+    (R4). The sums cover exactly ``results`` -- for an early exit that is the
+    windows that actually ran (R2) -- and per-symbol counts stay in
+    ``symbol_results`` (R3).
+    """
+    if not any("liquidation_count" in r for r in results):
+        return {}
+    return {
+        "liquidation_count": sum(int(r.get("liquidation_count", 0)) for r in results),
+        "liquidation_forfeited": sum(
+            float(r.get("liquidation_forfeited", 0.0)) for r in results
+        ),
     }
 
 
@@ -79,6 +105,13 @@ class NTBacktestFn:
     holdout / cross-window / WFA factories. It must survive pickling into the
     worker processes, so it is a plain picklable attribute. ``entry_order``
     defaults to ``"market"``; post-only is validation-only and refused here.
+
+    ``liquidation`` (bead vibe-quant-2gyk1.1.9) is the run's validated
+    :class:`~vibe_quant.liquidation_settings.LiquidationSettings`. Its mode and
+    leverage are passed to every :class:`NTScreeningRunner` this callable builds,
+    and a mode-on run reports the liquidation counts/flows in the bt dict. The
+    default is off, so every pre-existing number is byte-identical. It is a plain
+    picklable attribute so it survives into worker processes.
     """
 
     def __init__(
@@ -94,6 +127,7 @@ class NTBacktestFn:
         collect_daily_returns: bool = False,
         fee_schedule: FeeSchedule | None = None,
         entry_order: str = "market",
+        liquidation: LiquidationSettings = _LIQUIDATION_OFF,
     ) -> None:
         from vibe_quant.fees import FeeSchedule
         from vibe_quant.screening.nt_runner import refuse_non_market_entry
@@ -113,6 +147,11 @@ class NTBacktestFn:
         self.collect_daily_returns = collect_daily_returns
         self.entry_order = entry_order
         self.fee_schedule = FeeSchedule() if fee_schedule is None else fee_schedule
+        # Run-level liquidation settings (bead vibe-quant-2gyk1.1.9): the same
+        # resolved setting reaches every runner this callable builds, so the
+        # train GA and every holdout/cross-window/WFA factory agree. Default is
+        # off, which keeps every pre-existing number byte-identical.
+        self.liquidation = liquidation
 
     def _make_runner(
         self,
@@ -137,6 +176,8 @@ class NTBacktestFn:
             collect_daily_returns=self.collect_daily_returns,
             fee_schedule=self.fee_schedule,
             entry_order=self.entry_order,
+            liquidation_mode=self.liquidation.mode,
+            liquidation_leverage=self.liquidation.leverage,
         )
 
     def _run_single(
@@ -177,6 +218,13 @@ class NTBacktestFn:
         out["gross_pnl"] = float(getattr(result, "gross_pnl", 0.0))
         out["starting_balance"] = float(runner.last_starting_balance)
         out["days"] = int(runner.last_days)
+        if self.liquidation.on:
+            # Report-only liquidation accounting (bead vibe-quant-2gyk1.1.9): the
+            # keys exist ONLY when the mode is on (R4); the aggregates sum them.
+            out["liquidation_count"] = int(getattr(result, "liquidation_count", 0))
+            out["liquidation_forfeited"] = float(
+                getattr(result, "liquidation_forfeited", 0.0)
+            )
         return out
 
     @staticmethod
@@ -248,6 +296,7 @@ class NTBacktestFn:
                 "total_return": 0.0,
                 "window_trades": tuple(per_window_trades),  # type: ignore[dict-item]
                 **_sum_fee_fields(results),
+                **_sum_liquidation_fields(results),
                 "starting_balance": float(results[0].get("starting_balance", 0.0)),
                 "days": sum(int(r.get("days", 0)) for r in results),
             }
@@ -275,6 +324,7 @@ class NTBacktestFn:
             ),
             "window_trades": tuple(per_window_trades),  # type: ignore[dict-item]
             **_sum_fee_fields(results),
+            **_sum_liquidation_fields(results),
             "starting_balance": float(results[0].get("starting_balance", 0.0)),
             "days": sum(int(r.get("days", 0)) for r in results),
         }
@@ -305,6 +355,8 @@ class NTBacktestFn:
             # Fees the windows actually run did pay; a zeroed score must not
             # hide that the signal was killed by costs (bd vibe-quant-2gyk1.4).
             **_sum_fee_fields(results),
+            # Report-only: sum over the windows that ran before the exit (R2).
+            **_sum_liquidation_fields(results),
             "starting_balance": float(results[0].get("starting_balance", 0.0)),
             "days": sum(int(r.get("days", 0)) for r in results),
         }
@@ -416,6 +468,9 @@ class NTBacktestFn:
             # Fee-drag flows are SUMMED over symbols (bd vibe-quant-2gyk1.4);
             # days is the shared window span, never summed across symbols.
             **_sum_fee_fields(results),
+            # Report-only: summed over symbols, with each symbol's own count kept
+            # in ``symbol_results`` (R3).
+            **_sum_liquidation_fields(results),
             # Each symbol is its own account, so the summed fees are annualized
             # against the SUMMED equity (bd vibe-quant-2gyk1.4).
             "starting_balance": sum(float(r.get("starting_balance", 0.0)) for r in results),
