@@ -360,6 +360,16 @@ class FundingEvent(Event):
         }
 
 
+_LIQUIDATION_OPTIONAL_FIELDS: tuple[str, ...] = (
+    "ts_ns",
+    "mode",
+    "mark_price",
+    "clearance_fee",
+    "margin_balance",
+    "maintenance_margin",
+)
+
+
 @dataclass
 class LiquidationEvent(Event):
     """Liquidation event.
@@ -370,6 +380,16 @@ class LiquidationEvent(Event):
         liquidation_price: Price at liquidation.
         quantity: Quantity liquidated.
         loss: Total loss from liquidation.
+        ts_ns: Liquidation timestamp (ns); optional.
+        mode: "isolated" or "cross"; optional.
+        mark_price: Trigger extreme of the mark bar (low for longs, high for shorts); optional.
+        clearance_fee: Clearance fee the venue took; optional.
+        margin_balance: Position (isolated) / account (cross) margin balance at the trigger;
+            optional.
+        maintenance_margin: Maintenance margin at the trigger; optional.
+
+    The optional fields appear in ``data`` only when set, so events written before they
+    existed serialise and parse unchanged.
     """
 
     position_id: str = ""
@@ -377,6 +397,12 @@ class LiquidationEvent(Event):
     liquidation_price: float = 0.0
     quantity: float = 0.0
     loss: float = 0.0
+    ts_ns: int | None = None
+    mode: str | None = None
+    mark_price: float | None = None
+    clearance_fee: float | None = None
+    margin_balance: float | None = None
+    maintenance_margin: float | None = None
 
     def __post_init__(self) -> None:
         """Populate data dict from typed fields."""
@@ -388,6 +414,10 @@ class LiquidationEvent(Event):
             "quantity": self.quantity,
             "loss": self.loss,
         }
+        for name in _LIQUIDATION_OPTIONAL_FIELDS:
+            value = getattr(self, name)
+            if value is not None:
+                self.data[name] = value
 
 
 _EVENT_TYPE_TO_CLASS: dict[EventType, type[Event]] = {
@@ -436,6 +466,12 @@ _EVENT_SUBCLASS_FIELDS: dict[EventType, tuple[str, ...]] = {
     EventType.LIQUIDATION: ("position_id", "symbol", "liquidation_price", "quantity", "loss"),
 }
 
+# Optional subclass fields: taken from ``data`` when present, never required (old events
+# without them still parse).
+_EVENT_OPTIONAL_FIELDS: dict[EventType, tuple[str, ...]] = {
+    EventType.LIQUIDATION: _LIQUIDATION_OPTIONAL_FIELDS,
+}
+
 
 def create_event(
     event_type: EventType,
@@ -482,7 +518,9 @@ def create_event(
         )
 
     # Extract subclass-specific fields from data dict
-    subclass_fields = _EVENT_SUBCLASS_FIELDS.get(event_type, ())
+    subclass_fields = _EVENT_SUBCLASS_FIELDS.get(event_type, ()) + _EVENT_OPTIONAL_FIELDS.get(
+        event_type, ()
+    )
     subclass_kwargs: dict[str, object] = {}
     for field_name in subclass_fields:
         if field_name in data:

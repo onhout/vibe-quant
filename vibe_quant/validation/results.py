@@ -99,6 +99,9 @@ class ValidationResult(PerformanceMetrics):
     avg_loss: float = 0.0
     total_slippage: float = 0.0
     trades: list[TradeRecord] = field(default_factory=list)
+    # One dict per liquidation hit (``LiquidationHit.to_dict()`` + ``mode``) when the run used
+    # ``liquidation_mode != "off"``; the runner writes them to the event log. Not persisted.
+    liquidation_events: list[dict[str, object]] = field(default_factory=list)
 
     starting_balance: float = 1000.0
     # Provenance persisted as backtest_results.notes JSON (not a metric

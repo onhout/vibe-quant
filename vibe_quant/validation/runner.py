@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from vibe_quant.db.state_manager import StateManager
 from vibe_quant.dsl.compiler import StrategyCompiler
@@ -140,6 +140,13 @@ class ValidationRunner:
         # message instead of surfacing from the generated on_start mid-engine.
         try:
             entry_order = self._resolve_maker_params(run_config)
+        except ValidationRunnerError as exc:
+            self._state.update_backtest_run_status(run_id, "failed", error_message=str(exc))
+            raise
+
+        # Liquidation overlay is opt-in; a bad mode fails the run before the engine starts.
+        try:
+            self._resolve_liquidation_mode(run_config)
         except ValidationRunnerError as exc:
             self._state.update_backtest_run_status(run_id, "failed", error_message=str(exc))
             raise
@@ -353,6 +360,13 @@ class ValidationRunner:
         strategy_name = str(strategy_data["name"])
         dsl_config = strategy_data["dsl_config"]
         dsl = self._validate_dsl(dsl_config, strategy_name=strategy_name)
+
+        # A bad liquidation mode fails the run before any window's engine starts.
+        try:
+            self._resolve_liquidation_mode(run_config)
+        except ValidationRunnerError as exc:
+            self._state.update_backtest_run_status(run_id, "failed", error_message=str(exc))
+            raise
 
         try:
             effective_detail = self._resolve_detail_timeframe(
@@ -607,6 +621,8 @@ class ValidationRunner:
             total_fees=sum(r.total_fees for r in window_results),
             total_funding=sum(r.total_funding for r in window_results),
             total_slippage=sum(r.total_slippage for r in window_results),
+            # cost-free PnL adds across windows like the costs it is measured against
+            gross_pnl=sum(r.gross_pnl for r in window_results),
             trades=[trade for result in window_results for trade in result.trades],
             cagr=_trade_weighted_avg("cagr"),
             calmar_ratio=_trade_weighted_avg("calmar_ratio"),
@@ -623,7 +639,42 @@ class ValidationRunner:
             avg_loss=_count_weighted_avg("avg_loss", "losing_trades"),
             starting_balance=window_results[0].starting_balance,
         )
+        aggregate.liquidation_events = [e for r in window_results for e in r.liquidation_events]
+        liquidation_note = ValidationRunner._aggregate_liquidation_notes(
+            window_results, total_trades
+        )
+        if liquidation_note is not None:
+            aggregate.notes["liquidation"] = liquidation_note
         return aggregate
+
+    @staticmethod
+    def _aggregate_liquidation_notes(
+        window_results: list[ValidationResult], total_trades: int
+    ) -> dict[str, object] | None:
+        """Sum the windows' ``notes["liquidation"]`` (``None`` when no window used the overlay).
+
+        Counts and loss sums add up, ``pct_trades`` is recomputed on the pooled trades,
+        ``bust_ts`` is the first window's bust and ``path_divergence`` any window's; the
+        event list concatenates (capped like a single run's).
+        """
+        notes = [r.notes["liquidation"] for r in window_results if "liquidation" in r.notes]
+        if not notes:
+            return None
+        from vibe_quant.liquidation.scan import _MAX_NOTE_EVENTS  # only a liquidation run gets here
+
+        first = cast("dict[str, Any]", notes[0])
+        windows = cast("list[dict[str, Any]]", notes)
+        count = sum(int(n["count"]) for n in windows)
+        merged: dict[str, Any] = dict(first)
+        merged["count"] = count
+        for name in ("total_forfeited", "total_realized_pnl", "total_insurance_deficit"):
+            merged[name] = float(sum(float(n[name]) for n in windows))
+        merged["dropped"] = sum(int(n["dropped"]) for n in windows)
+        merged["pct_trades"] = (100.0 * count / total_trades) if total_trades > 0 else 0.0
+        merged["bust_ts"] = next((n["bust_ts"] for n in windows if n["bust_ts"] is not None), None)
+        merged["path_divergence"] = any(bool(n["path_divergence"]) for n in windows)
+        merged["events"] = [e for n in windows for e in n["events"]][:_MAX_NOTE_EVENTS]
+        return merged
 
     def _load_run_config(self, run_id: int) -> dict[str, object]:
         """Load backtest run configuration from database.
@@ -1139,12 +1190,14 @@ class ValidationRunner:
                     all_timeframes | ({detail_timeframe} if detail_timeframe else set())
                 ),
                 catalog_path=catalog_path,
+                liquidation_mode=self._resolve_liquidation_mode(run_config),
             )
 
             # Log trade events (the market-mode twin writes none)
             if write_trade_events:
                 for trade in result.trades:
                     self._write_trade_events(writer, run_id, strategy_name, trade)
+                self._write_liquidation_events(writer, run_id, strategy_name, result)
 
             if effective_entry_order == "post_only":
                 timeout_raw = strategy_params.get("maker_entry_timeout_bars", 3)
@@ -1285,6 +1338,24 @@ class ValidationRunner:
                     raise ValidationRunnerError(msg)
         return str(entry_order)
 
+    def _resolve_liquidation_mode(self, run_config: dict[str, object]) -> str:
+        """The run's ``liquidation_mode`` launch parameter: "off" (default), "isolated", "cross".
+
+        Leverage for the overlay is the run's ``leverage`` parameter (the venue's
+        ``default_leverage``, see :meth:`_create_venue_config`).
+
+        Raises:
+            ValidationRunnerError: For any other value (an unknown mode never runs as "off").
+        """
+        raw_params = run_config.get("parameters")
+        if not isinstance(raw_params, dict) or "liquidation_mode" not in raw_params:
+            return "off"
+        mode = raw_params["liquidation_mode"]
+        if not isinstance(mode, str) or mode not in ("off", "isolated", "cross"):
+            msg = f"liquidation_mode must be 'off', 'isolated' or 'cross', got {mode!r}"
+            raise ValidationRunnerError(msg)
+        return mode
+
     def _build_strategy_params(self, run_config: dict[str, object]) -> dict[str, object]:
         """Extract strategy parameter overrides from run config.
 
@@ -1313,6 +1384,7 @@ class ValidationRunner:
                 "fee_tier",
                 "bnb_discount",
                 "fee_schedule_source",
+                "liquidation_mode",
             ):
                 continue
             params[key] = value
@@ -1584,6 +1656,7 @@ class ValidationRunner:
         run_end_date: str | None = None,
         execution_timeframe: str | None = None,
         catalog_path: Path | None = None,
+        liquidation_mode: str = "off",
     ) -> ValidationResult:
         """Extract ValidationResult from NautilusTrader backtest output.
 
@@ -1601,6 +1674,7 @@ class ValidationRunner:
             run_start_date / run_end_date: Backtest window for CAGR.
             execution_timeframe / catalog_path: Execution bars for the
                 mark-to-market drawdown.
+            liquidation_mode: "off" (default), "isolated" or "cross".
 
         Returns:
             Populated ValidationResult.
@@ -1619,6 +1693,7 @@ class ValidationRunner:
             run_end_date=run_end_date,
             execution_timeframe=execution_timeframe,
             catalog_path=catalog_path,
+            liquidation_mode=liquidation_mode,
         )
 
     def _write_start_event(
@@ -1674,6 +1749,36 @@ class ValidationRunner:
             },
         )
         writer.write(event)
+
+    def _write_liquidation_events(
+        self,
+        writer: EventWriter,
+        run_id: int,
+        strategy_name: str,
+        result: ValidationResult,
+    ) -> None:
+        """Write one LIQUIDATION event per liquidation hit (``liquidation_mode`` on)."""
+        for hit in result.liquidation_events:
+            writer.write(
+                create_event(
+                    event_type=EventType.LIQUIDATION,
+                    run_id=str(run_id),
+                    strategy_name=strategy_name,
+                    data={
+                        "position_id": hit["key"],
+                        "symbol": hit["symbol"],
+                        "liquidation_price": hit["price"],
+                        "quantity": hit["qty"],
+                        "loss": hit["loss"],
+                        "ts_ns": hit["ts"],
+                        "mode": hit["mode"],
+                        "mark_price": hit["mark"],
+                        "clearance_fee": hit["clearance_fee"],
+                        "margin_balance": hit["margin_balance"],
+                        "maintenance_margin": hit["maint_margin"],
+                    },
+                )
+            )
 
     def _write_trade_events(
         self,

@@ -64,11 +64,25 @@ class FundingAccrual:
         payments: ``(settlement_ts_ns, amount)`` per settlement crossed.
         fallback_settlements: Settlements charged at the fallback rate
             because the archive has no rate for them.
+        fallback_timestamps: Their settlement timestamps (provenance, so a truncated
+            accrual can recount them).
     """
 
     total: float = 0.0
     payments: list[tuple[int, float]] = field(default_factory=list)
     fallback_settlements: int = 0
+    fallback_timestamps: list[int] = field(default_factory=list)
+
+    def truncated(self, cutoff_ns: int) -> FundingAccrual:
+        """The accrual up to and including ``cutoff_ns``: same payments, never re-accrued."""
+        payments = [p for p in self.payments if p[0] <= cutoff_ns]
+        fallbacks = [ts for ts in self.fallback_timestamps if ts <= cutoff_ns]
+        return FundingAccrual(
+            total=sum(amount for _, amount in payments),
+            payments=payments,
+            fallback_settlements=len(fallbacks),
+            fallback_timestamps=fallbacks,
+        )
 
 
 class FundingCalculator:
@@ -166,6 +180,7 @@ class FundingCalculator:
             payments.extend((ts, fallback) for ts in missing)
             payments.sort(key=lambda p: p[0])
             accrual.fallback_settlements = len(missing)
+            accrual.fallback_timestamps = list(missing)
             self._warn_missing(symbol, missing, has_archive=bool(times))
 
         accrual.payments = payments
@@ -229,6 +244,7 @@ class FundingCalculator:
         if missing:
             payments.sort(key=lambda p: p[0])
             accrual.fallback_settlements = len(missing)
+            accrual.fallback_timestamps = list(missing)
             self._warn_missing(symbol, missing, has_archive=bool(times))
 
         accrual.payments = payments
