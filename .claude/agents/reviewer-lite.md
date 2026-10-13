@@ -25,7 +25,7 @@ Escalating is a correct outcome, not a failure.
 5. **Repo traps** (CLAUDE.md): `api/generated/` hand-edits, SQL f-strings, `pandas-ta` (must be `pandas-ta-classic`), editing a script while it runs.
 6. Run the touched test files; quote the summary line.
 
-Each finding: severity (blocking / should-fix / nit), file:line, a concrete failure scenario, a fix. No failure scenario → nit at most.
+Each finding: severity (blocking / should-fix / nit), file:line, a concrete failure scenario, a fix. No failure scenario → nit at most. Blocking only when the CURRENT code breaks the brief's criteria or contract, or yields a reachable wrong value. Correct code with a missing test is should-fix (same bar as `reviewer.md` § Severity bar).
 
 End with the handoff contract from `docs/orchestration/README.md#handoff-contract`: `status: done` (no blocking findings), `failed` (blocking findings), or `needs-decision` (escalate to `reviewer`).
 
@@ -60,3 +60,4 @@ Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool
 - 2026-10-11: non-money surviving mutants are nits; mutation cap ~3 min; batched reads — user decision 2026-10-11 (speed job 20261011-speed).
 - 2026-10-11: turn-batching section (≥2 tool calls per turn) — evidence: time analysis of jobs 20261010-backlog / 20261011-testspeed / 20261011-grind, 1.1 calls per turn — user approved.
 - 2026-10-13: durable-bus usage (inbox before gate, gate --bus/--bus-agent, --client-id, pending); reviewers stream confirmed blockers and pin the reviewed commit - evidence: job 20261012-p1-honest (workers missed chief DMs; bus hardened in f40fd209) - user request.
+- 2026-10-13: severity bar aligned with reviewer.md: blocking means a contract break or a reachable wrong value; a missing test means should-fix. Evidence: job 20261012-p1-honest review loop. User approved.

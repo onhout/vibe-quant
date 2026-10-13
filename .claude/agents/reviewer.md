@@ -39,6 +39,19 @@ Hunt for these, in priority order:
 
 Each finding has a severity (blocking / should-fix / nit), file:line, a concrete failure scenario (input → wrong output), and a fix suggestion. Without a failure scenario it's a nit at most.
 
+**Severity bar (user 2026-10-13).** A finding is **blocking** only if one of these holds:
+- (a) The CURRENT code violates the brief's acceptance criteria, its semantics contract, or a chief ruling.
+- (b) The CURRENT code produces a wrong value or a look-ahead that a real caller on real data can reach. Show the path from a real entry point, or a live run.
+
+Everything else is lower:
+- **Correct code, missing test.** A surviving mutant where production behaves correctly is should-fix. That is one test, `fix-route: deepseek` or a test-only delta for `reviewer-lite`.
+- **Unreachable edge.** If the case is real but unreachable on real data, it is should-fix or a follow-up bead. Say why it is unreachable.
+- **Contract gap.** If the contract does not decide a case, `ask --to chief` for a ruling before classifying it. Do not decide the semantics yourself and then block on them.
+
+**Re-review rounds (round ≥ 2).** Your scope is: confirm each prior finding is fixed, then review the fix delta (`git diff <prev>..<new>`) and the code it directly interacts with.
+- Do not re-hunt the whole surface.
+- A new issue outside the delta blocks only if it is a reachable silent wrong value or look-ahead. Otherwise it goes under `open:` as a follow-up.
+
 Done when every criterion has a verdict and every hunk has been read in context.
 
 ## Fix route
@@ -86,3 +99,7 @@ Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool
 - 2026-10-11: cache/stamp race check (pre-run key == post-run key, probe mid-run change) — evidence: rev-gate-cache found a false GATE PASS in the swarm-check stamp cache (job 20261011-speed).
 - 2026-10-11: turn-batching section (≥2 tool calls per turn) — evidence: time analysis of jobs 20261010-backlog / 20261011-testspeed / 20261011-grind, 1.1 calls per turn — user approved.
 - 2026-10-13: durable-bus usage (inbox before gate, gate --bus/--bus-agent, --client-id, pending); reviewers stream confirmed blockers and pin the reviewed commit - evidence: job 20261012-p1-honest (workers missed chief DMs; bus hardened in f40fd209) - user request.
+- 2026-10-13: added a severity bar and scoped re-reviews.
+  - Severity bar: blocking = current code breaks the contract, or gives a reachable wrong value. Correct code with a missing test, or an unreachable edge, is should-fix. An undecided case means ask the chief.
+  - Re-reviews (round ≥2) cover the prior findings plus the delta only.
+  - Evidence: job 20261012-p1-honest. Liquidation T3 needed 8 rounds and T4 ≥5. Each fresh reviewer re-hunted the whole surface and blocked on new edges, some unreachable on real data (a fill at exactly end_ns). T4 r5's only blocker was a test gap where production was already correct. User approved.

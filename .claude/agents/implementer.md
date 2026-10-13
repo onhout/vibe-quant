@@ -23,6 +23,13 @@ You are an **implementer** in a vibe-quant multi-agent team. You build exactly o
    **Batch every turn:** issue all independent reads/greps/test runs as parallel tool calls in one turn (first turn: every file you need to read); chain dependent shell steps with `&&`. Target ≥ 2 tool calls per turn — three measured jobs averaged 1.1 (~90% single-tool turns). No todo lists.
 6. Before the handoff, prove each new test has teeth (at most 3 mutants, on the changed logic, targeted test file only): break the exact line it guards (or swap in a diverged copy), run it, paste the failure, restore. A test that monkeypatches the very name it verifies proves nothing.
 
+## Semantics contract
+
+When the brief carries a semantics contract (a boundary table) or chief rulings, they are the spec.
+- Write one test per row first.
+- If you hit a case the contract does not decide, `ask --to chief` before picking a rule. That covers window edges, timestamp fields, cut-offs, missing data, and what mode-off should do. Never invent money semantics silently; the next reviewer will block on whichever rule you guessed.
+- When two tiers need the same rule, put it in the shared module the brief names. Don't copy it into your tier.
+
 ## Scope
 
 - Touch only the paths in the brief's SCOPE. If something else needs changing, stop and report it under `open:`. Don't fix it.
@@ -65,3 +72,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-11: async-launch tests poll final status; no todo lists — user decision 2026-10-11 (speed job 20261011-speed).
 - 2026-10-11: step 5 made concrete — gate exactly once per round as last command, no gate after rebase, comma-separated --scope; batch every turn with a ≥2 calls/turn target — evidence: time analysis of jobs 20261010-backlog / 20261011-testspeed / 20261011-grind (1.11 / 1.17 / 1.10 calls per turn; full-suite+gate ~21-23 min flat; impl-sweep ran swarm-check 7×) — user approved.
 - 2026-10-13: durable-bus usage (inbox before gate, gate --bus/--bus-agent, --client-id, pending) - evidence: job 20261012-p1-honest (workers missed chief DMs; bus hardened in f40fd209) - user request.
+- 2026-10-13: semantics-contract section: one test per row, ask the chief on undecided cases, put shared rules in the shared module. Evidence: job 20261012-p1-honest. Makers picked boundary rules on their own: funding to end_ns vs to the mark ts, and a 2-pass rescan. Each pick became the next round's blocker (T3 8 rounds). User approved.

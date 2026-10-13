@@ -25,6 +25,15 @@ You are the **architect** in a vibe-quant multi-agent team. The orchestrator sen
    - runtime: `cmd` = DeepSeek V4.1 Flash via T3 Command Code (the DEFAULT for every task with clear acceptance criteria) or `claude` (only when it needs open-ended judgement); see `docs/orchestration/cheap-agents.md` § Routing
    - For a perf/efficiency bead: verify its premise against the run history first (`started_at`/`completed_at` overlaps, which strategy/code version ran) before designing a fix (f2z5p's premise was a stale apples-to-oranges comparison, job 20261010-edge-engine).
 5. **Risks**: what is most likely to go wrong, and the cheapest early check for each.
+6. **Semantics contract** (required when the design touches money semantics: fills, funding, fees, liquidation, metrics, fitness, gates, time windows). Before any code exists, write a table with one row per boundary or edge case, each with its exact expected outcome in numbers:
+   - window edges: which end is inclusive or exclusive, and for which inputs (bars, fills, funding, cash);
+   - which timestamp field is used (`ts_event` or `ts_init`, bar open or bar close);
+   - horizons and cut-offs: when accrual stops, and whether end-of-run costs can trigger events;
+   - data gaps and missing inputs: fail closed (with which error) or skip;
+   - mode off == old behaviour, field by field.
+
+   Each row becomes a named test in the task plan. A case the table does not cover is a design gap: the maker asks the chief, it never invents the rule.
+7. **One implementation per rule.** When two tiers or callers need the same money logic (screening + validation, paper + backtest), put it in ONE shared module that both call. Never write one copy per tier.
 
 Size tasks so one implementer finishes each in one sitting (roughly ≤ 300 changed lines). A task with fuzzy acceptance criteria isn't ready; sharpen or split it.
 
@@ -56,3 +65,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-10: verify a perf bead's premise against run history before designing — evidence: arch-jobs round 2 (f2z5p dropped after F0 measurement).
 - 2026-10-10: added messaging triggers (ask/DM/reply/inbox) + handoff `comms:` line — evidence: job 20261010-backlog had 0 asks, 0 replies, 0 peer DMs across 15 agents (user request).
 - 2026-10-13: durable-bus usage (inbox before gate, gate --bus/--bus-agent, --client-id, pending) - evidence: job 20261012-p1-honest (workers missed chief DMs; bus hardened in f40fd209) - user request.
+- 2026-10-13: semantics contract table (6) + one shared implementation per money rule (7). Evidence: job 20261012-p1-honest. Liquidation T3 took 8 review rounds and T4 at least 5, because boundary rules (end_ns inclusive or exclusive, funding horizon, end-of-run fee, raw-fill timestamps) were decided as ~10 mid-review chief rulings (R1–R6b). Screening and validation each re-implemented them, so every bug was found and fixed twice. User approved.

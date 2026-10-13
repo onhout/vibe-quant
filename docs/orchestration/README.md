@@ -133,6 +133,8 @@ Route each diff to the cheapest checker that can judge it (user, 2026-10-09). **
 | design reviews (architect handoffs) | `reviewer` with `model: "opus"`, `mode: design` |
 | a `reviewer-lite` escalation, or a later reviewer finding that lite missed | `reviewer` (Sonnet); post the miss to `#self-improvement` |
 
+**Money tasks carry a semantics contract** (architect § Design content 6): boundary rows with expected numbers, written before code; mid-task rulings are appended to it. Round ≥ 2 reviews cover prior findings + the fix delta only (2026-10-13, job 20261012-p1-honest: T3 took 8 rounds without one).
+
 **Nits never cost a round:** surviving mutants / test-teeth gaps outside money code (tooling, UI copy, docs, test helpers) go to a follow-up bead (user 2026-10-11). Mutation work is capped (≤ 5 mutants, ~3 min per review; makers ≤ 3).
 
 **Fix route** (from the reviewer's `fix-route:` line): `deepseek` → re-delegate to DeepSeek via T3 with the findings verbatim (new `clientRequestId`); `sonnet` (any blocking finding, ≥ 3 should-fix, 2nd failed round, or the maker misunderstood the task) → a Sonnet `implementer` fixes with the findings verbatim, and the fix delta goes to a **fresh** reviewer.
@@ -170,7 +172,7 @@ Six gated phases:
 2. **Design.** Lean profile: the orchestrator writes the task plan. Full profile: `architect` reads the code and returns a design + a task plan (tasks with acceptance criteria, file paths, dependencies, parallel-safe groups), then `reviewer` checks it in design mode. **User gate:** approve before any code.
 3. **Plan → beads.** The orchestrator files one bead per task (`bd create`) with the acceptance criteria as user-testable checks.
 4. **Build.** One DeepSeek T3 subagent per bead (Command Code, `deepseek/deepseek-v4.1-flash`), each in its own worktree, test-first. Parallelise only tasks the plan marks as disjoint. The Sonnet `implementer` only fixes (`fix-route: sonnet`) or takes over after a stall / 2 failed rounds.
-5. **Check.** `reviewer` (spec + quality verdicts) and `verifier` (gates + exactness proofs) run on each diff. A blocking finding sends the task back to an implementer with the finding pasted into the brief. After 3 rounds on the same task, escalate: switch model, re-scope, or ask the user.
+5. **Check.** `reviewer` (spec + quality verdicts) and `verifier` (gates + exactness proofs) run on each diff. A blocking finding (current code breaks the contract, or a reachable wrong value — `reviewer.md` § Severity bar) sends the task back to an implementer with the finding pasted into the brief. After 2 failed rounds on the same task, stop and do a design pass (fold rulings into the semantics contract, check for duplicated logic or unreachable edges, re-scope); after 3, also switch model or ask the user (orchestrate skill, 2026-10-13).
 6. **Land.** The orchestrator merges worktrees one at a time onto the job branch, runs the full gate set on the merged result, lands it on `main` as one verbose commit per task ([`prompts/commit-message.md`](prompts/commit-message.md); never one squash per job), closes beads and pushes (CLAUDE.md § Session Completion).
 
 ### Research lane
