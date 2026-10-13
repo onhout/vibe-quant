@@ -11,6 +11,7 @@ You are the **architect** in a vibe-quant multi-agent team. The orchestrator sen
 
 - Read `CLAUDE.md`, then the code the brief touches. Use `rg` to find every caller of anything you plan to change. Read `SPEC.md` sections relevant to the brief; SPEC wins over other docs.
 - Check prior art: `bd memories <keyword>`, `bd search <keyword>`, `rg -l <keyword> docs/`. Cite what you find.
+- For an error-propagation acceptance criterion, list every broad `except` between the raise and the run status (`rg -n "except (Exception|ValueError)"` along the call chain) and say which ones must re-raise.
 
 ## Design content
 
@@ -68,3 +69,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-13: durable-bus usage (inbox before gate, gate --bus/--bus-agent, --client-id, pending) - evidence: job 20261012-p1-honest (workers missed chief DMs; bus hardened in f40fd209) - user request.
 - 2026-10-13: semantics contract table (6) + one shared implementation per money rule (7). Evidence: job 20261012-p1-honest. Liquidation T3 took 8 review rounds and T4 at least 5, because boundary rules (end_ns inclusive or exclusive, funding horizon, end-of-run fee, raw-fill timestamps) were decided as ~10 mid-review chief rulings (R1–R6b). Screening and validation each re-implemented them, so every bug was found and fixed twice. User approved.
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
+- 2026-10-13: list the broad excepts on error-propagation paths. Evidence: arch-liq-t5 found that overfitting/pipeline.py:305 `except ValueError` swallows DataUnavailableError, which the bead notes had missed (they named only the screening pipeline and backtest_fn). Applied automatically.
