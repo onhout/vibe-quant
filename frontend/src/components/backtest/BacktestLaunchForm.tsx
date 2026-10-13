@@ -29,6 +29,11 @@ import {
 } from "@/components/ui/select";
 import { useDatasetDateRange } from "@/hooks/useDatasetDateRange";
 import { useIndicatorCatalog } from "@/hooks/useIndicatorCatalog";
+import {
+  LIQUIDATION_MODE_OPTIONS,
+  type LiquidationMode,
+  liquidationPayload,
+} from "@/lib/liquidation";
 import { cn } from "@/lib/utils";
 import { PreflightStatus } from "./PreflightStatus";
 import {
@@ -59,6 +64,8 @@ export function BacktestLaunchForm() {
   const [endDate, setEndDate] = useState("");
   const [initialBalance, setInitialBalance] = useState(10000);
   const [leverage, setLeverage] = useState(10);
+  // Liquidation (vibe-quant-2gyk1.1.10, E1): off sends no liquidation keys.
+  const [liquidationMode, setLiquidationMode] = useState<LiquidationMode>("off");
   const [timeframe, setTimeframe] = useState("1m");
   // Validation-only fields
   const [latencyPreset, setLatencyPreset] = useState("");
@@ -204,6 +211,8 @@ export function BacktestLaunchForm() {
             sweep: sweepToPayload(sweepConfig),
           }),
       },
+      // Off sends no liquidation_mode, so stored parameters stay identical.
+      ...liquidationPayload(liquidationMode),
       ...(mode === "validation" && {
         latency_preset: latencyPreset && latencyPreset !== "__none__" ? latencyPreset : null,
         ...(bnbDiscount && { bnb_discount: true }),
@@ -441,6 +450,31 @@ export function BacktestLaunchForm() {
                 onChange={(e) => setLeverage(Number(e.target.value))}
               />
             </div>
+          </div>
+
+          {/* Liquidation (vibe-quant-2gyk1.1.10, E1) */}
+          <div className="space-y-2">
+            <Label htmlFor="liquidation-mode">Liquidation</Label>
+            <Select
+              value={liquidationMode}
+              onValueChange={(v) => setLiquidationMode(v as LiquidationMode)}
+            >
+              <SelectTrigger id="liquidation-mode" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LIQUIDATION_MODE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {liquidationMode !== "off" && (
+              <p className="text-xs text-muted-foreground">
+                Positions are liquidated at the Binance maintenance margin for the chosen leverage.
+              </p>
+            )}
           </div>
 
           {/* Validation-only fields */}
