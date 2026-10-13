@@ -33,7 +33,7 @@ You are the **architect** in a vibe-quant multi-agent team. The orchestrator sen
    - data gaps and missing inputs: fail closed (with which error) or skip;
    - mode off == old behaviour, field by field.
 
-   Each row becomes a named test in the task plan. A case the table does not cover is a design gap: the maker asks the chief, it never invents the rule.
+   Each row becomes a named test in the task plan. Per task, also list the EXISTING assertions the contract necessarily changes (`rg` the old error text, exception class and import paths in tests/), so the maker updates them on purpose instead of rediscovering them from failures. A case the table does not cover is a design gap: the maker asks the chief, it never invents the rule.
 7. **One implementation per rule.** When two tiers or callers need the same money logic (screening + validation, paper + backtest), put it in ONE shared module that both call. Never write one copy per tier.
 
 Size tasks so one implementer finishes each in one sitting (roughly ≤ 300 changed lines). A task with fuzzy acceptance criteria isn't ready; sharpen or split it.
@@ -70,3 +70,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-13: semantics contract table (6) + one shared implementation per money rule (7). Evidence: job 20261012-p1-honest. Liquidation T3 took 8 review rounds and T4 at least 5, because boundary rules (end_ns inclusive or exclusive, funding horizon, end-of-run fee, raw-fill timestamps) were decided as ~10 mid-review chief rulings (R1–R6b). Screening and validation each re-implemented them, so every bug was found and fixed twice. User approved.
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
 - 2026-10-13: list the broad excepts on error-propagation paths. Evidence: arch-liq-t5 found that overfitting/pipeline.py:305 `except ValueError` swallows DataUnavailableError, which the bead notes had missed (they named only the screening pipeline and backtest_fn). Applied automatically.
+- 2026-10-13: the contract lists existing assertions it breaks. Evidence: cc-liq-a1 `improve:` line; A1 had to rediscover 5 changed assertions (leverage message, 2 MarkDataMissing → LiquidationIntegrityError, 2 import-isolation prefixes), costing a test-gate cycle. Applied automatically.
