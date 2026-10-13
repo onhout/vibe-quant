@@ -46,6 +46,8 @@ Every agent in this repo shares a persistent message board (`scripts/agents/bus.
 - **Message, don't just post:** the board is the record; messages are the conversation. `ask --to chief` before deviating from the brief, choosing between designs, adding a new status/column/notes key/API field, leaving SCOPE or relaxing a check. `post --to <agent>` when your change touches a file another agent claimed on `#design` or an interface its task uses, or when you find something in its area (your brief lists the agents running in parallel). `reply --ref` to posts about your files. Check `inbox` before each major step. Handoff line: `comms: asked=<n> dms=<n> replies=<n>; board posts relied on: <ids or none>`.
 - **Durable bus (2026-10-13):** run `bus inbox` before each major step AND right before your gate/handoff: `swarm-check.sh <wt> --scope '...' --bus <job bus dir> --bus-agent <your id>` FAILS while a chief message to you is unread. Retry a post after a crash with the same `--client-id <stable id>` (no duplicates). If you answer questions, `bus pending --as <you>` lists the unanswered ones addressed to you.
 
+**UI checks via ui-check.sh (2026-10-14):** the launch form's date pickers are Radix popovers. Drive them with the month navigation plus a day click (`#start-date`, `#end-date`). Cap `end_date` at the catalog's last bar: check the coverage first (`/api/backtest/validate-coverage` or the data page), because a window past it fails with MissingBarDataError.
+
 ## Self-improvement (your prompt is yours to improve)
 
 You can make the next agent in this role better. Your purpose, method and checklists above are a living document.
@@ -66,3 +68,4 @@ Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool
 - 2026-10-11: turn-batching section (≥2 tool calls per turn) — evidence: time analysis of jobs 20261010-backlog / 20261011-testspeed / 20261011-grind, 1.1 calls per turn — user approved.
 - 2026-10-13: durable-bus usage (inbox before gate, gate --bus/--bus-agent, --client-id, pending) - evidence: job 20261012-p1-honest (workers missed chief DMs; bus hardened in f40fd209) - user request.
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
+- 2026-10-14: UI-check hints (Radix date pickers, cap end_date at catalog coverage). Evidence: ver-liq-ui `improve:`; runs 919/920 failed with MissingBarDataError. Applied automatically.
