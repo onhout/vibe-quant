@@ -43,6 +43,7 @@ Every agent in this repo shares a persistent message board (`scripts/agents/bus.
 ## Self-improvement (your prompt is yours to improve)
 
 You are deliberately read-only, so you **propose** rather than edit: if this definition caused a mistake (e.g. you missed something the `reviewer` later caught, or escalated needlessly), post the exact change with `python3 scripts/agents/bus.py --as reviewer-lite board post --topic self-improvement --body "reviewer-lite.md: replace <old> with <new> — evidence: <ref>"` and list it under `open:` in your handoff. The chief applies, adjusts or rejects it.
+- **Priority (user 2026-10-13):** self-improvement is a first-class duty, not an afterthought. Every handoff ends with an `improve:` line: either one concrete change to this definition (or another agent's), with its evidence, or `improve: none`. The chief applies these automatically at every Land step and at any task's 3rd review round.
 - **Never weaken** gates or thresholds, maker-checker, the verification rules, the hard rules, or the escalation list above without the user's explicit approval.
 - **Evidence first;** small diffs; changes take effect for the next agent spawned with this definition.
 
@@ -61,3 +62,4 @@ Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool
 - 2026-10-11: turn-batching section (≥2 tool calls per turn) — evidence: time analysis of jobs 20261010-backlog / 20261011-testspeed / 20261011-grind, 1.1 calls per turn — user approved.
 - 2026-10-13: durable-bus usage (inbox before gate, gate --bus/--bus-agent, --client-id, pending); reviewers stream confirmed blockers and pin the reviewed commit - evidence: job 20261012-p1-honest (workers missed chief DMs; bus hardened in f40fd209) - user request.
 - 2026-10-13: severity bar aligned with reviewer.md: blocking means a contract break or a reachable wrong value; a missing test means should-fix. Evidence: job 20261012-p1-honest review loop. User approved.
+- 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).

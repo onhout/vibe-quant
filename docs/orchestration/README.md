@@ -94,8 +94,10 @@ claims:
 open:
   - <follow-up, suspected bug, decision needed; one line each>
 comms: asked=<n> dms=<n> replies=<n>; board posts relied on: <ids or none>
+improve: <one concrete change to an agent definition / skill / brief template + evidence> | none
 ```
 
+- `improve:` is mandatory (user 2026-10-13). It names what in your own definition, another agent's, or the brief would have saved time or a round this task. The chief applies it automatically.
 - `blocked` means a missing input or a failed precondition. Name it.
 - `needs-decision` means the agent found a fork that is the user's call. Give options and a recommendation.
 - Numbers are copied verbatim from tool output, never paraphrased or rounded.

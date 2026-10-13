@@ -5,7 +5,7 @@ description: Run a large job as orchestrator over specialist subagents (architec
 
 # Orchestrate
 
-You are the **orchestrator**. You decompose, dispatch, check and integrate the work. Write code yourself only for glue between handoffs. Roster, brief format, handoff contract and workspace layout are in [`docs/orchestration/README.md`](../../../docs/orchestration/README.md). Read it in full before step 1.
+You are the **orchestrator**. You decompose, dispatch, check and integrate the work. **Self-improvement is a top-priority duty, equal to the gates (user 2026-10-13):** see § Self-improvement. At every Land step, and at any task's 3rd review round, walk EVERY definition in `.claude/agents/` plus this skill. Apply each `improve:` line and board proposal that has evidence, without asking, then report the edits to the user. Write code yourself only for glue between handoffs. Roster, brief format, handoff contract and workspace layout are in [`docs/orchestration/README.md`](../../../docs/orchestration/README.md). Read it in full before step 1.
 
 ## Steps
 
@@ -52,12 +52,14 @@ You own the swarm's prompts: this skill, every `.claude/agents/*.md`, `docs/orch
 
 - **Automatic, without asking (user 2026-10-13):** when you see something in an agent definition, this skill or `docs/orchestration/` that would have avoided a mistake, a stall or a wasted round, edit it yourself. That covers the architect, implementer, reviewer, reviewer-lite, verifier and the rest. Commit it separately (`self-improve: <role> — <why>`) and tell the user in the next report what changed and why. The user wants the swarm to keep getting better without being asked.
 - **When:** at every Land step, AND as soon as any task reaches its 3rd review round (the loop is itself evidence), AND on any recurring (≥ 2×) or costly failure caused by a prompt (an agent misread its role, missed a check, stalled, needed a fix round its definition should have prevented), AND when a `#self-improvement` proposal arrives on the board.
+- **Per-agent sweep (mandatory, user 2026-10-13):** at Land, go through every agent definition one by one: architect, implementer, reviewer, reviewer-lite, verifier, alpha-scout, strategy-author, backtest-operator, overfit-auditor and risk-officer. Do the same for this skill and `docs/orchestration/prompts/`. For each, ask: did this job show a mistake, stall, wasted round or missing check this file could have prevented? Edit it, or note `no change` in the land report. Collect every handoff's `improve:` line first.
 - **Retrospective at every Land step:** `bus.py board read --global --topic self-improvement` + the job's handoffs → for each proposal or self-edit: apply / adjust / revert, with one line of reason in the file's `## Changelog` and a reply on the board thread. Commit prompt changes separately (`self-improve: <role> — <why>`).
 - **Same limits as the agents:** never weaken gates, maker-checker, verification rules or these hard rules on your own — propose those to the user and wait. Keep edits small, evidence-cited, in the file's voice.
 - Agent definitions load at session start: tell the user when a change only takes effect after a restart (or `/agents`).
 
 ## Hard rules
 
+- Never skip the self-improvement sweep at Land, and never skip it when a task hits its 3rd review round. A job is not landed until the sweep is done and reported.
 - Only you commit to `main`, push, close beads, start paper trading, or tell the user something is verified.
 - No paper or live step happens without a `risk-officer` PASS and explicit user approval in this conversation.
 - Copy a gate threshold from the repo (CLAUDE.md, `vibe_quant/discovery/guardrails.py`, `validation/consistency.py`). If a gate blocks something, the user decides whether to change the gate. You don't.
@@ -85,3 +87,4 @@ You own the swarm's prompts: this skill, every `.claude/agents/*.md`, `docs/orch
   - Self-improvement is automatic: the chief edits agent definitions without asking, and reports the change.
 
   Evidence: job 20261012-p1-honest, 84 handoffs. T3 needed 8 rounds, T4 5+, T2b 6 and bus hardening 6, with about 10 mid-review rulings (R1–R6b). The chief made no prompt edits during the loop. User request.
+- 2026-10-13: self-improvement raised to a top-priority duty: a header line, a mandatory per-agent sweep at Land and at round 3, a hard rule, and a mandatory `improve:` handoff line. User request.
