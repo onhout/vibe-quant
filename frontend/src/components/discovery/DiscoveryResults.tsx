@@ -16,6 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { liqBadge } from "@/lib/liquidationDisplay";
 import { formatFractionPct } from "@/lib/metrics";
 import { cn } from "@/lib/utils";
 
@@ -237,6 +238,7 @@ export function DiscoveryResults({ runId }: DiscoveryResultsProps) {
               <TableHead className="text-xs">Trades</TableHead>
               <TableHead className="text-xs">PF</TableHead>
               <TableHead className="text-xs">Fee drag</TableHead>
+              <TableHead className="text-xs">Liq</TableHead>
               <TableHead className="text-xs">Indicators</TableHead>
               <TableHead className="w-20 text-xs">Actions</TableHead>
             </TableRow>
@@ -250,6 +252,7 @@ export function DiscoveryResults({ runId }: DiscoveryResultsProps) {
               const maxDD = num(s, "max_drawdown") ?? num(s, "max_dd");
               const trades = num(s, "trades") ?? num(s, "total_trades");
               const pf = num(s, "pf") ?? num(s, "profit_factor");
+              const liq = liqBadge(s);
               // Extract indicator info from DSL config
               const dsl = s.dsl as Record<string, unknown> | undefined;
               const dslIndicators = dsl?.indicators;
@@ -330,6 +333,15 @@ export function DiscoveryResults({ runId }: DiscoveryResultsProps) {
                   >
                     {fmtFeeDrag(finiteOrNull(s.fee_drag))}
                   </TableCell>
+                  <TableCell className="text-xs">
+                    {liq != null ? (
+                      <Badge variant="destructive" className="text-[10px]">
+                        {liq}
+                      </Badge>
+                    ) : (
+                      <span className="text-muted-foreground">--</span>
+                    )}
+                  </TableCell>
                   <TableCell
                     className="max-w-40 truncate text-xs text-foreground"
                     title={indicators}
@@ -382,26 +394,36 @@ function RejectionList({ rejections }: { rejections: { [key: string]: unknown }[
   return (
     <div className="mt-3 space-y-1">
       <h4 className="text-xs font-semibold text-muted-foreground">Rejected candidates</h4>
-      {rejections.map((r, i) => (
-        <div
-          key={i}
-          className="rounded-md border border-amber-500/20 bg-amber-950/10 p-2 font-mono text-[11px] text-muted-foreground"
-        >
-          <span className="text-foreground">{typeof r.uid === "string" ? r.uid : `#${i + 1}`}</span>
-          {typeof r.score === "number" && ` score=${r.score}`}
-          {typeof r.sharpe === "number" && ` sharpe=${r.sharpe}`}
-          {typeof r.trades === "number" && ` trades=${r.trades}`}
-          {` fee_drag=${fmtFeeDrag(finiteOrNull(r.fee_drag))}`}
-          {` fees/yr=${fmtFeeDrag(finiteOrNull(r.fees_pct_equity_yr))}`}
-          {Array.isArray(r.reasons) && (
-            <ul className="mt-1 list-inside list-disc text-amber-300/80">
-              {r.reasons.map((reason, j) => (
-                <li key={j}>{String(reason)}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      ))}
+      {rejections.map((r, i) => {
+        const liq = liqBadge(r);
+        return (
+          <div
+            key={i}
+            className="rounded-md border border-amber-500/20 bg-amber-950/10 p-2 font-mono text-[11px] text-muted-foreground"
+          >
+            <span className="text-foreground">
+              {typeof r.uid === "string" ? r.uid : `#${i + 1}`}
+            </span>
+            {typeof r.score === "number" && ` score=${r.score}`}
+            {typeof r.sharpe === "number" && ` sharpe=${r.sharpe}`}
+            {typeof r.trades === "number" && ` trades=${r.trades}`}
+            {` fee_drag=${fmtFeeDrag(finiteOrNull(r.fee_drag))}`}
+            {` fees/yr=${fmtFeeDrag(finiteOrNull(r.fees_pct_equity_yr))}`}
+            {liq != null && (
+              <Badge variant="destructive" className="ml-1 text-[10px]">
+                {liq}
+              </Badge>
+            )}
+            {Array.isArray(r.reasons) && (
+              <ul className="mt-1 list-inside list-disc text-amber-300/80">
+                {r.reasons.map((reason, j) => (
+                  <li key={j}>{String(reason)}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

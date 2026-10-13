@@ -22,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { showLiqColumn } from "@/lib/liquidationDisplay";
 import { cn } from "@/lib/utils";
 
 interface SweepAnalysisProps {
@@ -45,6 +46,7 @@ function formatParams(params: Record<string, unknown>): string {
 }
 
 function exportSweepCsv(sweeps: SweepResultResponse[], runId: number) {
+  const withLiq = showLiqColumn(sweeps);
   const headers = [
     "Parameters",
     "Sharpe",
@@ -59,6 +61,7 @@ function exportSweepCsv(sweeps: SweepResultResponse[], runId: number) {
     "DSR",
     "WF",
     "KF",
+    ...(withLiq ? ["Liq"] : []),
   ];
   const rows = sweeps.map((s) => [
     `"${formatParams(s.parameters)}"`,
@@ -74,6 +77,7 @@ function exportSweepCsv(sweeps: SweepResultResponse[], runId: number) {
     s.passed_deflated_sharpe ?? "",
     s.passed_walk_forward ?? "",
     s.passed_purged_kfold ?? "",
+    ...(withLiq ? [s.liquidation_count ?? ""] : []),
   ]);
 
   const csvContent = [headers, ...rows].map((row) => row.join(",")).join("\n");
@@ -228,6 +232,7 @@ export function SweepAnalysis({ runId }: SweepAnalysisProps) {
   }
 
   const paretoCount = sweeps.filter((s) => s.is_pareto_optimal).length;
+  const showLiq = showLiqColumn(filteredSweeps);
 
   return (
     <div className="space-y-6">
@@ -326,6 +331,7 @@ export function SweepAnalysis({ runId }: SweepAnalysisProps) {
               <TableHead className="text-right">Return</TableHead>
               <TableHead className="text-right">Win Rate</TableHead>
               <TableHead className="text-right">Trades</TableHead>
+              {showLiq && <TableHead className="text-right">Liq</TableHead>}
               <TableHead>Pareto</TableHead>
               <TableHead>Filters</TableHead>
               <TableHead>Actions</TableHead>
@@ -347,6 +353,18 @@ export function SweepAnalysis({ runId }: SweepAnalysisProps) {
                 <TableCell className="text-right tabular-nums">
                   {sweep.total_trades ?? "-"}
                 </TableCell>
+                {showLiq && (
+                  <TableCell
+                    className="text-right tabular-nums"
+                    title={
+                      sweep.liquidation_forfeited != null
+                        ? `Forfeited: ${fmt(sweep.liquidation_forfeited)}`
+                        : undefined
+                    }
+                  >
+                    {sweep.liquidation_count ?? "-"}
+                  </TableCell>
+                )}
                 <TableCell>
                   {sweep.is_pareto_optimal ? (
                     <Badge variant="default">Pareto</Badge>

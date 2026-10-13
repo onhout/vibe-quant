@@ -16,6 +16,7 @@ import { CostBreakdown } from "@/components/results/CostBreakdown";
 import { CrossWindowPanel } from "@/components/results/CrossWindowPanel";
 import { ExportPanel } from "@/components/results/ExportPanel";
 import { FuturesAnalytics } from "@/components/results/FuturesAnalytics";
+import { LiquidationChip } from "@/components/results/LiquidationChip";
 import { LiquidationSummary } from "@/components/results/LiquidationSummary";
 import { LongShortSplit } from "@/components/results/LongShortSplit";
 import { MetricsPanel } from "@/components/results/MetricsPanel";
@@ -128,9 +129,12 @@ export function ResultsDetailPage({ runId }: ResultsDetailPageProps) {
       <RunDetailsExpander runId={runId} />
 
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Run #{runId}
-        </h3>
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Run #{runId}
+          </h3>
+          <LiquidationChip runId={runId} />
+        </div>
         <ExportPanel runId={runId} />
       </div>
 
