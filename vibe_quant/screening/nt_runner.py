@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from vibe_quant.errors import DataUnavailableError
 from vibe_quant.fees import FeeSchedule
@@ -21,11 +21,17 @@ if TYPE_CHECKING:
     from nautilus_trader.config import BacktestRunConfig
 
     from vibe_quant.data.fill_ticks import FillTickSet
-    from vibe_quant.metrics import DailyReturns
+    from vibe_quant.liquidation.overlay import OverlayResult
+    from vibe_quant.metrics import DailyReturns, LedgerEvent
     from vibe_quant.screening.types import BacktestMetrics
+    from vibe_quant.validation.extraction import OpenPositionMark
+    from vibe_quant.validation.funding import FundingAccrual, FundingCalculator
     from vibe_quant.validation.venue import VenueConfig
 
 logger = logging.getLogger(__name__)
+
+LiquidationMode = Literal["off", "isolated", "cross"]
+_LIQUIDATION_MODES = ("off", "isolated", "cross")
 
 
 def refuse_non_market_entry(entry_order: str) -> None:
@@ -250,6 +256,8 @@ class NTScreeningRunner:
         collect_daily_returns: bool = False,
         fee_schedule: FeeSchedule | None = None,
         entry_order: str = "market",
+        liquidation_mode: LiquidationMode = "off",
+        liquidation_leverage: float = 10.0,
     ) -> None:
         """Initialize NTScreeningRunner.
 
@@ -279,11 +287,32 @@ class NTScreeningRunner:
                 post-only maker entries are validation-only (screening
                 maker-fill parity unproven, bead vibe-quant-7eek0) and raise
                 before any engine is built.
+            liquidation_mode: ``"off"`` (default: no liquidation code runs and every
+                number is unchanged), ``"isolated"`` or ``"cross"``: scan the run's
+                positions on real MARK bars and recompute every metric from the
+                truncated ledgers (bead vibe-quant-2gyk1.1.6). Fails closed
+                (``MarkDataMissing``) when MARK bars do not cover the run window.
+            liquidation_leverage: Venue leverage the liquidation prices assume. The
+                screening venue is fixed at 10x (``VenueConfig``), the default;
+                it is recorded in ``last_liquidation_notes``.
 
         Raises:
-            ValueError: ``entry_order`` is not ``"market"``.
+            ValueError: ``entry_order`` is not ``"market"``, ``liquidation_mode`` is
+                unknown or ``liquidation_leverage`` is not a positive finite number.
         """
         refuse_non_market_entry(entry_order)
+        if liquidation_mode not in _LIQUIDATION_MODES:
+            msg = f"liquidation_mode must be one of {_LIQUIDATION_MODES}, got {liquidation_mode!r}"
+            raise ValueError(msg)
+        if liquidation_mode != "off" and not 0.0 < float(liquidation_leverage) < float("inf"):
+            msg = f"liquidation_leverage must be a positive finite number, got {liquidation_leverage!r}"
+            raise ValueError(msg)
+        self._liquidation_mode: LiquidationMode = liquidation_mode
+        self._liquidation_leverage = float(liquidation_leverage)
+        # Liquidation summary of the last run (``OverlayResult.result.to_notes``) for the
+        # discovery/result notes plumbing; None when the mode is off or the run failed.
+        self.last_liquidation_notes: dict[str, Any] | None = None
+        self._liquidation_failure: BaseException | None = None
         self._entry_order = entry_order
         self._fee_schedule = FeeSchedule() if fee_schedule is None else fee_schedule
         self._collect_daily_returns = collect_daily_returns
@@ -342,6 +371,8 @@ class NTScreeningRunner:
         self.last_mtm_daily_returns = None
         self.last_starting_balance = 0.0
         self.last_days = 0
+        self.last_liquidation_notes = None
+        self._liquidation_failure = None
         try:
             return self._run_backtest(params, start_time)
         except (UnknownStrategyParamError, DataUnavailableError, FillTickCatalogModifiedError):
@@ -349,6 +380,10 @@ class NTScreeningRunner:
             # -inf result (vibe-quant-e70tl.8).
             raise
         except Exception as e:
+            if e is self._liquidation_failure:
+                # Missing MARK bars / a ledger the overlay cannot replay: a run that
+                # asked for liquidation must not silently score as -inf (fail closed).
+                raise
             logger.warning(
                 "NT screening backtest failed: params=%s strategy=%s error=%s",
                 params,
@@ -758,7 +793,6 @@ class NTScreeningRunner:
         from vibe_quant.screening.types import BacktestMetrics
         from vibe_quant.utils import compute_day_count
         from vibe_quant.validation.extraction import (
-            OpenPositionMark,
             accrue_position_funding,
             all_positions,
             daily_sharpe_sortino,
@@ -887,18 +921,38 @@ class NTScreeningRunner:
         except Exception:
             logger.warning("Could not read positions from engine cache", exc_info=True)
             closed, still_open = [], []
-        open_marks = mark_open_positions(
-            engine,
-            still_open,
-            execution_timeframe=execution_tf,
-            catalog_path=catalog_path,
-            start_ns=start_ns,
-            end_ns=end_ns,
-            taker_fee=self._fee_schedule.taker_rate,
-        )
+        funding_calc = FundingCalculator(self._funding_archive_path)
+        liquidation_on = self._liquidation_mode != "off"
+        overlay: OverlayResult | None = None
+        scan_funding: dict[str, FundingAccrual] = {}
+        if liquidation_on:
+            # ONE scan runs BEFORE any run-end marking (open positions funded to the horizon
+            # mode off would mark them at): a liquidated or dropped position is valued by the
+            # overlay, never by LAST bars (a missing LAST bar cannot make it vanish). Only
+            # survivors are marked; one without a LAST bar in the final bar fails closed.
+            overlay, open_marks, scan_funding = self._scan_with_survivor_marks(
+                engine,
+                closed,
+                still_open,
+                funding_calc,
+                starting_balance=starting_balance,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                execution_tf=execution_tf,
+                catalog_path=catalog_path,
+            )
+        else:
+            open_marks = mark_open_positions(
+                engine,
+                still_open,
+                execution_timeframe=execution_tf,
+                catalog_path=catalog_path,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                taker_fee=self._fee_schedule.taker_rate,
+            )
         trade_inputs: list[tuple[Any, OpenPositionMark | None]] = [(p, None) for p in closed]
         trade_inputs.extend((mark.position, mark) for mark in open_marks)
-        funding_calc = FundingCalculator(self._funding_archive_path)
         total_fees = 0.0
         unrealized_at_end = 0.0
         for pos, mark in trade_inputs:
@@ -924,6 +978,47 @@ class NTScreeningRunner:
             cash_events.append((exit_ns, realized))
             cash_events.extend((ts, -amount) for ts, amount in accrual.payments)
             instrument_cash.extend((ts, -amount) for ts, amount in accrual.payments)
+        # Opt-in liquidation: unless the scan hit nothing, every trade-level number below
+        # is rebuilt from the truncated ledgers (identity overlay: the NT path above stands).
+        liquidated = None
+        liquidation_ledgers: dict[str, list[LedgerEvent]] | None = None
+        liquidation_floor_ns: int | None = None
+        if overlay is not None:
+            from vibe_quant.screening.liquidation_metrics import liquidation_trades, position_key
+
+            if not overlay.is_identity:
+                # every raw position the venue touched, whether or not NT or a mark can
+                # price it; survivors come with their run-end marks
+                touched = [
+                    (p, None)
+                    for p in still_open
+                    if position_key(p) in overlay.hits_by_key
+                    or position_key(p) in overlay.dropped_keys
+                ]
+                try:
+                    liquidated = liquidation_trades(
+                        overlay, [*trade_inputs, *touched], scan_funding, funding_calc
+                    )
+                except Exception as exc:
+                    self._liquidation_failure = exc  # re-raised by __call__: never scored -inf
+                    raise
+                liquidation_ledgers = overlay.ledgers
+                liquidation_floor_ns = overlay.result.bust_ts
+                # total_fees includes the clearance fees (a real cost); liquidation_forfeited
+                # is the same clearance total, reported separately: never add the two
+                total_fees = liquidated.total_fees
+                total_funding = liquidated.total_funding
+                funding_fallbacks = liquidated.funding_fallbacks
+                trade_pnls = liquidated.trade_pnls
+                closed_net = liquidated.closed_net
+                cash_events = liquidated.cash_events
+                metrics.total_trades = len(trade_pnls)
+                metrics.win_rate = liquidated.win_rate
+                metrics.liquidation_count = len(overlay.hits_by_key)
+                metrics.liquidation_forfeited = float(
+                    sum(h.clearance_fee for h in overlay.hits_by_key.values())
+                )
+            self.last_liquidation_notes = overlay.result.to_notes(metrics.total_trades)
         metrics.total_fees = total_fees
         metrics.total_funding = total_funding
         metrics.funding_fallback_settlements = funding_fallbacks
@@ -936,7 +1031,11 @@ class NTScreeningRunner:
             )
         # NT's total return covers realized PnL only: add the open marks
         extra_costs = total_funding - unrealized_at_end
-        if extra_costs != 0.0 and starting_balance > 0:
+        if liquidated is not None:
+            # final equity of the truncated ledgers, not NT's untruncated PnL%
+            if starting_balance > 0:
+                metrics.total_return = sum(trade_pnls) / starting_balance
+        elif extra_costs != 0.0 and starting_balance > 0:
             metrics.total_return -= extra_costs / starting_balance
 
         # Cost-free PnL = net + reported fees + reported slippage + funding
@@ -973,7 +1072,14 @@ class NTScreeningRunner:
                 )
 
         # Compute return distribution moments (skewness/kurtosis) and per-trade returns
-        metrics.skewness, metrics.kurtosis, metrics.trade_returns = self._compute_return_moments(engine)
+        if liquidated is not None:
+            metrics.skewness, metrics.kurtosis, metrics.trade_returns = (
+                self._liquidation_return_moments(liquidated.returns, liquidated.n_closed)
+            )
+        else:
+            metrics.skewness, metrics.kurtosis, metrics.trade_returns = (
+                self._compute_return_moments(engine)
+            )
 
         # Mark-to-market paths, built once: they feed the max drawdown (incl.
         # open-trade intrabar losses and funding, bd vibe-quant-e70tl.11) and,
@@ -986,7 +1092,8 @@ class NTScreeningRunner:
             catalog_path=catalog_path,
             start_ns=start_ns,
             end_ns=end_ns,
-            extra_cash=funding_cash,
+            extra_cash=funding_cash if liquidated is None else None,
+            ledgers=liquidation_ledgers,
         )
         if mtm_paths is None:
             logger.warning(
@@ -997,7 +1104,11 @@ class NTScreeningRunner:
             )
             mtm_dd = closed_trade_drawdown(starting_balance, closed_net)
         else:
-            mtm_dd = mark_to_market_max_drawdown(starting_balance, mtm_paths)
+            mtm_dd = mark_to_market_max_drawdown(
+                starting_balance,
+                mtm_paths,
+                floor_from_ns=liquidation_floor_ns,
+            )
             if start_ns is not None and end_ns is not None and end_ns > start_ns:
                 mtm_series = mark_to_market_daily_returns(
                     starting_balance, mtm_paths, start_ns, end_ns
@@ -1033,8 +1144,6 @@ class NTScreeningRunner:
         Falls back to (0.0, 3.0, ()) — normal distribution defaults — if
         fewer than 4 trades or computation fails.
         """
-        import math
-
         try:
             cache = engine.kernel.cache  # type: ignore[union-attr]
             all_positions = list(cache.positions()) + list(cache.position_snapshots())
@@ -1050,37 +1159,233 @@ class NTScreeningRunner:
                 if entry_val > 0:
                     returns.append(float(pos.realized_pnl) / entry_val)
 
-            n = len(returns)
-            if n < 4:
-                return 0.0, 3.0, tuple(returns)
-
-            mean = sum(returns) / n
-            diffs = [r - mean for r in returns]
-            # Biased central moments (population moments)
-            m2 = sum(d * d for d in diffs) / n
-            if m2 == 0:
-                return 0.0, 3.0, tuple(returns)
-
-            m3 = sum(d**3 for d in diffs) / n
-            m4 = sum(d**4 for d in diffs) / n
-
-            # Adjusted Fisher-Pearson G1 skewness (bias-corrected)
-            # G1 = sqrt(n(n-1)) / (n-2) * (m3 / m2^1.5)
-            skewness = (math.sqrt(n * (n - 1)) / (n - 2)) * (m3 / m2**1.5)
-
-            # Adjusted Fisher G2 excess kurtosis (bias-corrected)
-            # G2 = (n+1)(n-1) / ((n-2)(n-3)) * m4/m2² - 3(n-1)² / ((n-2)(n-3))
-            excess = ((n + 1) * (n - 1) * m4) / (
-                (n - 2) * (n - 3) * m2**2
-            ) - (3 * (n - 1) ** 2) / ((n - 2) * (n - 3))
-
-            # Full kurtosis = excess + 3 (DSR expects gamma_4, not excess)
-            kurtosis = excess + 3.0
-
-            # Clamp kurtosis to valid range (>=1 per DSR validator)
-            kurtosis = max(1.0, kurtosis)
-
-            return round(skewness, 4), round(kurtosis, 4), tuple(returns)
+            return NTScreeningRunner._moments_from_returns(returns)
         except Exception:
             logger.warning("Could not compute return moments", exc_info=True)
             return 0.0, 3.0, ()
+
+    @staticmethod
+    def _moments_from_returns(returns: list[float]) -> tuple[float, float, tuple[float, ...]]:
+        """Skewness, kurtosis and per-trade returns of ``returns`` (see _compute_return_moments)."""
+        import math
+
+        n = len(returns)
+        if n < 4:
+            return 0.0, 3.0, tuple(returns)
+
+        mean = sum(returns) / n
+        diffs = [r - mean for r in returns]
+        # Biased central moments (population moments)
+        m2 = sum(d * d for d in diffs) / n
+        if m2 == 0:
+            return 0.0, 3.0, tuple(returns)
+
+        m3 = sum(d**3 for d in diffs) / n
+        m4 = sum(d**4 for d in diffs) / n
+
+        # Adjusted Fisher-Pearson G1 skewness (bias-corrected)
+        # G1 = sqrt(n(n-1)) / (n-2) * (m3 / m2^1.5)
+        skewness = (math.sqrt(n * (n - 1)) / (n - 2)) * (m3 / m2**1.5)
+
+        # Adjusted Fisher G2 excess kurtosis (bias-corrected)
+        # G2 = (n+1)(n-1) / ((n-2)(n-3)) * m4/m2² - 3(n-1)² / ((n-2)(n-3))
+        excess = ((n + 1) * (n - 1) * m4) / (
+            (n - 2) * (n - 3) * m2**2
+        ) - (3 * (n - 1) ** 2) / ((n - 2) * (n - 3))
+
+        # Full kurtosis = excess + 3 (DSR expects gamma_4, not excess)
+        kurtosis = excess + 3.0
+
+        # Clamp kurtosis to valid range (>=1 per DSR validator)
+        kurtosis = max(1.0, kurtosis)
+
+        return round(skewness, 4), round(kurtosis, 4), tuple(returns)
+
+    @staticmethod
+    def _liquidation_return_moments(
+        returns: list[float], n_closed: int
+    ) -> tuple[float, float, tuple[float, ...]]:
+        """The return moments of the liquidation-adjusted trades (same rules as the NT path)."""
+        try:
+            if n_closed < 4:
+                return 0.0, 3.0, ()
+            return NTScreeningRunner._moments_from_returns(returns)
+        except Exception:
+            logger.warning("Could not compute return moments", exc_info=True)
+            return 0.0, 3.0, ()
+
+    def _scan_with_survivor_marks(
+        self,
+        engine: Any,
+        closed: list[Any],
+        still_open: list[Any],
+        funding_calc: FundingCalculator,
+        *,
+        starting_balance: float,
+        start_ns: int | None,
+        end_ns: int | None,
+        execution_tf: str | None,
+        catalog_path: Path | str | None,
+    ) -> tuple[OverlayResult, list[OpenPositionMark], dict[str, FundingAccrual]]:
+        """ONE liquidation scan, then the run-end marks of the positions that SURVIVE it.
+
+        Before the scan every open position gets its valuation horizon: the ts of its
+        instrument's last LAST execution bar in the window, where the mode-off path marks it.
+        Only a ts inside the run's final execution bar is a horizon; the scan funds the position
+        up to it, i.e. exactly the funding the mode-off path charges it. A position without one
+        (a LAST data gap) is funded through the run's last instant (settlements < end_ns: the
+        window is half-open, one AT the run end is never charged): if the scan liquidates or
+        drops it, the overlay truncates that funding at the hit and it needs no valuation; if it
+        survives, the run fails closed. Closed positions are funded to their close. Price exposure runs to
+        the run end, so a hit after the horizon counts; the overlay cuts the funding at the hit,
+        so an open position is funded through min(hit, horizon). The per-position funding is
+        returned: the trade-level accounting reuses it (truncated at a hit), never re-accrues.
+
+        The scan's hit set is final (there is no rescan). Liquidated and dropped positions are
+        valued by the overlay and never marked; only survivors are. Their end-of-run exit fee
+        is a valuation cost, not a liquidation trigger: the scan never sees it, it is booked
+        into the ledgers afterwards, so final equity, total_fees and the trade net all carry it
+        (equity below zero is reported as is).
+
+        Raises:
+            DataUnavailableError: a survivor has no LAST bar in the run's final execution bar
+                (none at all, or its coverage ends earlier). The mode-off path keeps the
+                marking helper's behaviour (values it at its last bar, or warns and excludes it).
+        """
+        from dataclasses import replace
+
+        from vibe_quant.liquidation.apply import apply_liquidation
+        from vibe_quant.metrics import LedgerEvent
+        from vibe_quant.screening.liquidation_metrics import position_key
+        from vibe_quant.validation.extraction import (
+            _TIMEFRAME_SECONDS,
+            accrue_position_funding,
+            mark_open_positions,
+        )
+
+        try:
+            if start_ns is None or end_ns is None or end_ns <= start_ns:
+                msg = (
+                    f"liquidation_mode={self._liquidation_mode!r} needs a valid run window, got "
+                    f"{self._start_date!r}..{self._end_date!r}"
+                )
+                raise ValueError(msg)
+            if execution_tf not in _TIMEFRAME_SECONDS or catalog_path is None:
+                msg = (
+                    f"liquidation_mode={self._liquidation_mode!r} needs an execution timeframe "
+                    f"and a catalog (timeframe={execution_tf!r}, catalog={catalog_path!r})"
+                )
+                raise ValueError(msg)
+            bar_ns = _TIMEFRAME_SECONDS[execution_tf] * 1_000_000_000
+            last_bar: dict[str, int | None] = {}  # instrument -> ts of its last LAST bar
+            horizons: dict[str, int | None] = {}
+            accruals = {
+                position_key(p): accrue_position_funding(funding_calc, p, exit_ns=int(p.ts_closed))
+                for p in closed
+            }
+            for pos in still_open:
+                iid = str(pos.instrument_id)
+                if iid not in last_bar:
+                    last_bar[iid] = _last_execution_bar_ts(
+                        engine, iid, execution_tf, catalog_path, start_ns, end_ns
+                    )
+                ts = last_bar[iid]
+                horizon = ts if ts is not None and ts > end_ns - bar_ns else None
+                horizons[position_key(pos)] = horizon
+                accruals[position_key(pos)] = accrue_position_funding(
+                    funding_calc, pos, exit_ns=end_ns - 1 if horizon is None else horizon
+                )
+            overlay = apply_liquidation(
+                [*closed, *still_open],
+                mode=self._liquidation_mode,  # type: ignore[arg-type]  # "off" excluded by caller
+                leverage=self._liquidation_leverage,
+                starting_balance=starting_balance,
+                catalog_path=catalog_path,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                execution_bar_ns=bar_ns,
+                funding_by_position={  # ledger sign: paid < 0
+                    key: [(ts, -amount) for ts, amount in accrual.payments]
+                    for key, accrual in accruals.items()
+                },
+                cash_by_position={},
+            )
+        except Exception as exc:
+            self._liquidation_failure = exc  # re-raised by __call__: never scored -inf
+            raise
+
+        survivors = [
+            p
+            for p in still_open
+            if position_key(p) not in overlay.hits_by_key
+            and position_key(p) not in overlay.dropped_keys
+        ]
+        for pos in survivors:
+            if horizons[position_key(pos)] is None:
+                ts = last_bar[str(pos.instrument_id)]
+                coverage = (
+                    f"no {execution_tf} LAST bars to mark it"
+                    if ts is None
+                    else f"its {execution_tf} LAST bars end at {ts}, before the run's final "
+                    f"execution bar"
+                )
+                msg = (
+                    f"liquidation_mode={self._liquidation_mode!r}: {pos.instrument_id} opened at "
+                    f"{int(pos.ts_opened)} is still open at the end of the run and cannot be "
+                    f"valued: {coverage} (run end {end_ns})"
+                )
+                raise DataUnavailableError(msg)
+        marks = mark_open_positions(
+            engine,
+            survivors,
+            execution_timeframe=execution_tf,
+            catalog_path=catalog_path,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            taker_fee=self._fee_schedule.taker_rate,
+        )
+        if [(position_key(m.position), m.ts) for m in marks] != [
+            (position_key(p), horizons[position_key(p)]) for p in survivors
+        ]:
+            # the scan funded each survivor to its horizon: the marks must sit exactly there
+            msg = "liquidation survivor marks diverge from the horizons the scan funded them to"
+            raise RuntimeError(msg)
+        if overlay.ledgers is not None and marks:
+            ledgers = {iid: list(events) for iid, events in overlay.ledgers.items()}
+            for mark in marks:
+                events = ledgers.setdefault(str(mark.position.instrument_id), [])
+                at = len(events)
+                while at and events[at - 1].ts > mark.ts:
+                    at -= 1
+                events.insert(at, LedgerEvent(ts=mark.ts, cash=-mark.exit_fee))
+            overlay = replace(overlay, ledgers=ledgers)
+        return overlay, marks, accruals
+
+
+def _last_execution_bar_ts(
+    engine: Any,
+    instrument_id: str,
+    execution_tf: str,
+    catalog_path: Path | str,
+    start_ns: int,
+    end_ns: int,
+) -> int | None:
+    """ts of the instrument's last LAST execution bar in ``[start_ns, end_ns]``, or None.
+
+    The same series lookup ``mark_open_positions`` marks an open position on (catalog, else
+    the engine cache), without marking or logging anything.
+    """
+    from vibe_quant.data.catalog import INTERVAL_TO_AGGREGATION
+    from vibe_quant.validation.extraction import cache_bars, load_catalog_bars
+
+    if execution_tf not in INTERVAL_TO_AGGREGATION:
+        return None
+    step, agg = INTERVAL_TO_AGGREGATION[execution_tf]
+    bar_type = f"{instrument_id}-{step}-{agg.name}-LAST-EXTERNAL"
+    series = load_catalog_bars(catalog_path, bar_type)
+    if series is None:
+        series = cache_bars(engine, bar_type)
+    if series is None:
+        return None
+    series = series.window(start_ns, end_ns)
+    return int(series.ts[-1]) if len(series) else None

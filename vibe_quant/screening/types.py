@@ -49,6 +49,11 @@ class BacktestMetrics(PerformanceMetrics):
     mtm_skewness: float | None = None
     mtm_kurtosis: float | None = None
     mtm_days: int | None = None
+    # Opt-in liquidation (NTScreeningRunner liquidation_mode != "off", bead
+    # vibe-quant-2gyk1.1.6): positions the venue liquidated and the clearance fee /
+    # remaining margin it took. 0 / 0.0 = none (and the default of every run with the mode off).
+    liquidation_count: int = 0
+    liquidation_forfeited: float = 0.0
 
 
 @dataclass
