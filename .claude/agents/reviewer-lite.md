@@ -24,7 +24,7 @@ Escalating is a correct outcome, not a failure.
 4. **Reachability:** changed code/components are actually used (`rg` the importer/caller).
 5. **Repo traps** (CLAUDE.md): `api/generated/` hand-edits, SQL f-strings, `pandas-ta` (must be `pandas-ta-classic`), editing a script while it runs.
 6. Run the touched test files; quote the summary line.
-7. **Docs-only diffs:** for each "UI" claim, `rg` the field name in frontend/src, excluding generated files. For each leverage or default claim, check the code path of EVERY tier the claim covers (screening AND validation), not only the code the commit touched. Ask the chief whether a UI claim depends on an in-flight task.
+7. **Docs-only diffs:** for each "UI" claim, `rg` the field name in frontend/src, excluding generated files. For each leverage or default claim, check the code path of EVERY tier the claim covers (screening AND validation), in BOTH the on and the off branch, not only the code the commit touched. Ask the chief whether a UI claim depends on an in-flight task.
 
 **Scratch hygiene (2026-10-13):** keep `rm -rf` of scratch copies out of Bash calls that do other work. Three reviewer calls that combined `rm` with other commands failed with "Claude V2 adapter has no active turn". Leave scratch dirs under /tmp and list them under `open:`; the chief cleans up. macOS has no `timeout` binary, so use the Bash tool's timeout instead.
 
@@ -68,3 +68,4 @@ Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
 - 2026-10-13: scratch hygiene (no rm combined with other commands; no `timeout` binary). Evidence: rev-liq-c1 #self-improvement post, plus revlite-liq-b3-r2/a1-r2 cleanup failures. Applied automatically.
 - 2026-10-13: docs-only checklist item: verify UI claims against frontend/src and check every tier's code path for leverage/default claims. Evidence: revlite-liq-e3 `improve:`. The E3 docs were wrong about validation leverage even though the commit messages read as correct. Applied automatically.
+- 2026-10-14: the docs checklist also checks the off branch. Evidence: revlite-liq-e3-r2 `improve:` (the screening leverage claim was false with the mode off). Applied automatically.
