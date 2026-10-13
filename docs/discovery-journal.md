@@ -4,7 +4,7 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
-## 2026-10-12: Re-score of strategy 239 + 17 old champions under the buy-and-hold and MTM-DSR gates (0 of 18 pass both)
+## 2026-10-12: Re-score of strategy 239 + old discovery champions under the buy-and-hold and MTM-DSR gates (0 of 15 pass both)
 
 Job 20261012-p1-honest, task 4 (user-approved). Main @ e40796bc. Script, raw output and full tables are in `data/swarm/20261012-p1-honest/research/rescore.{py,json,md}`. Every candidate was re-run on today's semantics (screening, worst-of-N where the run used eval windows). Two gates were applied to each re-run:
 - **B&H gate:** MTM daily Sharpe × √365 must beat the buy-and-hold bar for the candidate's direction.
@@ -15,7 +15,7 @@ Job 20261012-p1-honest, task 4 (user-approved). Main @ e40796bc. Script, raw out
 | strategy 239 single window, BTCUSDT 4h, 2024-01-01..2026-03-17, long, 67 trades | 0.9813056391074737 | 0.7297004983545703 | PASS | 1 | 0.07443599713375762 | FAIL |
 | same | same | same | PASS | 20962 (as of run 854) | 0.9947467993967495 | FAIL |
 
-- Across all 18 candidates (239 plus 17 champions from runs 785–867): B&H passes 6/15 distinct genomes, MTM-DSR passes 0/15 at every N tried (cumulative N, run-only N, N=1), and **0 survive both**.
+- Across the 15 candidates (239's single window plus champions from runs 785–867; 239 is also re-checked at 3 trial counts): B&H passes 6/15, MTM-DSR passes 0/15 at every N tried (cumulative N, run-only N, N=1), and **0 survive both**.
 - Even with N=1, i.e. assuming no search at all, 239's DSR p is 0.07443599713375762 and fails at 0.05.
 - Stored metrics do not reproduce: trade counts differ (e.g. run 796: 2124 vs stored 192) and worst-window Sharpes fall far below the stored values (run 840/236: -2.844327188596052 vs 4.968862100654277). These are the documented comparability breaks; the old champion numbers are not evidence.
 - Open: run 854 stored DSR p 0.7010, but the re-run at N=96 gives 0.9013253594710497, unexplained. 239 was promoted even though run 854's DSR rejected it (pre-gate history).
