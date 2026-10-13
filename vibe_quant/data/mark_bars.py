@@ -12,12 +12,14 @@ runs in every discovery worker. Two things live here:
   the error is <= half a tick, which is far below the liquidation threshold the
   scanner tests, and it is the price the venue itself quotes in ticks.
 
-* :func:`load_mark_series` — decodes those parquet files into the four compact
-  arrays the scanner reads (ts/low/high/close) and caches them as ``.npy`` under
-  ``<catalog>/cache/mark/<SYMBOL>/`` (``data/catalog`` is gitignored; disk is
-  ~97 % full, so only the four arrays are stored). The cache is a set of
-  immutable generation directories named by the sha256 of the parquet files'
-  ``(name, mtime_ns, size)`` signature: a writer fills a private temp dir and
+* :func:`load_mark_series` — decodes those parquet files into the five compact
+  arrays the scanner reads (ts/open/low/high/close; the open feeds its fill
+  rule) and caches them as ``.npy`` under ``<catalog>/cache/mark/<SYMBOL>/``
+  (``data/catalog`` is gitignored; disk is ~97 % full, so only these arrays are
+  stored). The cache is a set of immutable generation directories named by the
+  sha256 of the cache layout version plus the parquet files'
+  ``(name, mtime_ns, size)`` signature (a layout change, e.g. the 4-array
+  generations before ``open``, is rebuilt, never trusted): a writer fills a private temp dir and
   publishes it with one atomic ``os.rename``; the loser of a publish race keeps
   the winner's directory. Parallel discovery workers share the pages through
   ``np.load(mmap_mode="r")``; a generation whose arrays disagree with its
@@ -61,8 +63,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _NS_PER_MINUTE = 60_000_000_000
-_CACHE_ARRAYS = ("ts", "low", "high", "close")
-_CACHE_DTYPES = {"ts": np.int64, "low": np.float64, "high": np.float64, "close": np.float64}
+_CACHE_ARRAYS = ("ts", "open", "low", "high", "close")
+_CACHE_DTYPES = {
+    "ts": np.int64,
+    "open": np.float64,
+    "low": np.float64,
+    "high": np.float64,
+    "close": np.float64,
+}
+_CACHE_LAYOUT = 2  # 1: ts/low/high/close (no open); bump on any array/semantics change
 _MAX_LOAD_ATTEMPTS = 3
 _TMP_PREFIX = ".tmp-"
 _STALE_TMP_SECONDS = 3600
@@ -75,6 +84,7 @@ class MarkSeries(NamedTuple):
     low: np.ndarray  # float64
     high: np.ndarray  # float64
     close: np.ndarray  # float64
+    open: np.ndarray  # float64
 
 
 class MarkDataMissing(RuntimeError):
@@ -267,14 +277,15 @@ def _decode_price_column(column: Any) -> np.ndarray:
 def _decode_mark_bars(files: list[Path]) -> MarkSeries:
     import pyarrow.parquet as pq
 
-    parts: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+    prices = ("low", "high", "close", "open")
+    parts: list[tuple[np.ndarray, ...]] = []
     for f in files:
         table = pq.read_table(  # type: ignore[no-untyped-call]
-            f, columns=["low", "high", "close", "ts_event"]
+            f, columns=[*prices, "ts_event"]
         )
-        cols = [_decode_price_column(table.column(name)) for name in ("low", "high", "close")]
+        cols = [_decode_price_column(table.column(name)) for name in prices]
         ts = table.column("ts_event").to_numpy().astype(np.int64)
-        parts.append((ts, cols[0], cols[1], cols[2]))
+        parts.append((ts, *cols))
 
     ts_all = np.concatenate([p[0] for p in parts])
     order = np.argsort(ts_all, kind="stable")
@@ -286,6 +297,7 @@ def _decode_mark_bars(files: list[Path]) -> MarkSeries:
         low=np.concatenate([p[1] for p in parts])[sel],
         high=np.concatenate([p[2] for p in parts])[sel],
         close=np.concatenate([p[3] for p in parts])[sel],
+        open=np.concatenate([p[4] for p in parts])[sel],
     )
 
 
@@ -294,7 +306,8 @@ def _signature_json(signature: tuple[tuple[str, int, int], ...]) -> list[list[An
 
 
 def _signature_key(signature: tuple[tuple[str, int, int], ...]) -> str:
-    return hashlib.sha256(json.dumps(_signature_json(signature)).encode()).hexdigest()
+    keyed = {"layout": _CACHE_LAYOUT, "signature": _signature_json(signature)}
+    return hashlib.sha256(json.dumps(keyed).encode()).hexdigest()
 
 
 def _write_generation(
@@ -303,7 +316,11 @@ def _write_generation(
     """Fill a private (not yet published) generation directory."""
     for name in _CACHE_ARRAYS:
         np.save(target / f"{name}.npy", getattr(series, name))
-    meta = {"signature": _signature_json(signature), "length": int(len(series.ts))}
+    meta = {
+        "layout": _CACHE_LAYOUT,
+        "signature": _signature_json(signature),
+        "length": int(len(series.ts)),
+    }
     (target / "meta.json").write_text(json.dumps(meta))
 
 
@@ -371,14 +388,14 @@ def _load_generation(
 ) -> MarkSeries | None:
     """Open the generation for ``signature``; None unless every check passes.
 
-    Checks: meta.json signature equals the current parquet signature, all four
-    arrays exist, are 1-D, have the expected dtype and exactly ``meta.length``
+    Checks: meta.json layout is ``_CACHE_LAYOUT`` and its signature equals the
+    current parquet signature, all five arrays exist, are 1-D, have the expected dtype and exactly ``meta.length``
     elements. Anything inconsistent is "no cache" - the caller rebuilds.
     """
     gen_dir = cache_root / _signature_key(signature)
     try:
         meta = json.loads((gen_dir / "meta.json").read_text())
-        if meta["signature"] != _signature_json(signature):
+        if meta.get("layout") != _CACHE_LAYOUT or meta["signature"] != _signature_json(signature):
             return None
         length = int(meta["length"])
         arrays = {
@@ -401,7 +418,11 @@ def _load_generation(
             )
             return None
     return MarkSeries(
-        ts=arrays["ts"], low=arrays["low"], high=arrays["high"], close=arrays["close"]
+        ts=arrays["ts"],
+        low=arrays["low"],
+        high=arrays["high"],
+        close=arrays["close"],
+        open=arrays["open"],
     )
 
 

@@ -2,8 +2,8 @@
 
 Liquidation triggers on the mark price, so the archive's mark klines
 (``raw_mark_klines``) are materialised into the catalog as a MARK bar type and
-served to the liquidation scanner as four compact numpy arrays (ts/low/high/
-close) through an ``.npy`` memmap cache. These tests run entirely against temp
+served to the liquidation scanner as five compact numpy arrays (ts/open/low/
+high/close) through an ``.npy`` memmap cache. These tests run entirely against temp
 archives and temp catalogs: the worktree's data directories are symlinks into
 the real datasets and must never be written.
 """
@@ -11,6 +11,7 @@ the real datasets and must never be written.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import threading
 from typing import TYPE_CHECKING
@@ -78,6 +79,10 @@ def _expected_close() -> np.ndarray:
     return np.array([_round_tick(_mark_row(i)[3]) for i in range(THREE_DAYS)], dtype=np.float64)
 
 
+def _expected_open() -> np.ndarray:
+    return np.array([_round_tick(_mark_row(i)[0]) for i in range(THREE_DAYS)], dtype=np.float64)
+
+
 def _expected_ts() -> np.ndarray:
     return np.array([T0_MS + i * MINUTE_MS for i in range(THREE_DAYS)], dtype=np.int64) * 1_000_000
 
@@ -128,6 +133,7 @@ class TestMarkSeriesRoundtrip:
         assert series.low.dtype == np.float64
         assert series.high.dtype == np.float64
         assert series.close.dtype == np.float64
+        assert series.open.dtype == np.float64
 
         # ts is the bar OPEN time (ts_event), strictly increasing.
         assert np.array_equal(series.ts, _expected_ts())
@@ -141,6 +147,9 @@ class TestMarkSeriesRoundtrip:
             [_round_tick(_mark_row(i)[1]) for i in range(THREE_DAYS)], dtype=np.float64
         ))
         assert np.array_equal(series.close, _expected_close())
+        # the bar open (the liquidation fill rule needs it), from the archive's open column
+        assert np.array_equal(series.open, _expected_open())
+        assert not np.array_equal(series.open, series.close)
 
     def test_no_mark_bars_returns_none(self, catalog_path: Path) -> None:
         assert load_mark_series(catalog_path, "BTCUSDT") is None
@@ -159,7 +168,9 @@ class TestMarkSeriesRoundtrip:
         assert isinstance(second.low, np.memmap)
         assert isinstance(second.high, np.memmap)
         assert isinstance(second.close, np.memmap)
+        assert isinstance(second.open, np.memmap)
         assert np.array_equal(second.close, first.close)
+        assert np.array_equal(second.open, _expected_open())
 
     def test_changed_parquet_signature_rebuilds_cache(
         self, archive: RawDataArchive, catalog: CatalogManager, catalog_path: Path
@@ -238,6 +249,7 @@ def _series_from_ts(ts: np.ndarray) -> MarkSeries:
         low=np.full(n, 99.0, dtype=np.float64),
         high=np.full(n, 101.0, dtype=np.float64),
         close=np.full(n, 100.0, dtype=np.float64),
+        open=np.full(n, 100.0, dtype=np.float64),
     )
 
 
@@ -546,6 +558,53 @@ class TestCacheGenerations:
         assert series.low.dtype == series.high.dtype == np.float64
         assert np.array_equal(series.close, _expected_close())
         assert np.array_equal(series.ts, _expected_ts())
+
+    def test_four_array_generation_from_before_open_is_rebuilt_not_trusted(
+        self, archive: RawDataArchive, catalog: CatalogManager, catalog_path: Path
+    ) -> None:
+        """A cache left by the layout-1 loader (ts/low/high/close, keyed by the bare parquet
+        signature, meta without ``layout``) is ignored and pruned; the loader rebuilds
+        from parquet and serves the open."""
+        _build(archive, catalog, THREE_DAYS)
+        _files, signature = mark_bars._snapshot(_bar_dir(catalog_path, EXPECTED_MARK_BAR_TYPE))
+        root = catalog_path / "cache" / "mark" / "BTCUSDT"
+        sig_json = mark_bars._signature_json(signature)
+        old = root / hashlib.sha256(json.dumps(sig_json).encode()).hexdigest()
+        old.mkdir(parents=True)
+        for name, arr in (
+            ("ts", _expected_ts()),
+            ("low", _expected_close()),
+            ("high", _expected_close()),
+            ("close", _expected_close()),
+        ):
+            np.save(old / f"{name}.npy", arr)
+        (old / "meta.json").write_text(json.dumps({"signature": sig_json, "length": THREE_DAYS}))
+
+        series = load_mark_series(catalog_path, "BTCUSDT")
+        assert series is not None
+        assert np.array_equal(series.open, _expected_open())
+        (gen,) = _generation_dirs(catalog_path)
+        assert gen != old and not old.exists()
+        assert json.loads((gen / "meta.json").read_text())["layout"] == mark_bars._CACHE_LAYOUT
+
+    def test_generation_with_a_stale_layout_in_meta_is_not_trusted(
+        self, archive: RawDataArchive, catalog: CatalogManager, catalog_path: Path
+    ) -> None:
+        """Same key and all five arrays present, but meta says layout 1: rebuilt (a wrong
+        open array planted in it is never served)."""
+        _build(archive, catalog, THREE_DAYS)
+        assert load_mark_series(catalog_path, "BTCUSDT") is not None
+        (gen,) = _generation_dirs(catalog_path)
+        tmp = gen / "open.swap.npy"
+        np.save(tmp, _expected_close())
+        os.replace(tmp, gen / "open.npy")
+        meta = json.loads((gen / "meta.json").read_text())
+        meta["layout"] = 1
+        (gen / "meta.json").write_text(json.dumps(meta))
+
+        series = load_mark_series(catalog_path, "BTCUSDT")
+        assert series is not None
+        assert np.array_equal(series.open, _expected_open())
 
     def test_superseded_generation_and_temp_dirs_are_pruned(
         self, archive: RawDataArchive, catalog: CatalogManager, catalog_path: Path

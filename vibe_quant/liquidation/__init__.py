@@ -1,7 +1,16 @@
-"""Binance USDT-M liquidation simulation primitives (tier tables + LP math)."""
+"""Binance USDT-M liquidation simulation primitives (tier tables, LP math, mark scanner)."""
 
 from __future__ import annotations
 
+from vibe_quant.liquidation.scan import (
+    EventLike,
+    LiquidationHit,
+    LiquidationResult,
+    MarkLike,
+    MissingMarkSeries,
+    PositionView,
+    scan_liquidations,
+)
 from vibe_quant.liquidation.tiers import (
     Bracket,
     InsolventPosition,
@@ -18,6 +27,12 @@ from vibe_quant.liquidation.tiers import (
 __all__ = [
     "Bracket",
     "InsolventPosition",
+    "EventLike",
+    "LiquidationHit",
+    "LiquidationResult",
+    "MarkLike",
+    "MissingMarkSeries",
+    "PositionView",
     "TierTable",
     "TierTableError",
     "TierTables",
@@ -26,4 +41,5 @@ __all__ = [
     "cross_liq_price",
     "isolated_liq_price",
     "load_tier_tables",
+    "scan_liquidations",
 ]

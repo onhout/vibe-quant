@@ -208,13 +208,15 @@ def cross_liq_price(
     """Liquidation price for a one-way cross-margin position.
 
     ``other_maint_margin``/``other_upnl`` describe all OTHER positions in the
-    account (TMM1/UPNL1). A long return value <= 0 means "never liquidates".
-    Callers compare the LP with the current mark. Raises ``InsolventPosition``
-    for a short with LP <= 0 (see module docstring) and ``ValueError`` for
-    invalid inputs.
+    account (TMM1/UPNL1). ``wallet_balance`` may be negative: a cross wallet
+    goes below 0 after funding or realised losses while the margin balance
+    (wallet + uPnL) still exceeds MM, and the LP uses the signed wallet. A long
+    return value <= 0 means "never liquidates". Callers compare the LP with the
+    current mark. Raises ``InsolventPosition`` for a short with LP <= 0 (see
+    module docstring) and ``ValueError`` for invalid inputs.
     """
     _check_common(side, qty, entry_price)
-    wallet = _check_number("wallet_balance", wallet_balance, non_negative=True)
+    wallet = _check_number("wallet_balance", wallet_balance, non_negative=False)
     other_mm = _check_number("other_maint_margin", other_maint_margin, non_negative=True)
     other_pnl = _check_number("other_upnl", other_upnl, non_negative=False)
     return _resolve_liq_price(side, qty, entry_price, wallet, other_mm, other_pnl, table)
