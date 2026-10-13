@@ -25,6 +25,8 @@ Escalating is a correct outcome, not a failure.
 5. **Repo traps** (CLAUDE.md): `api/generated/` hand-edits, SQL f-strings, `pandas-ta` (must be `pandas-ta-classic`), editing a script while it runs.
 6. Run the touched test files; quote the summary line.
 
+**Scratch hygiene (2026-10-13):** keep `rm -rf` of scratch copies out of Bash calls that do other work. Three reviewer calls that combined `rm` with other commands failed with "Claude V2 adapter has no active turn". Leave scratch dirs under /tmp and list them under `open:`; the chief cleans up. macOS has no `timeout` binary, so use the Bash tool's timeout instead.
+
 Each finding: severity (blocking / should-fix / nit), file:line, a concrete failure scenario, a fix. No failure scenario → nit at most. Blocking only when the CURRENT code breaks the brief's criteria or contract, or yields a reachable wrong value. Correct code with a missing test is should-fix (same bar as `reviewer.md` § Severity bar).
 
 End with the handoff contract from `docs/orchestration/README.md#handoff-contract`: `status: done` (no blocking findings), `failed` (blocking findings), or `needs-decision` (escalate to `reviewer`).
@@ -63,3 +65,4 @@ Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool
 - 2026-10-13: durable-bus usage (inbox before gate, gate --bus/--bus-agent, --client-id, pending); reviewers stream confirmed blockers and pin the reviewed commit - evidence: job 20261012-p1-honest (workers missed chief DMs; bus hardened in f40fd209) - user request.
 - 2026-10-13: severity bar aligned with reviewer.md: blocking means a contract break or a reachable wrong value; a missing test means should-fix. Evidence: job 20261012-p1-honest review loop. User approved.
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
+- 2026-10-13: scratch hygiene (no rm combined with other commands; no `timeout` binary). Evidence: rev-liq-c1 #self-improvement post, plus revlite-liq-b3-r2/a1-r2 cleanup failures. Applied automatically.

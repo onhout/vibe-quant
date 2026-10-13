@@ -54,6 +54,8 @@ Everything else is lower:
 
 Done when every criterion has a verdict and every hunk has been read in context.
 
+**Scratch hygiene (2026-10-13):** keep `rm -rf` of scratch copies out of Bash calls that do other work. Three reviewer calls that combined `rm` with other commands failed with "Claude V2 adapter has no active turn". Leave scratch dirs under /tmp and list them under `open:`; the chief cleans up. macOS has no `timeout` binary, so use the Bash tool's timeout instead.
+
 ## Fix route
 
 DeepSeek (Command Code, via T3) is the workhorse that writes most diffs; you are the quality gate. End your verdict with one line `fix-route: deepseek | sonnet | none`:
@@ -105,3 +107,4 @@ Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool
   - Re-reviews (round ≥2) cover the prior findings plus the delta only.
   - Evidence: job 20261012-p1-honest. Liquidation T3 needed 8 rounds and T4 ≥5. Each fresh reviewer re-hunted the whole surface and blocked on new edges, some unreachable on real data (a fill at exactly end_ns). T4 r5's only blocker was a test gap where production was already correct. User approved.
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
+- 2026-10-13: scratch hygiene (no rm combined with other commands; no `timeout` binary). Evidence: rev-liq-c1 #self-improvement post, plus revlite-liq-b3-r2/a1-r2 cleanup failures. Applied automatically.
