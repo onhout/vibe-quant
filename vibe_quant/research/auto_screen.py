@@ -205,6 +205,9 @@ def _run_single_metrics(
         start_date=start_date,
         end_date=end_date,
         fill_ticks=resolve_parent_fill_ticks(dsl_dict, DEFAULT_SYMBOLS, start_date, end_date),
+        # Auto-screen is always mode off and carries no liquidation run params
+        # (E13): pass it explicitly, and never import the liquidation package.
+        liquidation_mode="off",
     )
 
     with _alarm(DEFAULT_TIMEOUT_SECONDS):

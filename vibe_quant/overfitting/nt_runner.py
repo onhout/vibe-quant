@@ -18,12 +18,24 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vibe_quant.liquidation_settings import LiquidationSettings
+
 if TYPE_CHECKING:
     from datetime import date
 
     from vibe_quant.screening.pipeline import ParentFillTicks
 
 logger = logging.getLogger(__name__)
+
+
+def _run_params(raw: object) -> dict[str, object]:
+    """The run's stored ``parameters`` as a dict (``{}`` when unusable)."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 class NTWFARunner:
@@ -46,6 +58,7 @@ class NTWFARunner:
         self._db_path = Path(db_path)
         self._dsl_dict: dict[str, object] = {}
         self._symbols: list[str] = []
+        self._liquidation: LiquidationSettings = LiquidationSettings()
         self._ticks: ParentFillTicks | None = None
         self._resolve()
 
@@ -55,12 +68,13 @@ class NTWFARunner:
         conn.row_factory = sqlite3.Row
         try:
             run = conn.execute(
-                "SELECT strategy_id, symbols FROM backtest_runs WHERE id=?",
+                "SELECT strategy_id, symbols, parameters FROM backtest_runs WHERE id=?",
                 (self._run_id,),
             ).fetchone()
             if run is None:
                 msg = f"backtest_runs.id={self._run_id} not found"
                 raise ValueError(msg)
+            self._liquidation = LiquidationSettings.from_params(_run_params(run["parameters"]))
             strat = conn.execute(
                 "SELECT dsl_config FROM strategies WHERE id=?",
                 (run["strategy_id"],),
@@ -112,6 +126,9 @@ class NTWFARunner:
             end_date=end_date.isoformat(),
             # resolved by this (parent) process, once per covered span
             fill_ticks=self._ticks.get(start_date.isoformat(), end_date.isoformat()),
+            # the screening run's own liquidation settings (E14); off by default
+            liquidation_mode=self._liquidation.mode,
+            liquidation_leverage=self._liquidation.leverage,
         )
         numeric_params: dict[str, float | int] = {
             k: v

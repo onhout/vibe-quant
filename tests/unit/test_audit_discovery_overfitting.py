@@ -284,7 +284,9 @@ def test_wfa_on_2022_run_uses_2022_dates(tmp_path: Path, monkeypatch: pytest.Mon
 
     class _Rec:
         def __init__(self, dsl_dict: Any, symbols: Any, start_date: str, end_date: str,
-                     catalog_path: Any = None, fill_ticks: Any = None) -> None:
+                     catalog_path: Any = None, fill_ticks: Any = None,
+                     liquidation_mode: str = "off",
+                     liquidation_leverage: float = 10.0) -> None:
             seen.append((start_date, end_date))
 
         def __call__(self, params: Any) -> Any:
@@ -315,7 +317,9 @@ def test_cv_runner_forwards_each_candidates_params(
 
     class _Fake:
         def __init__(self, dsl_dict: Any, symbols: Any, start_date: str, end_date: str,
-                     catalog_path: Any = None, fill_ticks: Any = None) -> None:
+                     catalog_path: Any = None, fill_ticks: Any = None,
+                     liquidation_mode: str = "off",
+                     liquidation_leverage: float = 10.0) -> None:
             pass
 
         def __call__(self, params: dict[str, Any]) -> Any:

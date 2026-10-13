@@ -26,6 +26,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vibe_quant.liquidation_settings import LiquidationSettings
+
 if TYPE_CHECKING:
     from vibe_quant.overfitting.purged_kfold import FoldResult
     from vibe_quant.screening.pipeline import ParentFillTicks
@@ -42,6 +44,16 @@ _TIMEFRAME_TO_DIR_SUFFIX: dict[str, str] = {
     "4h": "4-HOUR",
     "1d": "1-DAY",
 }
+
+
+def _run_params(raw: object) -> dict[str, object]:
+    """The run's stored ``parameters`` as a dict (``{}`` when unusable)."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 class NTPurgedKFoldRunner:
@@ -74,6 +86,7 @@ class NTPurgedKFoldRunner:
         self._bar_ts_ns: list[int] = []
         # Strategy param overrides of the candidate being CV'd (see bind_params)
         self._params: dict[str, float | int] = {}
+        self._liquidation: LiquidationSettings = LiquidationSettings()
         self._ticks: ParentFillTicks | None = None
         self._resolve()
         self._load_bar_timestamps()
@@ -111,12 +124,14 @@ class NTPurgedKFoldRunner:
         conn.row_factory = sqlite3.Row
         try:
             run = conn.execute(
-                "SELECT strategy_id, symbols, timeframe FROM backtest_runs WHERE id=?",
+                "SELECT strategy_id, symbols, timeframe, parameters "
+                "FROM backtest_runs WHERE id=?",
                 (self._run_id,),
             ).fetchone()
             if run is None:
                 msg = f"backtest_runs.id={self._run_id} not found"
                 raise ValueError(msg)
+            self._liquidation = LiquidationSettings.from_params(_run_params(run["parameters"]))
             strat = conn.execute(
                 "SELECT dsl_config FROM strategies WHERE id=?",
                 (run["strategy_id"],),
@@ -220,6 +235,9 @@ class NTPurgedKFoldRunner:
             end_date=end_date,
             catalog_path=str(self._catalog_path) if self._catalog_path else None,
             fill_ticks=self._ticks.get(start_date, end_date),
+            # the screening run's own liquidation settings (E14); off by default
+            liquidation_mode=self._liquidation.mode,
+            liquidation_leverage=self._liquidation.leverage,
         )
         # The bound candidate's sweep params (empty for discovery champions,
         # whose params are baked into the DSL). Running ``{}`` for everyone

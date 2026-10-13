@@ -35,7 +35,8 @@ def stub_db(tmp_path: Path) -> Path:
         CREATE TABLE backtest_runs (
             id INTEGER PRIMARY KEY,
             strategy_id INTEGER,
-            symbols TEXT NOT NULL
+            symbols TEXT NOT NULL,
+            parameters JSON NOT NULL
         );
         """
     )
@@ -45,8 +46,8 @@ def stub_db(tmp_path: Path) -> Path:
         (1, "stub", json.dumps(dsl)),
     )
     conn.execute(
-        "INSERT INTO backtest_runs (id, strategy_id, symbols) VALUES (?,?,?)",
-        (42, 1, json.dumps(["BTCUSDT", "ETHUSDT"])),
+        "INSERT INTO backtest_runs (id, strategy_id, symbols, parameters) VALUES (?,?,?,?)",
+        (42, 1, json.dumps(["BTCUSDT", "ETHUSDT"]), "{}"),
     )
     conn.commit()
     conn.close()
@@ -71,13 +72,14 @@ def test_missing_strategy_raises(tmp_path: Path) -> None:
     conn.executescript(
         """
         CREATE TABLE strategies (id INTEGER PRIMARY KEY, name TEXT, dsl_config TEXT);
-        CREATE TABLE backtest_runs (id INTEGER PRIMARY KEY, strategy_id INTEGER, symbols TEXT);
+        CREATE TABLE backtest_runs (id INTEGER PRIMARY KEY, strategy_id INTEGER, symbols TEXT,
+                                    parameters JSON NOT NULL);
         """
     )
     # run points at a non-existent strategy_id.
     conn.execute(
-        "INSERT INTO backtest_runs VALUES (?,?,?)",
-        (7, 99, json.dumps(["X"])),
+        "INSERT INTO backtest_runs VALUES (?,?,?,?)",
+        (7, 99, json.dumps(["X"]), "{}"),
     )
     conn.commit()
     conn.close()

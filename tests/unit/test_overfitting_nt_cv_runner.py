@@ -33,7 +33,8 @@ def _seed_db(tmp_path: Path, *, timeframe: str = "4h") -> Path:
             id INTEGER PRIMARY KEY,
             strategy_id INTEGER,
             symbols TEXT NOT NULL,
-            timeframe TEXT
+            timeframe TEXT,
+            parameters JSON NOT NULL
         );
         """
     )
@@ -43,8 +44,9 @@ def _seed_db(tmp_path: Path, *, timeframe: str = "4h") -> Path:
         (1, "stub", json.dumps(dsl)),
     )
     conn.execute(
-        "INSERT INTO backtest_runs (id, strategy_id, symbols, timeframe) VALUES (?,?,?,?)",
-        (42, 1, json.dumps(["BTCUSDT"]), timeframe),
+        "INSERT INTO backtest_runs (id, strategy_id, symbols, timeframe, parameters) "
+        "VALUES (?,?,?,?,?)",
+        (42, 1, json.dumps(["BTCUSDT"]), timeframe, "{}"),
     )
     conn.commit()
     conn.close()

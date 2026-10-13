@@ -19,6 +19,7 @@ from typing import Any
 
 from vibe_quant.db.connection import DEFAULT_DB_PATH
 from vibe_quant.db.schema import _migrate_add_columns
+from vibe_quant.errors import LiquidationIntegrityError
 from vibe_quant.overfitting.dsr import (
     TRADING_DAYS_PER_YEAR,
     DeflatedSharpeRatio,
@@ -302,6 +303,11 @@ class OverfittingPipeline:
                         param_grid=param_grid,
                     )
                     passed_wfa = wfa_result.is_robust
+                except LiquidationIntegrityError:
+                    # Mode on, the liquidation path failed: fail the run closed (I11)
+                    # instead of masking it as passed_wfa=False (the mode-off swallow
+                    # below is deliberate and stays).
+                    raise
                 except ValueError as e:
                     logger.warning("WFA failed for candidate %d: %s", candidate["id"], e)
                     passed_wfa = False
