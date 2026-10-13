@@ -28,8 +28,10 @@ from nautilus_trader.model.enums import OrderSide, OrderType
 from tests.unit.test_audit_metrics_funding import _RATE, _archive
 from vibe_quant.data.archive import RawDataArchive
 from vibe_quant.data.catalog import CatalogManager
-from vibe_quant.data.mark_bars import MarkDataMissing, build_mark_bars
-from vibe_quant.errors import DataUnavailableError
+from vibe_quant.data.mark_bars import build_mark_bars
+from vibe_quant.errors import DataUnavailableError, LiquidationIntegrityError
+from vibe_quant.liquidation.scan import MissingMarkSeries
+from vibe_quant.liquidation.tiers import TierTableExceeded, UnknownSymbol
 from vibe_quant.metrics import fee_drag, profit_factor
 from vibe_quant.overfitting.dsr import daily_sharpe_inputs
 from vibe_quant.screening.nt_runner import NTScreeningRunner
@@ -377,7 +379,7 @@ def test_mode_off_never_imports_the_liquidation_package() -> None:
         "engine = NS(kernel=NS(cache=cache))\n"
         "bt = NS(total_positions=0, elapsed_time=0.0, stats_pnls={}, stats_returns={})\n"
         "r._extract_metrics({}, bt, engine, time.time(), 1000.0)\n"
-        "bad = sorted(m for m in sys.modules if m.startswith('vibe_quant.liquidation'))\n"
+        "bad = sorted(m for m in sys.modules if m == 'vibe_quant.liquidation' or m.startswith('vibe_quant.liquidation.'))\n"
         "assert not bad, bad\n"
     )
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
@@ -412,11 +414,13 @@ def test_cross_bust_drops_later_positions_and_ends_at_zero_equity(tmp_path: Path
 # --------------------------------------------------------------------- fail closed
 
 
-def test_missing_mark_series_raises_naming_the_symbol(tmp_path: Path) -> None:
+def test_missing_mark_series_fails_closed_naming_the_symbol(tmp_path: Path) -> None:
+    """I1/I5: with the mode on, missing MARK data is a LiquidationIntegrityError carrying the
+    original class name and the symbol (the mode-off path never sees this)."""
     empty = tmp_path / "empty_catalog"
     empty.mkdir()
     runner = make_runner(tmp_path, "isolated", catalog=empty)
-    with pytest.raises(MarkDataMissing, match="BTCUSDT"):
+    with pytest.raises(LiquidationIntegrityError, match=r"MarkDataMissing.*BTCUSDT"):
         extract(runner, [pos_a(), *winners_and_loser()], CALM)
 
 
@@ -432,7 +436,7 @@ def test_call_reraises_missing_mark_data_but_still_masks_other_failures(
         "_run_backtest",
         lambda params, t: runner._extract_metrics(params, bt_result(), engine, t, BALANCE),
     )
-    with pytest.raises(MarkDataMissing, match="BTCUSDT"):
+    with pytest.raises(LiquidationIntegrityError, match=r"MarkDataMissing.*BTCUSDT"):
         runner({})
 
     def boom(_params: dict[str, float | int], _t: float) -> None:
@@ -452,9 +456,9 @@ def test_unknown_liquidation_mode_raises(mode: Any) -> None:
         NTScreeningRunner({}, ["BTCUSDT"], "2025-01-01", "2025-01-02", liquidation_mode=mode)
 
 
-@pytest.mark.parametrize("leverage", [0.0, -3.0, float("nan"), float("inf")])
+@pytest.mark.parametrize("leverage", [0.0, -3.0, float("nan"), float("inf"), 125.0001])
 def test_bad_leverage_raises_when_the_mode_is_on(leverage: float) -> None:
-    with pytest.raises(ValueError, match="liquidation_leverage"):
+    with pytest.raises(ValueError, match="leverage must be a number in"):
         NTScreeningRunner(
             {}, ["BTCUSDT"], "2025-01-01", "2025-01-02",
             liquidation_mode="isolated", liquidation_leverage=leverage,
@@ -465,6 +469,25 @@ def test_defaults_are_off_at_ten_x() -> None:
     r = NTScreeningRunner({}, ["BTCUSDT"], "2025-01-01", "2025-01-02")
     assert r._liquidation_mode == "off" and r._liquidation_leverage == 10.0
     assert r.last_liquidation_notes is None
+
+
+def test_venue_leverage_follows_the_chosen_leverage_when_on() -> None:
+    """V1/V2/V3/V4: the screening venue runs at the liquidation leverage when the mode is on;
+    off (and on at 10x) keeps the fixed 10x venue, byte-identical."""
+    from decimal import Decimal
+
+    off = NTScreeningRunner({}, ["BTCUSDT"], "2025-01-01", "2025-01-02")
+    assert off._venue_config().default_leverage == Decimal("10")
+    on = NTScreeningRunner(
+        {}, ["BTCUSDT"], "2025-01-01", "2025-01-02",
+        liquidation_mode="isolated", liquidation_leverage=20.0,
+    )  # fmt: skip
+    assert on._venue_config().default_leverage == Decimal("20")
+    ten = NTScreeningRunner(
+        {}, ["BTCUSDT"], "2025-01-01", "2025-01-02",
+        liquidation_mode="cross", liquidation_leverage=10.0,
+    )  # fmt: skip
+    assert ten._venue_config().default_leverage == Decimal("10")
 
 
 # ------------------------------------------------- fees, missing LAST bars, mixed, timeframe
@@ -1006,3 +1029,128 @@ def test_the_settlement_at_the_run_end_is_never_charged_to_a_position_without_la
     runner = make_runner(tmp_path, "isolated", catalog=catalog)
     with pytest.raises(DataUnavailableError, match=r"BTCUSDT-PERP\.BINANCE.*cannot be valued"):
         runner._extract_metrics({}, flat_bt(1), engine, time.time(), BALANCE)
+
+
+# ------------------------------------------------------ shared integrity error (A1)
+
+
+def test_marks_diverge_raises_integrity_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I4: a survivor mark that diverges from the horizon the scan funded it to fails the run
+    as a LiquidationIntegrityError (today it scores -inf)."""
+    from vibe_quant.errors import LiquidationIntegrityError
+
+    catalog = write_marks(tmp_path, CALM)
+    runner = make_runner(tmp_path, "isolated", catalog=catalog)
+    engine = engine_for([open_long("S", 420)], CALM)
+    monkeypatch.setattr(
+        runner,
+        "_run_backtest",
+        lambda params, t: runner._extract_metrics(params, bt_result(1), engine, t, BALANCE),
+    )
+
+    import vibe_quant.validation.extraction as extraction
+
+    def no_marks(*_a: Any, **_k: Any) -> list[Any]:
+        return []  # the scan funded S to its horizon; the run-end marks come back empty
+
+    monkeypatch.setattr(extraction, "mark_open_positions", no_marks)
+    with pytest.raises(
+        LiquidationIntegrityError,
+        match=r"liquidation_mode='isolated': RuntimeError: liquidation survivor marks diverge",
+    ):
+        runner({})
+
+
+def wire_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: NTScreeningRunner,
+    engine: SimpleNamespace,
+    n_positions: int,
+) -> None:
+    """Route ``runner({})`` through ``_extract_metrics`` (the I4 test's seam)."""
+    monkeypatch.setattr(
+        runner,
+        "_run_backtest",
+        lambda params, t: runner._extract_metrics(
+            params, bt_result(n_positions), engine, t, BALANCE
+        ),
+    )
+
+
+def test_i3_fill_at_the_run_end_fails_closed_naming_the_value_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I3: the overlay's apply step refuses a fill at ts == end_ns; the run fails closed
+    through runner({}) and the message names the original ValueError."""
+    catalog = write_marks(tmp_path, CALM)
+    a = pos_a()
+    a.events[1].ts_event = at(N_BARS)  # == end_ns: not before the run end
+    runner = make_runner(tmp_path, "isolated", catalog=catalog)
+    wire_runner(monkeypatch, runner, engine_for([a], CALM), 1)
+    with pytest.raises(
+        LiquidationIntegrityError,
+        match=r"liquidation_mode='isolated': ValueError: .*is not before the run end",
+    ):
+        runner({})
+
+
+@pytest.mark.parametrize(
+    ("error_cls", "message"),
+    [
+        (UnknownSymbol, "ZZZUSDT-PERP.BINANCE: no tier table"),
+        (TierTableExceeded, "BTCUSDT: notional 1e30 >= last cap"),
+        (MissingMarkSeries, "BTCUSDT-PERP.BINANCE: no mark-price series"),
+    ],
+    ids=["unknown_symbol", "tier_table_exceeded", "missing_mark_series"],
+)
+def test_i5_scan_errors_fail_closed_naming_the_original_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_cls: type[Exception], message: str
+) -> None:
+    """I5: the scan raises its own error types (not RuntimeError); runner({}) still fails
+    closed as LiquidationIntegrityError carrying the original class name."""
+    catalog = write_marks(tmp_path, CALM)
+    engine = engine_for([pos_a(), *winners_and_loser()], CALM)
+    runner = make_runner(tmp_path, "isolated", catalog=catalog)
+
+    import vibe_quant.liquidation.apply as apply_module
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise error_cls(message)
+
+    monkeypatch.setattr(apply_module, "apply_liquidation", boom)
+    wire_runner(monkeypatch, runner, engine, 9)
+    with pytest.raises(
+        LiquidationIntegrityError,
+        match=rf"liquidation_mode='isolated': {error_cls.__name__}:",
+    ):
+        runner({})
+
+
+def test_i6_unpriceable_survivor_fails_closed_naming_the_data_unavailable_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I6: an open survivor with no LAST bar in the final execution bar is nt_runner's own
+    DataUnavailableError; runner({}) wraps it and the message names the original class."""
+    catalog = write_marks(tmp_path, CALM)
+    add_eth_marks(tmp_path, catalog)
+    _, engine = two_open_longs_with_btc_last_only()
+    runner = make_runner(tmp_path, "cross", catalog=catalog)
+    wire_runner(monkeypatch, runner, engine, 2)
+    with pytest.raises(
+        LiquidationIntegrityError,
+        match=r"liquidation_mode='cross': DataUnavailableError: .*cannot be valued",
+    ):
+        runner({})
+
+
+def test_liquidation_integrity_error_pickles() -> None:
+    """The multiprocessing pool transports the wrapped error: it must round-trip."""
+    import pickle
+
+    err = LiquidationIntegrityError.wrap(ValueError("boom"), "isolated")
+    assert str(err) == "liquidation_mode='isolated': ValueError: boom"
+    again = pickle.loads(pickle.dumps(err))
+    assert type(again) is LiquidationIntegrityError
+    assert str(again) == str(err)

@@ -517,6 +517,28 @@ def test_liquidation_mode_is_not_a_strategy_param_and_is_resolved_from_launch_pa
         for bad in ("margin", "", None, 1, True, ["isolated"]):
             with pytest.raises(ValidationRunnerError, match="liquidation_mode"):
                 runner._resolve_liquidation_mode({"parameters": {"liquidation_mode": bad}})
+        # E11: mode on with leverage 0 used to fall back to 10x silently; now it fails.
+        with pytest.raises(ValidationRunnerError, match="leverage must be a number in"):
+            runner._resolve_liquidation_mode(
+                {"parameters": {"liquidation_mode": "isolated", "leverage": 0}}
+            )
+    finally:
+        runner.close()
+
+
+def test_validation_venue_uses_the_run_leverage_when_liquidation_is_on(tmp_path: Path) -> None:
+    """E12: the venue's ``default_leverage`` equals the run leverage for a mode-on run."""
+    runner = _runner(tmp_path)
+    try:
+        cfg: dict[str, object] = {
+            "parameters": {
+                "liquidation_mode": "isolated",
+                "leverage": 20,
+                "initial_balance": 10000,
+            }
+        }
+        venue = runner._create_venue_config(cfg, None, timeframe="1h")
+        assert venue.default_leverage == Decimal("20")
     finally:
         runner.close()
 
@@ -639,7 +661,8 @@ def test_mode_off_does_not_import_the_liquidation_package() -> None:
 
     code = (
         "import sys; import vibe_quant.validation.extraction, vibe_quant.validation.runner; "
-        "bad = sorted(m for m in sys.modules if m.startswith('vibe_quant.liquidation')); "
+        "bad = sorted(m for m in sys.modules "
+        "if m == 'vibe_quant.liquidation' or m.startswith('vibe_quant.liquidation.')); "
         "print(bad); sys.exit(1 if bad else 0)"
     )
     out = subprocess.run(

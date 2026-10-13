@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from vibe_quant.liquidation_settings import LIQUIDATION_MODES  # one definition, shared
 from vibe_quant.metrics import (
     BarSeries,
     LedgerEvent,
@@ -888,9 +889,6 @@ def extract_stats(
             result.win_rate = fval
         elif not any(k in key_lower for k in _known_returns_keys):
             logger.debug("Unmatched returns stats key: %s = %s", key, value)
-
-
-LIQUIDATION_MODES = ("off", "isolated", "cross")
 
 
 def liquidation_execution_bar_ns(execution_timeframe: str | None) -> int:

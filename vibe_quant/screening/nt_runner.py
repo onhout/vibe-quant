@@ -10,10 +10,15 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
-from vibe_quant.errors import DataUnavailableError
+from vibe_quant.errors import DataUnavailableError, LiquidationIntegrityError
 from vibe_quant.fees import FeeSchedule
+from vibe_quant.liquidation_settings import (
+    DEFAULT_LEVERAGE,
+    LiquidationMode,
+    LiquidationSettings,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -29,9 +34,6 @@ if TYPE_CHECKING:
     from vibe_quant.validation.venue import VenueConfig
 
 logger = logging.getLogger(__name__)
-
-LiquidationMode = Literal["off", "isolated", "cross"]
-_LIQUIDATION_MODES = ("off", "isolated", "cross")
 
 
 def refuse_non_market_entry(entry_order: str) -> None:
@@ -257,7 +259,7 @@ class NTScreeningRunner:
         fee_schedule: FeeSchedule | None = None,
         entry_order: str = "market",
         liquidation_mode: LiquidationMode = "off",
-        liquidation_leverage: float = 10.0,
+        liquidation_leverage: float = DEFAULT_LEVERAGE,
     ) -> None:
         """Initialize NTScreeningRunner.
 
@@ -290,29 +292,26 @@ class NTScreeningRunner:
             liquidation_mode: ``"off"`` (default: no liquidation code runs and every
                 number is unchanged), ``"isolated"`` or ``"cross"``: scan the run's
                 positions on real MARK bars and recompute every metric from the
-                truncated ledgers (bead vibe-quant-2gyk1.1.6). Fails closed
-                (``MarkDataMissing``) when MARK bars do not cover the run window.
-            liquidation_leverage: Venue leverage the liquidation prices assume. The
-                screening venue is fixed at 10x (``VenueConfig``), the default;
-                it is recorded in ``last_liquidation_notes``.
+                truncated ledgers (bead vibe-quant-2gyk1.1.6). Any failure on that path
+                fails the run closed as ``LiquidationIntegrityError``, wrapping the
+                original error (missing MARK bars, a fill outside the run, ...).
+            liquidation_leverage: Venue leverage when the mode is on: the screening
+                venue runs at this leverage and the liquidation prices assume it. Off
+                (the default) keeps the venue's fixed 10x, byte-identical to today;
+                the value is recorded in ``last_liquidation_notes``.
 
         Raises:
-            ValueError: ``entry_order`` is not ``"market"``, ``liquidation_mode`` is
-                unknown or ``liquidation_leverage`` is not a positive finite number.
+            ValueError: ``entry_order`` is not ``"market"``, or the liquidation settings
+                are invalid (:class:`~vibe_quant.liquidation_settings.LiquidationConfigError`:
+                an unknown mode, or a leverage outside (0, 125] while the mode is on).
         """
         refuse_non_market_entry(entry_order)
-        if liquidation_mode not in _LIQUIDATION_MODES:
-            msg = f"liquidation_mode must be one of {_LIQUIDATION_MODES}, got {liquidation_mode!r}"
-            raise ValueError(msg)
-        if liquidation_mode != "off" and not 0.0 < float(liquidation_leverage) < float("inf"):
-            msg = f"liquidation_leverage must be a positive finite number, got {liquidation_leverage!r}"
-            raise ValueError(msg)
-        self._liquidation_mode: LiquidationMode = liquidation_mode
-        self._liquidation_leverage = float(liquidation_leverage)
+        settings = LiquidationSettings(mode=liquidation_mode, leverage=liquidation_leverage)
+        self._liquidation_mode: LiquidationMode = settings.mode
+        self._liquidation_leverage = settings.leverage
         # Liquidation summary of the last run (``OverlayResult.result.to_notes``) for the
         # discovery/result notes plumbing; None when the mode is off or the run failed.
         self.last_liquidation_notes: dict[str, Any] | None = None
-        self._liquidation_failure: BaseException | None = None
         self._entry_order = entry_order
         self._fee_schedule = FeeSchedule() if fee_schedule is None else fee_schedule
         self._collect_daily_returns = collect_daily_returns
@@ -372,18 +371,13 @@ class NTScreeningRunner:
         self.last_starting_balance = 0.0
         self.last_days = 0
         self.last_liquidation_notes = None
-        self._liquidation_failure = None
         try:
             return self._run_backtest(params, start_time)
         except (UnknownStrategyParamError, DataUnavailableError, FillTickCatalogModifiedError):
-            # Configuration error, not a backtest failure: never mask it as a
-            # -inf result (vibe-quant-e70tl.8).
+            # Configuration error (or a liquidation run that failed closed), not a
+            # backtest failure: never mask it as a -inf result (vibe-quant-e70tl.8).
             raise
         except Exception as e:
-            if e is self._liquidation_failure:
-                # Missing MARK bars / a ledger the overlay cannot replay: a run that
-                # asked for liquidation must not silently score as -inf (fail closed).
-                raise
             logger.warning(
                 "NT screening backtest failed: params=%s strategy=%s error=%s",
                 params,
@@ -665,12 +659,20 @@ class NTScreeningRunner:
 
     def _venue_config(self) -> VenueConfig:
         from dataclasses import replace
+        from decimal import Decimal
 
         from vibe_quant.validation.venue import create_venue_config_for_screening
 
-        return replace(
+        config = replace(
             create_venue_config_for_screening(), fee_schedule=self._fee_schedule
         )
+        if self._liquidation_mode != "off":
+            # V1/V2: when the mode is on the venue runs at the chosen liquidation
+            # leverage; off keeps the screening venue's fixed 10x, byte-identical.
+            config = replace(
+                config, default_leverage=Decimal(str(self._liquidation_leverage))
+            )
+        return config
 
     def _run_backtest(self, params: dict[str, float | int], start_time: float) -> BacktestMetrics:
         """Execute the NautilusTrader backtest."""
@@ -925,100 +927,114 @@ class NTScreeningRunner:
         liquidation_on = self._liquidation_mode != "off"
         overlay: OverlayResult | None = None
         scan_funding: dict[str, FundingAccrual] = {}
-        if liquidation_on:
-            # ONE scan runs BEFORE any run-end marking (open positions funded to the horizon
-            # mode off would mark them at): a liquidated or dropped position is valued by the
-            # overlay, never by LAST bars (a missing LAST bar cannot make it vanish). Only
-            # survivors are marked; one without a LAST bar in the final bar fails closed.
-            overlay, open_marks, scan_funding = self._scan_with_survivor_marks(
-                engine,
-                closed,
-                still_open,
-                funding_calc,
-                starting_balance=starting_balance,
-                start_ns=start_ns,
-                end_ns=end_ns,
-                execution_tf=execution_tf,
-                catalog_path=catalog_path,
-            )
-        else:
-            open_marks = mark_open_positions(
-                engine,
-                still_open,
-                execution_timeframe=execution_tf,
-                catalog_path=catalog_path,
-                start_ns=start_ns,
-                end_ns=end_ns,
-                taker_fee=self._fee_schedule.taker_rate,
-            )
-        trade_inputs: list[tuple[Any, OpenPositionMark | None]] = [(p, None) for p in closed]
-        trade_inputs.extend((mark.position, mark) for mark in open_marks)
-        total_fees = 0.0
-        unrealized_at_end = 0.0
-        for pos, mark in trade_inputs:
-            instrument_cash = funding_cash.setdefault(str(pos.instrument_id), [])
-            total_fees += sum(abs(float(c)) for c in pos.commissions())
-            # NT realized_pnl is net of commissions
-            realized = float(pos.realized_pnl)
-            if mark is None:
-                exit_ns = int(pos.ts_closed)
+        # ONE guard on the mode-on liquidation path (bead vibe-quant-2gyk1.1.8): any failure
+        # while the mode is on -- the MARK scan, its survivor marks, or the truncated-ledger
+        # recompute -- fails the run closed as LiquidationIntegrityError (a
+        # DataUnavailableError __call__ re-raises) instead of scoring -inf. Mode off
+        # re-raises unchanged, so every non-liquidation path is byte-identical.
+        try:
+            if liquidation_on:
+                # ONE scan runs BEFORE any run-end marking (open positions funded to the
+                # horizon mode off would mark them at): a liquidated or dropped position is
+                # valued by the overlay, never by LAST bars (a missing LAST bar cannot make
+                # it vanish). Only survivors are marked; one without a LAST bar in the final
+                # bar fails closed.
+                overlay, open_marks, scan_funding = self._scan_with_survivor_marks(
+                    engine,
+                    closed,
+                    still_open,
+                    funding_calc,
+                    starting_balance=starting_balance,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                    execution_tf=execution_tf,
+                    catalog_path=catalog_path,
+                )
             else:
-                exit_ns = mark.ts
-                total_fees += mark.exit_fee
-                realized += mark.unrealized - mark.exit_fee
-                unrealized_at_end += mark.unrealized - mark.exit_fee
-                instrument_cash.append((mark.ts, -mark.exit_fee))
-            # Funding is modeled post-hoc (NT's engine applies none) with
-            # the same calculator validation uses (bd vibe-quant-e70tl.20).
-            accrual = accrue_position_funding(funding_calc, pos, exit_ns=exit_ns)
-            total_funding += accrual.total
-            funding_fallbacks += accrual.fallback_settlements
-            trade_pnls.append(realized - accrual.total)
-            closed_net.append((exit_ns, realized - accrual.total))
-            cash_events.append((exit_ns, realized))
-            cash_events.extend((ts, -amount) for ts, amount in accrual.payments)
-            instrument_cash.extend((ts, -amount) for ts, amount in accrual.payments)
-        # Opt-in liquidation: unless the scan hit nothing, every trade-level number below
-        # is rebuilt from the truncated ledgers (identity overlay: the NT path above stands).
-        liquidated = None
-        liquidation_ledgers: dict[str, list[LedgerEvent]] | None = None
-        liquidation_floor_ns: int | None = None
-        if overlay is not None:
-            from vibe_quant.screening.liquidation_metrics import liquidation_trades, position_key
+                open_marks = mark_open_positions(
+                    engine,
+                    still_open,
+                    execution_timeframe=execution_tf,
+                    catalog_path=catalog_path,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                    taker_fee=self._fee_schedule.taker_rate,
+                )
+            trade_inputs: list[tuple[Any, OpenPositionMark | None]] = [
+                (p, None) for p in closed
+            ]
+            trade_inputs.extend((mark.position, mark) for mark in open_marks)
+            total_fees = 0.0
+            unrealized_at_end = 0.0
+            for pos, mark in trade_inputs:
+                instrument_cash = funding_cash.setdefault(str(pos.instrument_id), [])
+                total_fees += sum(abs(float(c)) for c in pos.commissions())
+                # NT realized_pnl is net of commissions
+                realized = float(pos.realized_pnl)
+                if mark is None:
+                    exit_ns = int(pos.ts_closed)
+                else:
+                    exit_ns = mark.ts
+                    total_fees += mark.exit_fee
+                    realized += mark.unrealized - mark.exit_fee
+                    unrealized_at_end += mark.unrealized - mark.exit_fee
+                    instrument_cash.append((mark.ts, -mark.exit_fee))
+                # Funding is modeled post-hoc (NT's engine applies none) with
+                # the same calculator validation uses (bd vibe-quant-e70tl.20).
+                accrual = accrue_position_funding(funding_calc, pos, exit_ns=exit_ns)
+                total_funding += accrual.total
+                funding_fallbacks += accrual.fallback_settlements
+                trade_pnls.append(realized - accrual.total)
+                closed_net.append((exit_ns, realized - accrual.total))
+                cash_events.append((exit_ns, realized))
+                cash_events.extend((ts, -amount) for ts, amount in accrual.payments)
+                instrument_cash.extend((ts, -amount) for ts, amount in accrual.payments)
+            # Opt-in liquidation: unless the scan hit nothing, every trade-level number
+            # below is rebuilt from the truncated ledgers (identity overlay: the NT path
+            # above stands).
+            liquidated = None
+            liquidation_ledgers: dict[str, list[LedgerEvent]] | None = None
+            liquidation_floor_ns: int | None = None
+            if overlay is not None:
+                from vibe_quant.screening.liquidation_metrics import (
+                    liquidation_trades,
+                    position_key,
+                )
 
-            if not overlay.is_identity:
-                # every raw position the venue touched, whether or not NT or a mark can
-                # price it; survivors come with their run-end marks
-                touched = [
-                    (p, None)
-                    for p in still_open
-                    if position_key(p) in overlay.hits_by_key
-                    or position_key(p) in overlay.dropped_keys
-                ]
-                try:
+                if not overlay.is_identity:
+                    # every raw position the venue touched, whether or not NT or a mark can
+                    # price it; survivors come with their run-end marks
+                    touched = [
+                        (p, None)
+                        for p in still_open
+                        if position_key(p) in overlay.hits_by_key
+                        or position_key(p) in overlay.dropped_keys
+                    ]
                     liquidated = liquidation_trades(
                         overlay, [*trade_inputs, *touched], scan_funding, funding_calc
                     )
-                except Exception as exc:
-                    self._liquidation_failure = exc  # re-raised by __call__: never scored -inf
-                    raise
-                liquidation_ledgers = overlay.ledgers
-                liquidation_floor_ns = overlay.result.bust_ts
-                # total_fees includes the clearance fees (a real cost); liquidation_forfeited
-                # is the same clearance total, reported separately: never add the two
-                total_fees = liquidated.total_fees
-                total_funding = liquidated.total_funding
-                funding_fallbacks = liquidated.funding_fallbacks
-                trade_pnls = liquidated.trade_pnls
-                closed_net = liquidated.closed_net
-                cash_events = liquidated.cash_events
-                metrics.total_trades = len(trade_pnls)
-                metrics.win_rate = liquidated.win_rate
-                metrics.liquidation_count = len(overlay.hits_by_key)
-                metrics.liquidation_forfeited = float(
-                    sum(h.clearance_fee for h in overlay.hits_by_key.values())
-                )
-            self.last_liquidation_notes = overlay.result.to_notes(metrics.total_trades)
+                    liquidation_ledgers = overlay.ledgers
+                    liquidation_floor_ns = overlay.result.bust_ts
+                    # total_fees includes the clearance fees (a real cost);
+                    # liquidation_forfeited is the same clearance total, reported
+                    # separately: never add the two
+                    total_fees = liquidated.total_fees
+                    total_funding = liquidated.total_funding
+                    funding_fallbacks = liquidated.funding_fallbacks
+                    trade_pnls = liquidated.trade_pnls
+                    closed_net = liquidated.closed_net
+                    cash_events = liquidated.cash_events
+                    metrics.total_trades = len(trade_pnls)
+                    metrics.win_rate = liquidated.win_rate
+                    metrics.liquidation_count = len(overlay.hits_by_key)
+                    metrics.liquidation_forfeited = float(
+                        sum(h.clearance_fee for h in overlay.hits_by_key.values())
+                    )
+                self.last_liquidation_notes = overlay.result.to_notes(metrics.total_trades)
+        except Exception as exc:
+            if liquidation_on:
+                raise LiquidationIntegrityError.wrap(exc, self._liquidation_mode) from exc
+            raise
         metrics.total_fees = total_fees
         metrics.total_funding = total_funding
         metrics.funding_fallback_settlements = funding_fallbacks
@@ -1263,56 +1279,54 @@ class NTScreeningRunner:
             mark_open_positions,
         )
 
-        try:
-            if start_ns is None or end_ns is None or end_ns <= start_ns:
-                msg = (
-                    f"liquidation_mode={self._liquidation_mode!r} needs a valid run window, got "
-                    f"{self._start_date!r}..{self._end_date!r}"
-                )
-                raise ValueError(msg)
-            if execution_tf not in _TIMEFRAME_SECONDS or catalog_path is None:
-                msg = (
-                    f"liquidation_mode={self._liquidation_mode!r} needs an execution timeframe "
-                    f"and a catalog (timeframe={execution_tf!r}, catalog={catalog_path!r})"
-                )
-                raise ValueError(msg)
-            bar_ns = _TIMEFRAME_SECONDS[execution_tf] * 1_000_000_000
-            last_bar: dict[str, int | None] = {}  # instrument -> ts of its last LAST bar
-            horizons: dict[str, int | None] = {}
-            accruals = {
-                position_key(p): accrue_position_funding(funding_calc, p, exit_ns=int(p.ts_closed))
-                for p in closed
-            }
-            for pos in still_open:
-                iid = str(pos.instrument_id)
-                if iid not in last_bar:
-                    last_bar[iid] = _last_execution_bar_ts(
-                        engine, iid, execution_tf, catalog_path, start_ns, end_ns
-                    )
-                ts = last_bar[iid]
-                horizon = ts if ts is not None and ts > end_ns - bar_ns else None
-                horizons[position_key(pos)] = horizon
-                accruals[position_key(pos)] = accrue_position_funding(
-                    funding_calc, pos, exit_ns=end_ns - 1 if horizon is None else horizon
-                )
-            overlay = apply_liquidation(
-                [*closed, *still_open],
-                mode=self._liquidation_mode,  # type: ignore[arg-type]  # "off" excluded by caller
-                leverage=self._liquidation_leverage,
-                starting_balance=starting_balance,
-                catalog_path=catalog_path,
-                start_ns=start_ns,
-                end_ns=end_ns,
-                execution_bar_ns=bar_ns,
-                funding_by_position={  # ledger sign: paid < 0
-                    key: [(ts, -amount) for ts, amount in accrual.payments]
-                    for key, accrual in accruals.items()
-                },
-                cash_by_position={},
+        # Any failure below is wrapped as LiquidationIntegrityError by the ONE guard in
+        # ``_extract_metrics`` (the caller), which fails the run closed.
+        if start_ns is None or end_ns is None or end_ns <= start_ns:
+            msg = (
+                f"liquidation_mode={self._liquidation_mode!r} needs a valid run window, got "
+                f"{self._start_date!r}..{self._end_date!r}"
             )
-        except Exception as exc:
-            self._liquidation_failure = exc  # re-raised by __call__: never scored -inf
-            raise
+            raise ValueError(msg)
+        if execution_tf not in _TIMEFRAME_SECONDS or catalog_path is None:
+            msg = (
+                f"liquidation_mode={self._liquidation_mode!r} needs an execution timeframe "
+                f"and a catalog (timeframe={execution_tf!r}, catalog={catalog_path!r})"
+            )
+            raise ValueError(msg)
+        bar_ns = _TIMEFRAME_SECONDS[execution_tf] * 1_000_000_000
+        last_bar: dict[str, int | None] = {}  # instrument -> ts of its last LAST bar
+        horizons: dict[str, int | None] = {}
+        accruals = {
+            position_key(p): accrue_position_funding(funding_calc, p, exit_ns=int(p.ts_closed))
+            for p in closed
+        }
+        for pos in still_open:
+            iid = str(pos.instrument_id)
+            if iid not in last_bar:
+                last_bar[iid] = _last_execution_bar_ts(
+                    engine, iid, execution_tf, catalog_path, start_ns, end_ns
+                )
+            ts = last_bar[iid]
+            horizon = ts if ts is not None and ts > end_ns - bar_ns else None
+            horizons[position_key(pos)] = horizon
+            accruals[position_key(pos)] = accrue_position_funding(
+                funding_calc, pos, exit_ns=end_ns - 1 if horizon is None else horizon
+            )
+        overlay = apply_liquidation(
+            [*closed, *still_open],
+            mode=self._liquidation_mode,  # type: ignore[arg-type]  # "off" excluded by caller
+            leverage=self._liquidation_leverage,
+            starting_balance=starting_balance,
+            catalog_path=catalog_path,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            execution_bar_ns=bar_ns,
+            funding_by_position={  # ledger sign: paid < 0
+                key: [(ts, -amount) for ts, amount in accrual.payments]
+                for key, accrual in accruals.items()
+            },
+            cash_by_position={},
+        )
 
         survivors = [
             p

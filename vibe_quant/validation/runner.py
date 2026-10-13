@@ -18,6 +18,7 @@ from vibe_quant.db.state_manager import StateManager
 from vibe_quant.dsl.compiler import StrategyCompiler
 from vibe_quant.dsl.parser import validate_strategy_dict
 from vibe_quant.fees import FeeSchedule
+from vibe_quant.liquidation_settings import LiquidationConfigError, LiquidationSettings
 from vibe_quant.logging.events import EventType, create_event
 from vibe_quant.logging.writer import EventWriter
 from vibe_quant.metrics import profit_factor
@@ -1341,20 +1342,21 @@ class ValidationRunner:
     def _resolve_liquidation_mode(self, run_config: dict[str, object]) -> str:
         """The run's ``liquidation_mode`` launch parameter: "off" (default), "isolated", "cross".
 
-        Leverage for the overlay is the run's ``leverage`` parameter (the venue's
-        ``default_leverage``, see :meth:`_create_venue_config`).
+        Parsed through the shared :class:`~vibe_quant.liquidation_settings.LiquidationSettings`
+        (one rule with screening). An unknown mode, or a mode-on leverage outside (0, 125]
+        (previously a silent 10x fallback), fails the run before any engine starts. Leverage
+        for the overlay is the run's ``leverage`` parameter (the venue's ``default_leverage``,
+        see :meth:`_create_venue_config`).
 
         Raises:
-            ValidationRunnerError: For any other value (an unknown mode never runs as "off").
+            ValidationRunnerError: For any invalid value (an unknown mode never runs as "off").
         """
         raw_params = run_config.get("parameters")
-        if not isinstance(raw_params, dict) or "liquidation_mode" not in raw_params:
-            return "off"
-        mode = raw_params["liquidation_mode"]
-        if not isinstance(mode, str) or mode not in ("off", "isolated", "cross"):
-            msg = f"liquidation_mode must be 'off', 'isolated' or 'cross', got {mode!r}"
-            raise ValidationRunnerError(msg)
-        return mode
+        params = raw_params if isinstance(raw_params, dict) else {}
+        try:
+            return LiquidationSettings.from_params(params).mode
+        except LiquidationConfigError as exc:
+            raise ValidationRunnerError(str(exc)) from exc
 
     def _build_strategy_params(self, run_config: dict[str, object]) -> dict[str, object]:
         """Extract strategy parameter overrides from run config.
