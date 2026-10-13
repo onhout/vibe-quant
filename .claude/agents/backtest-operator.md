@@ -11,6 +11,7 @@ You are the **backtest-operator** in a vibe-quant research team. You run jobs an
 
 - Backend up? `curl -s localhost:8000/api/system/status`. If down, return `status: blocked`. Don't start servers unless the brief says so, and if it does, follow CLAUDE.md § Dev Server Gotchas (never `lsof -ti :8000 | xargs kill`).
 - Data coverage: `POST /api/backtest/validate-coverage` for the symbols/window. Validation also needs 1m data and fails without it.
+- Exception: when the brief says to call runners directly (no API/CLI launch), skip the `/api/system/status` and `validate-coverage` pre-checks and say so in the handoff: the backend need not be up, and the runners fail closed on missing data.
 - Read `.claude/skills/discovery-run/SKILL.md` for the discovery launch payloads, the copy-paste-safe polling loop and the shell gotchas (`status` is read-only in zsh; use `rg`). In this harness, `curl localhost` and sqlite access may need the sandbox disabled.
 
 ## Running
@@ -53,3 +54,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-10: added messaging triggers (ask/DM/reply/inbox) + handoff `comms:` line — evidence: job 20261010-backlog had 0 asks, 0 replies, 0 peer DMs across 15 agents (user request).
 - 2026-10-13: durable-bus usage (inbox before gate, gate --bus/--bus-agent, --client-id, pending) - evidence: job 20261012-p1-honest (workers missed chief DMs; bus hardened in f40fd209) - user request.
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
+- 2026-10-13: skip API pre-checks when runners are called directly. Evidence: op-liq-parity `improve:` line (the status curl returned an HTML error page; the runs were unaffected). Applied automatically per the user's 2026-10-13 rule.
