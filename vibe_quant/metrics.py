@@ -268,6 +268,16 @@ class LedgerEvent:
             bar path where the price reached ``price``. False for market
             fills and cash events, which are located by time: before the bar
             if ``ts`` precedes the bar's ``ts_init``, after its close if equal.
+        liquidation: True only on the synthetic close a liquidation adds
+            (``liquidation.overlay``): ``price`` is the liquidation close price
+            (the bankruptcy-equivalent price when the insurance fund absorbed a
+            deficit) and ``-qty`` the liquidated quantity. Changes how
+            ``pnl_path`` values that quantity in its execution bar
+            (:func:`_liquidation_walk`), never the realized PnL.
+        liq_margin: Part of ``cash`` that is margin of a liquidated quantity
+            (funding in isolated, all cash in cross), set by the overlay only on
+            real events stamped at a liquidation's ``ts``. Valuation only.
+        Both default to the plain behaviour, which is unchanged.
     """
 
     ts: int
@@ -275,6 +285,8 @@ class LedgerEvent:
     price: float = 0.0
     cash: float = 0.0
     resting: bool = False
+    liquidation: bool = False
+    liq_margin: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,6 +366,107 @@ def _locate_on_path(points: list[float], start_seg: int, price: float) -> int:
     return best_seg
 
 
+def _liquidation_walk(
+    book: _Book, evs: Sequence[LedgerEvent], bar_ts: int, points: list[float]
+) -> float:
+    """:func:`pnl_path`'s walk of the execution bar that holds a liquidation close.
+
+    Every real event keeps its normal place (before the bar, on the bar path, after
+    its close) and its normal valuation. The *instant* is the events stamped at the
+    close's ``ts``; the close is replayed right after the last of them (in its own
+    normal place when there are none). From the instant on (its first event, or the
+    bar open when the close's ts precedes the bar's ``ts_init``) until the close, the
+    liquidated quantity ``L = -close.qty`` alone is valued at no worse than its cap::
+
+        cap_s = P + M_s / L
+
+    ``P`` is the close's price (bankruptcy-equivalent when the insurance fund absorbed
+    a deficit), ``M_s`` the ``liq_margin`` of the instant's events not yet applied in
+    state ``s``: so ``cap_s`` is the bankruptcy price at that state's margin (or the
+    venue's liquidation price). A long ``L`` is worth ``max(p, cap_s)``, a short one
+    ``min(p, cap_s)``. The rest of the position, and every point before the instant,
+    follow the bar path; equity has no floor.
+
+    Worked examples, 1 BTC long @ 40000, 10x, balance 40000:
+
+    * The bar opens at 35000 (past bankruptcy) and funding +100 arrives at the hit:
+      margin 4100, ``P`` = 35900, final 36000. Before the funding ``cap`` = 35900 +
+      100 = 36000 (equity 36000), after it 35900 (40100 - 4100 = 36000): ``L`` is
+      never marked at the gap's 35000, which the insurance fund absorbs.
+    * Equity 50000 at 50000; the hit minute opens at 45000, a LIMIT sells 0.9 at 50000
+      and funding -200 is paid at the bar's ``ts_init``, leaving 0.1 with LP 38152.61
+      (no deficit). The open precedes the instant, so 1 BTC at 45000 (equity 45000) is
+      a genuine minimum. After the sale the low 37000 is above ``cap`` = 38152.61 - 2000
+      (the funding is still to come), so 0.1 is marked at 37000 (48700); after the
+      funding it is held at 38152.61. Final 48600, drawdown 0.1.
+
+    Raises ``ValueError`` when the bar cannot be replayed exactly: more than one close,
+    an event after the close's ts, a resting fill before it, or a position left open.
+    """
+    closes = [e for e in evs if e.liquidation]
+    if len(closes) != 1:
+        raise ValueError(f"execution bar {bar_ts} holds {len(closes)} liquidation closes")
+    close = closes[0]
+    t = close.ts
+    real = [e for e in evs if e is not close]
+    if any(e.ts > t or (e.resting and e.ts < t) for e in real):
+        raise ValueError(
+            f"execution bar {bar_ts}: an event after the liquidation at {t}, or a resting "
+            "fill before it, cannot be replayed exactly"
+        )
+    ob, cb = points[0], points[-1]
+    # pnl_path's replay order: (event, valuation price) or (None, bar path point)
+    steps: list[tuple[LedgerEvent | None, float]] = [
+        (e, e.price if e.qty else ob) for e in real if not e.resting and e.ts < bar_ts
+    ]
+    open_at = len(steps)
+    steps.append((None, ob))
+    seg = 0
+    for e in real:
+        if e.resting:
+            target = _locate_on_path(points, seg, e.price)
+            steps.extend((None, points[k]) for k in range(seg + 1, target + 1))
+            steps.append((e, e.price))
+            seg = target
+    steps.extend((None, points[k]) for k in range(seg + 1, len(points)))
+    steps.extend((e, e.price if e.qty else cb) for e in real if not e.resting and e.ts >= bar_ts)
+
+    instant = [k for k, (e, _px) in enumerate(steps) if e is not None and e.ts == t]
+    # the close follows the instant's last real event, else takes its own normal place
+    at = instant[-1] + 1 if instant else (open_at if t < bar_ts else len(steps))
+    steps.insert(at, (close, close.price))
+    first = instant[0] if instant else at
+    activate = min(first, open_at) if t < bar_ts else first
+
+    liq = -close.qty
+    pending = {id(e): e.liq_margin for e in real if e.ts == t}
+
+    def value(price: float, active: bool) -> float:
+        pnl = book.pnl_at(price)
+        q = book.qty
+        if not active or q == 0.0 or (q > 0.0) != (liq > 0.0):
+            return pnl
+        cap = close.price + math.fsum(pending.values()) / liq
+        held = min(abs(liq), abs(q))
+        if liq > 0.0 and price < cap:
+            return pnl + held * (cap - price)
+        if liq < 0.0 and price > cap:
+            return pnl + held * (price - cap)
+        return pnl
+
+    worst = math.inf
+    for k, (ev, px) in enumerate(steps):
+        active = k >= activate
+        worst = min(worst, value(px, active))
+        if ev is not None:
+            book.apply(ev)
+            pending.pop(id(ev), None)
+            worst = min(worst, value(px, active))
+    if book.qty != 0.0:
+        raise ValueError(f"execution bar {bar_ts}: position still open after its liquidation")
+    return worst
+
+
 def pnl_path(
     bars: BarSeries,
     events: list[LedgerEvent],
@@ -392,6 +505,7 @@ def pnl_path(
     post_avg: list[float] = []
     walk_close: list[float] = []
     walk_min: list[float] = []
+    liq_bars = {int(ev_bar[k]) for k, e in enumerate(events) if e.liquidation}
 
     i = 0
     n_events = len(events)
@@ -401,35 +515,39 @@ def pnl_path(
         while j < n_events and ev_bar[j] == b:
             j += 1
         bar_ts = int(ts[b])
-        start_evs = [e for e in events[i:j] if not e.resting and e.ts < bar_ts]
-        resting_evs = [e for e in events[i:j] if e.resting]
-        end_evs = [e for e in events[i:j] if not e.resting and e.ts >= bar_ts]
         ob, hb, lb, cb = float(o[b]), float(h[b]), float(lo[b]), float(c[b])
         high_first = (not adaptive) or abs(hb - ob) < abs(lb - ob)
         points = [ob, hb, lb, cb] if high_first else [ob, lb, hb, cb]
 
-        worst = math.inf
-        for e in start_evs:
-            worst = min(worst, book.pnl_at(e.price if e.qty else ob))
-            book.apply(e)
-            worst = min(worst, book.pnl_at(e.price if e.qty else ob))
-        worst = min(worst, book.pnl_at(ob))
-        seg = 0
-        for e in resting_evs:
-            target = _locate_on_path(points, seg, e.price)
-            for k in range(seg + 1, target + 1):
+        if b in liq_bars:
+            worst = _liquidation_walk(book, events[i:j], bar_ts, points)
+        else:
+            start_evs = [e for e in events[i:j] if not e.resting and e.ts < bar_ts]
+            resting_evs = [e for e in events[i:j] if e.resting]
+            end_evs = [e for e in events[i:j] if not e.resting and e.ts >= bar_ts]
+
+            worst = math.inf
+            for e in start_evs:
+                worst = min(worst, book.pnl_at(e.price if e.qty else ob))
+                book.apply(e)
+                worst = min(worst, book.pnl_at(e.price if e.qty else ob))
+            worst = min(worst, book.pnl_at(ob))
+            seg = 0
+            for e in resting_evs:
+                target = _locate_on_path(points, seg, e.price)
+                for k in range(seg + 1, target + 1):
+                    worst = min(worst, book.pnl_at(points[k]))
+                worst = min(worst, book.pnl_at(e.price))
+                book.apply(e)
+                worst = min(worst, book.pnl_at(e.price))
+                seg = target
+            for k in range(seg + 1, len(points)):
                 worst = min(worst, book.pnl_at(points[k]))
-            worst = min(worst, book.pnl_at(e.price))
-            book.apply(e)
-            worst = min(worst, book.pnl_at(e.price))
-            seg = target
-        for k in range(seg + 1, len(points)):
-            worst = min(worst, book.pnl_at(points[k]))
-        for e in end_evs:
-            px = e.price if e.qty else cb
-            worst = min(worst, book.pnl_at(px))
-            book.apply(e)
-            worst = min(worst, book.pnl_at(px))
+            for e in end_evs:
+                px = e.price if e.qty else cb
+                worst = min(worst, book.pnl_at(px))
+                book.apply(e)
+                worst = min(worst, book.pnl_at(px))
 
         event_bars.append(b)
         post_r.append(book.realized)
@@ -458,29 +576,27 @@ def pnl_path(
     return pnl_close, pnl_min
 
 
-def mark_to_market_max_drawdown(
+def mark_to_market_equity(
     starting_balance: float,
     paths: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
-) -> float:
-    """Max peak-to-trough decline of mark-to-market equity, as a fraction.
+    *,
+    floor_from_ns: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Account equity ``(ts, equity_close, equity_min)`` from per-instrument paths.
 
-    Peaks are taken at bar closes (and the starting balance); troughs at each
-    bar's intrabar worst (adverse extreme while a position is held). Multiple
-    instruments are combined on the union of their bar timestamps (forward
+    Instruments are combined on the union of their bar timestamps (forward
     filled); summing per-instrument intrabar worsts is conservative.
-
-    Args:
-        starting_balance: Equity before the first bar.
-        paths: ``(ts, pnl_close, pnl_min)`` per instrument from :func:`pnl_path`.
-
-    Returns:
-        Drawdown in ``[0, 1]`` (1.0 = equity wiped out).
+    ``floor_from_ns`` (a cross liquidation's ``bust_ts``): from the bar holding
+    it on, the account cannot be below 0 (the insurance fund absorbs the rest),
+    so ``equity_min`` is clamped at 0 on bars with ``ts >= floor_from_ns``. The
+    conservative sum can otherwise pair one leg's dip before an intrabar bust
+    with another leg's post-bust value. ``None`` = no clamp.
     """
     paths = [p for p in paths if len(p[0])]
-    if not paths or starting_balance <= 0:
-        return 0.0
+    if not paths:
+        return np.zeros(0, dtype=np.int64), np.zeros(0), np.zeros(0)
     if len(paths) == 1:
-        _, total_close, total_min = paths[0]
+        grid, total_close, total_min = paths[0]
     else:
         grid = np.unique(np.concatenate([p[0] for p in paths]))
         total_close = np.zeros(len(grid))
@@ -495,6 +611,36 @@ def mark_to_market_max_drawdown(
             total_min += np.where(exact, pm[ii], close_vals)
     equity_close = starting_balance + total_close
     equity_min = starting_balance + total_min
+    if floor_from_ns is not None:
+        equity_min = np.where(grid >= floor_from_ns, np.maximum(equity_min, 0.0), equity_min)
+    return grid, equity_close, equity_min
+
+
+def mark_to_market_max_drawdown(
+    starting_balance: float,
+    paths: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    *,
+    floor_from_ns: int | None = None,
+) -> float:
+    """Max peak-to-trough decline of mark-to-market equity, as a fraction.
+
+    Peaks are taken at bar closes (and the starting balance); troughs at each
+    bar's intrabar worst (adverse extreme while a position is held), on the
+    account equity of :func:`mark_to_market_equity` (``floor_from_ns`` there).
+
+    Args:
+        starting_balance: Equity before the first bar.
+        paths: ``(ts, pnl_close, pnl_min)`` per instrument from :func:`pnl_path`.
+
+    Returns:
+        Drawdown in ``[0, 1]`` (1.0 = equity wiped out).
+    """
+    paths = [p for p in paths if len(p[0])]
+    if not paths or starting_balance <= 0:
+        return 0.0
+    _grid, equity_close, equity_min = mark_to_market_equity(
+        starting_balance, paths, floor_from_ns=floor_from_ns
+    )
     peak_prev = np.empty(len(equity_close))
     peak_prev[0] = starting_balance
     if len(equity_close) > 1:

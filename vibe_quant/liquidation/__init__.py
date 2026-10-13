@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from vibe_quant.liquidation.overlay import OverlayResult, liquidation_overlay, position_views
 from vibe_quant.liquidation.scan import (
     EventLike,
     LiquidationHit,
@@ -32,6 +33,7 @@ __all__ = [
     "LiquidationResult",
     "MarkLike",
     "MissingMarkSeries",
+    "OverlayResult",
     "PositionView",
     "TierTable",
     "TierTableError",
@@ -40,6 +42,8 @@ __all__ = [
     "UnknownSymbol",
     "cross_liq_price",
     "isolated_liq_price",
+    "liquidation_overlay",
     "load_tier_tables",
+    "position_views",
     "scan_liquidations",
 ]

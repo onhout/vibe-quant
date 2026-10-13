@@ -527,6 +527,7 @@ def mark_to_market_paths(
     end_ns: int | None = None,
     extra_cash: dict[str, list[tuple[int, float]]] | None = None,
     adaptive: bool = True,
+    ledgers: dict[str, list[LedgerEvent]] | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]] | None:
     """Per-instrument MTM PnL paths ``(ts, pnl_close, pnl_min)`` for the run.
 
@@ -534,16 +535,32 @@ def mark_to_market_paths(
     (no fill events / no bars for a traded instrument). Shared by the
     mark-to-market drawdown and the daily MTM return series so the execution
     bars are loaded once (bd vibe-quant-wcn55).
+
+    ``ledgers`` (the liquidation overlay's truncated per-instrument events,
+    ``liquidation.overlay.OverlayResult.ledgers``) replaces the ledger rebuilt
+    from the engine's positions. It already carries every per-position cash
+    flow (funding, slippage), so combining it with ``extra_cash`` raises
+    ``ValueError`` (cash would be booked twice or after a bust). ``None``
+    (default) rebuilds from the engine.
     """
     from vibe_quant.data.catalog import INTERVAL_TO_AGGREGATION
 
-    positions = all_positions(engine)
-    if not positions:
-        return []
-    try:
-        ledgers = position_ledger_events(positions, extra_cash)
-    except AttributeError:
-        return None
+    if ledgers is None:
+        positions = all_positions(engine)
+        if not positions:
+            return []
+        try:
+            ledgers = position_ledger_events(positions, extra_cash)
+        except AttributeError:
+            return None
+    else:
+        if extra_cash:
+            raise ValueError(
+                "extra_cash cannot be combined with ledgers=: pass per-position cash "
+                "to liquidation_overlay (cash_by_position / funding_by_position)"
+            )
+        if not ledgers:
+            return []
     if execution_timeframe not in INTERVAL_TO_AGGREGATION:
         return None
     step, agg = INTERVAL_TO_AGGREGATION[execution_timeframe]
@@ -580,13 +597,16 @@ def mark_to_market_drawdown(
     end_ns: int | None = None,
     extra_cash: dict[str, list[tuple[int, float]]] | None = None,
     adaptive: bool = True,
+    ledgers: dict[str, list[LedgerEvent]] | None = None,
+    floor_from_ns: int | None = None,
 ) -> float | None:
     """Mark-to-market max drawdown of the run (intrabar adverse extremes).
 
     Thin wrapper over :func:`mark_to_market_paths`: ``None`` when the paths
     cannot be computed (no fill events / no bars for a traded instrument),
     ``0.0`` for a run with no positions. Callers fall back to the closed-trade
-    curve on ``None`` and MUST say so in logs.
+    curve on ``None`` and MUST say so in logs. ``floor_from_ns`` (a cross
+    liquidation's ``bust_ts``) see :func:`vibe_quant.metrics.mark_to_market_equity`.
     """
     paths = mark_to_market_paths(
         engine,
@@ -596,12 +616,13 @@ def mark_to_market_drawdown(
         end_ns=end_ns,
         extra_cash=extra_cash,
         adaptive=adaptive,
+        ledgers=ledgers,
     )
     if paths is None:
         return None
     if not paths:
         return 0.0
-    return mark_to_market_max_drawdown(starting_balance, paths)
+    return mark_to_market_max_drawdown(starting_balance, paths, floor_from_ns=floor_from_ns)
 
 
 def _ns_to_isoformat(ns_timestamp: int | float | str) -> str:
