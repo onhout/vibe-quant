@@ -604,6 +604,10 @@ def full_range_headline(
         if "trades_sum" in full_range_metrics:
             head["full_range_trades_sum"] = int(full_range_metrics["trades_sum"])
             head["full_range_symbol_metrics"] = full_range_metrics["symbol_metrics"]  # type: ignore[assignment]
+        # Report-only liquidation count of the continuous full-range run (bead
+        # vibe-quant-2gyk1.1.9): present only when the mode is on (R4).
+        if "liquidation_count" in full_range_metrics:
+            head["full_range_liquidation_count"] = int(full_range_metrics["liquidation_count"])
         return head
     return {
         "full_range_sharpe": float(fallback_sharpe),

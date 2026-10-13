@@ -266,6 +266,9 @@ class HoldoutResult:
     # {sharpe, trades, return} (total_trades above is the MIN symbol).
     trades_sum: int | None = None
     symbol_metrics: dict[str, dict[str, float | int]] | None = None
+    # Report-only liquidation count of this window (bead vibe-quant-2gyk1.1.9,
+    # R5); None when the run's mode is off (the bt dict has no key).
+    liquidation_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -462,6 +465,7 @@ def _metrics_to_holdout_result(bt: dict[str, float | int]) -> HoldoutResult:
         total_return=0.0 if math.isnan(ret) else ret,
         trades_sum=int(bt["trades_sum"]) if "trades_sum" in bt else None,
         symbol_metrics=bt.get("symbol_metrics"),  # type: ignore[arg-type]
+        liquidation_count=int(bt["liquidation_count"]) if "liquidation_count" in bt else None,
     )
 
 
@@ -1111,6 +1115,12 @@ class DiscoveryPipeline:
         # (JSON null when unavailable).
         entry["fee_drag"] = fitness.fee_drag
         entry["fees_pct_equity_yr"] = fitness.fees_pct_equity_yr
+        # Report-only liquidation counts (bead vibe-quant-2gyk1.1.9, R1): written
+        # only when the mode is on, so rejection rows stay unchanged off (R4).
+        if fitness.liquidation_count is not None:
+            entry["liquidation_count"] = fitness.liquidation_count
+        if fitness.liquidation_forfeited is not None:
+            entry["liquidation_forfeited"] = fitness.liquidation_forfeited
         self._guardrail_rejections.append(entry)
         logger.info("Gate FAIL [%s]: %s reasons=%s", stage, chrom.uid, reasons)
 

@@ -151,6 +151,14 @@ class FitnessResult:
     # signal, killed a genome that never became a champion.
     fee_drag: float | None = None
     fees_pct_equity_yr: float | None = None
+    # Liquidation accounting (bead vibe-quant-2gyk1.1.9): reporting only, never
+    # read by the score (R1 -- the same formula over the liquidation-adjusted
+    # metrics, with no penalty and no gate). The bt dict carries the keys ONLY
+    # when the run's mode is on, so these stay None off and callers omit them
+    # (R4). ``liquidation_count`` is the summed number of liquidations;
+    # ``liquidation_forfeited`` the summed notional/PnL given up to them.
+    liquidation_count: int | None = None
+    liquidation_forfeited: float | None = None
 
 
 def _fee_drag_fields(bt: dict[str, float | int]) -> tuple[float | None, float | None]:
@@ -174,6 +182,23 @@ def _fee_drag_fields(bt: dict[str, float | int]) -> tuple[float | None, float | 
     balance = float(bt.get("starting_balance", 0.0))
     days = float(bt.get("days", 0))
     return fee_drag(fees, gross), fees_pct_equity_per_year(fees, balance, days)
+
+
+def _liquidation_fields(
+    bt: dict[str, float | int],
+) -> tuple[int | None, float | None]:
+    """``(liquidation_count, liquidation_forfeited)`` from a bt dict.
+
+    Reporting only, never scored (bead vibe-quant-2gyk1.1.9, R1). The keys exist
+    only when the run's mode is on, so a mode-off dict yields ``(None, None)``
+    and the callers omit them (R4).
+    """
+    count = bt.get("liquidation_count")
+    forfeited = bt.get("liquidation_forfeited")
+    return (
+        int(count) if count is not None else None,
+        float(forfeited) if forfeited is not None else None,
+    )
 
 
 # Pre-compute inverse ranges for normalization to avoid repeated division
@@ -596,6 +621,7 @@ def _evaluate_single(
             )
 
     fee_drag_val, fees_pct_val = _fee_drag_fields(bt)
+    liquidation_count_val, liquidation_forfeited_val = _liquidation_fields(bt)
 
     return FitnessResult(
         sharpe_ratio=sharpe,
@@ -628,6 +654,8 @@ def _evaluate_single(
         else None,
         fee_drag=fee_drag_val,
         fees_pct_equity_yr=fees_pct_val,
+        liquidation_count=liquidation_count_val,
+        liquidation_forfeited=liquidation_forfeited_val,
     )
 
 

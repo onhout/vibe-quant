@@ -21,6 +21,11 @@ from vibe_quant.discovery.pipeline import (
     DiscoveryResult,
 )
 from vibe_quant.fees import DEFAULT_TIER, FeeSchedule
+from vibe_quant.liquidation_settings import (
+    DEFAULT_LEVERAGE,
+    LIQUIDATION_MODES,
+    LiquidationSettings,
+)
 from vibe_quant.utils import compute_day_count, log_dir
 
 logger = logging.getLogger(__name__)
@@ -85,16 +90,19 @@ def _make_nt_backtest_fn(
     *,
     fee_schedule: FeeSchedule,
     entry_order: str,
+    liquidation: LiquidationSettings,
 ) -> NTBacktestFn:
     """Create a picklable backtest function using real NautilusTrader screening runner.
 
-    ``fee_schedule`` and ``entry_order`` are required (no defaults) so a new
-    call site cannot silently run at VIP0 while the rest of the run is on BNB
-    (bd vibe-quant-2gyk1.4).
+    ``fee_schedule``, ``entry_order`` and ``liquidation`` are required (no
+    defaults) so a new call site cannot silently run at VIP0/10x while the
+    rest of the run is on BNB or at the run's liquidation settings
+    (bd vibe-quant-2gyk1.4, vibe-quant-2gyk1.1.9).
     """
     return NTBacktestFn(
         symbols, timeframe, start_date, end_date, windows=windows, min_trades=min_trades,
         symbol_agg=symbol_agg, fee_schedule=fee_schedule, entry_order=entry_order,
+        liquidation=liquidation,
     )
 
 
@@ -567,6 +575,13 @@ def _champion_entry(
     # "no edge to attribute" from "key never written".
     entry["fee_drag"] = fitness.fee_drag
     entry["fees_pct_equity_yr"] = fitness.fees_pct_equity_yr
+    # Report-only liquidation counts (bead vibe-quant-2gyk1.1.9, R1): written
+    # only when the mode is on (the FitnessResult fields stay None off -> the
+    # keys are absent, R4).
+    if fitness.liquidation_count is not None:
+        entry["liquidation_count"] = fitness.liquidation_count
+    if fitness.liquidation_forfeited is not None:
+        entry["liquidation_forfeited"] = fitness.liquidation_forfeited
     return entry
 
 
@@ -595,9 +610,11 @@ def _run_provenance_notes(
     symbols: list[str],
     fee_schedule: FeeSchedule | None = None,
     prior_run_ids: list[int] | None = None,
+    liquidation: LiquidationSettings | None = None,
 ) -> dict[str, object]:
     """Run-level notes shared by the champion and zero-champion outcomes."""
     schedule = fee_schedule if fee_schedule is not None else FeeSchedule()
+    liquidation_notes = liquidation.to_notes() if liquidation is not None else None
     notes: dict[str, object] = {
         "type": "discovery",
         "generations": len(result.generations),
@@ -638,6 +655,11 @@ def _run_provenance_notes(
         # every screening backtest of this run used.
         "fee_schedule": schedule.to_notes(),
     }
+    # Run-level liquidation settings (bead vibe-quant-2gyk1.1.9, D2): the same
+    # settings every screening backtest of this run used. The key is absent when
+    # the mode is off, so existing runs stay unchanged (R4).
+    if liquidation_notes is not None:
+        notes["liquidation"] = liquidation_notes
     if symbol_agg == "worst":
         # GA rank score over the per-symbol adjusted fitness; champions still
         # need every symbol's train return > 0 and trades >= min (hard gate).
@@ -957,6 +979,22 @@ def build_parser() -> argparse.ArgumentParser:
         "taker 0.00045) instead of the tier rate.",
     )
     parser.add_argument(
+        "--liquidation-mode",
+        choices=list(LIQUIDATION_MODES),
+        default="off",
+        help="Liquidation mode for every screening backtest of this run "
+        "(off, isolated or cross; default: off). On, the venue runs at "
+        "--liquidation-leverage and the liquidation counts are reported "
+        "(report-only: no score term, no gate).",
+    )
+    parser.add_argument(
+        "--liquidation-leverage",
+        type=float,
+        default=DEFAULT_LEVERAGE,
+        help=f"Leverage for a mode-on run: the venue leverage and the "
+        f"liquidation distance (default: {DEFAULT_LEVERAGE}). Must be in (0, 125].",
+    )
+    parser.add_argument(
         "--immigrant-fraction",
         type=float,
         default=0.15,
@@ -1061,6 +1099,17 @@ def main() -> int:
             raw_run_params = {}
         entry_order = str(raw_run_params.get("entry_order", "market"))
         logger.info("Discovery fee schedule: %s", fee_schedule.to_notes())
+
+        # Run-level liquidation settings (bead vibe-quant-2gyk1.1.9): one parse
+        # rule (LiquidationSettings.from_params), validated up front so a bad
+        # leverage fails the run with the message instead of a silent 10x.
+        liquidation = LiquidationSettings.from_params(
+            {
+                "liquidation_mode": args.liquidation_mode,
+                "leverage": args.liquidation_leverage,
+            }
+        )
+        logger.info("Discovery liquidation settings: %s", liquidation.to_notes())
 
         # Train/test split + eval/cross/WFA windows: one shared check (the API
         # runs the same plan_from_args before creating a run row).
@@ -1176,6 +1225,7 @@ def main() -> int:
                 symbol_agg=args.symbol_agg,
                 fee_schedule=fee_schedule,
                 entry_order=entry_order,
+                liquidation=liquidation,
             )
 
         # Create holdout backtest function if train/test split enabled
@@ -1192,6 +1242,7 @@ def main() -> int:
                     symbol_agg=args.symbol_agg,
                     fee_schedule=fee_schedule,
                     entry_order=entry_order,
+                    liquidation=liquidation,
                 )
         elif split_ratio <= 0:
             logger.warning(
@@ -1210,11 +1261,12 @@ def main() -> int:
                 _agg: SymbolAgg = args.symbol_agg
                 _fee = fee_schedule
                 _entry = entry_order
+                _liq = liquidation
 
                 def backtest_fn_factory(s: str, e: str) -> NTBacktestFn:
                     return NTBacktestFn(
                         _syms, _tf, s, e, symbol_agg=_agg, fee_schedule=_fee,
-                        entry_order=_entry,
+                        entry_order=_entry, liquidation=_liq,
                     )
 
         # Load seed chromosomes from prior run if requested
@@ -1291,6 +1343,7 @@ def main() -> int:
             symbols=symbols,
             fee_schedule=fee_schedule,
             prior_run_ids=prior_run_ids,
+            liquidation=liquidation,
         )
 
         if not result.top_strategies:
@@ -1372,6 +1425,7 @@ def main() -> int:
                 symbol_agg=args.symbol_agg,
                 fee_schedule=fee_schedule,
                 entry_order=entry_order,
+                liquidation=liquidation,
             )
             if needs_full_range
             else None
@@ -1421,6 +1475,9 @@ def main() -> int:
                 if hr.trades_sum is not None:
                     entry["holdout"]["trades_sum"] = hr.trades_sum  # type: ignore[index]
                     entry["holdout"]["symbol_metrics"] = hr.symbol_metrics  # type: ignore[index]
+                # Report-only liquidation count (R5): written only when on.
+                if hr.liquidation_count is not None:
+                    entry["holdout"]["liquidation_count"] = hr.liquidation_count  # type: ignore[index]
             # Attach cross-window results if available
             if idx < len(result.cross_window_results):
                 entry["cross_window"] = cross_window_entry(result.cross_window_results[idx])
@@ -1445,6 +1502,7 @@ def main() -> int:
                     symbol_agg=args.symbol_agg,
                     fee_schedule=fee_schedule,
                     entry_order=entry_order,
+                    liquidation=liquidation,
                 )(best_chrom)
                 train_return = float(train_metrics.get("total_return", 0.0))
             else:

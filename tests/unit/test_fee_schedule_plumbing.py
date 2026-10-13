@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from vibe_quant.fees import FeeSchedule
+from vibe_quant.liquidation_settings import LiquidationSettings
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -124,6 +125,7 @@ def test_discovery_refuses_post_only() -> None:
             "2024-02-01",
             fee_schedule=FeeSchedule(),
             entry_order=_POST_ONLY,
+            liquidation=LiquidationSettings(),
         )
 
 
