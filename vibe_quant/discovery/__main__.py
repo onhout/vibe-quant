@@ -7,7 +7,7 @@ import logging
 import random
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from vibe_quant.discovery.config_check import (
     WindowPlan,
@@ -24,7 +24,9 @@ from vibe_quant.fees import DEFAULT_TIER, FeeSchedule
 from vibe_quant.liquidation_settings import (
     DEFAULT_LEVERAGE,
     LIQUIDATION_MODES,
+    MISSING,
     LiquidationSettings,
+    resolve_leverage,
 )
 from vibe_quant.utils import compute_day_count, log_dir
 
@@ -660,6 +662,16 @@ def _run_provenance_notes(
     # the mode is off, so existing runs stay unchanged (R4).
     if liquidation_notes is not None:
         notes["liquidation"] = liquidation_notes
+    # A non-default venue leverage is recorded so promote/replay inherit it
+    # (bead vibe-quant-6wq6w). Only a mode-OFF run needs the top-level key: a
+    # mode-on run already carries its leverage in notes.liquidation, and an
+    # explicit default (10) writes nothing (R4/R7).
+    if (
+        liquidation is not None
+        and not liquidation.on
+        and liquidation.leverage != DEFAULT_LEVERAGE
+    ):
+        notes["leverage"] = liquidation.leverage
     if symbol_agg == "worst":
         # GA rank score over the per-symbol adjusted fitness; champions still
         # need every symbol's train return > 0 and trades >= min (hard gate).
@@ -984,15 +996,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="off",
         help="Liquidation mode for every screening backtest of this run "
         "(off, isolated or cross; default: off). On, the venue runs at "
-        "--liquidation-leverage and the liquidation counts are reported "
+        "--leverage and the liquidation counts are reported "
         "(report-only: no score term, no gate).",
+    )
+    parser.add_argument(
+        "--leverage",
+        type=float,
+        default=None,
+        help=f"Venue leverage for every screening backtest of this run, in every "
+        f"mode (a whole number in [1, 125]; default: {DEFAULT_LEVERAGE}). It "
+        f"changes results only while liquidation is on.",
     )
     parser.add_argument(
         "--liquidation-leverage",
         type=float,
-        default=DEFAULT_LEVERAGE,
-        help=f"Leverage for a mode-on run: the venue leverage and the "
-        f"liquidation distance (default: {DEFAULT_LEVERAGE}). Must be in (0, 125].",
+        default=None,
+        help="Deprecated alias for --leverage (given both, they must agree).",
     )
     parser.add_argument(
         "--immigrant-fraction",
@@ -1100,14 +1119,21 @@ def main() -> int:
         entry_order = str(raw_run_params.get("entry_order", "market"))
         logger.info("Discovery fee schedule: %s", fee_schedule.to_notes())
 
-        # Run-level liquidation settings (bead vibe-quant-2gyk1.1.9): one parse
-        # rule (LiquidationSettings.from_params), validated up front so a bad
-        # leverage fails the run with the message instead of a silent 10x.
-        liquidation = LiquidationSettings.from_params(
-            {
-                "liquidation_mode": args.liquidation_mode,
-                "leverage": args.liquidation_leverage,
-            }
+        # Run-level liquidation settings (bead vibe-quant-6wq6w): one leverage
+        # honoured in every mode. --leverage is the setting and
+        # --liquidation-leverage a deprecated alias; the shared rule lets the
+        # first given win and fails the run when the two disagree. Validated up
+        # front so a bad leverage fails the run with the message rather than a
+        # silent 10x.
+        resolved_leverage = resolve_leverage(
+            MISSING if args.leverage is None else args.leverage,
+            MISSING if args.liquidation_leverage is None else args.liquidation_leverage,
+        )
+        if resolved_leverage is MISSING:
+            resolved_leverage = DEFAULT_LEVERAGE
+        liquidation = LiquidationSettings(
+            mode=args.liquidation_mode,
+            leverage=cast("float", resolved_leverage),
         )
         logger.info("Discovery liquidation settings: %s", liquidation.to_notes())
 

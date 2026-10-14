@@ -25,6 +25,7 @@ from vibe_quant.utils import log_dir
 
 if TYPE_CHECKING:
     from vibe_quant.jobs.manager import JobInfo
+    from vibe_quant.liquidation_settings import LiquidationSettings
 
 logger = logging.getLogger(__name__)
 
@@ -164,30 +165,46 @@ def _inherited_fee_params(
 def _inherited_liquidation_params(state: StateManager, run_id: int) -> dict[str, object]:
     """Liquidation run parameters for a child of discovery run ``run_id``.
 
-    The parent's ``notes.liquidation`` is authoritative: a promoted or replayed
-    child must run at the same liquidation settings the champion was found
-    under. A run that predates liquidation (no ``liquidation`` in its notes) ran
-    with the mode off, so the child gets no liquidation keys and keeps its
-    stored parameters unchanged. A recorded payload that cannot be parsed fails
-    closed (409) instead of silently reverting to the mode off.
+    The parent's ``notes.liquidation`` (mode-on) and ``notes.leverage`` (a
+    mode-off run at a non-default leverage) are authoritative: a promoted or
+    replayed child must run at the same leverage the champion was found under
+    (vibe-quant-6wq6w). The leverage comes from ``notes.liquidation.leverage``
+    when present, else ``notes.leverage``, else the default. A run that predates
+    both ran off at the default 10, so the child gets no liquidation keys and
+    keeps its stored parameters unchanged. Notes that cannot be parsed, or that
+    carry two disagreeing leverages, fail closed (409) instead of silently
+    reverting to the default.
 
     Returns:
-        The liquidation run parameters (``{}`` when the parent ran mode-off).
+        The liquidation run parameters (``{}`` when the parent ran off at 10).
     """
-    from vibe_quant.liquidation_settings import DEFAULT_LEVERAGE, LiquidationSettings
+    from vibe_quant.liquidation_settings import (
+        DEFAULT_LEVERAGE,
+        MISSING,
+        LiquidationSettings,
+        resolve_leverage,
+    )
 
-    raw = _load_discovery_payload(state, run_id).get("liquidation")
-    if raw is None:
+    payload = _load_discovery_payload(state, run_id)
+    raw = payload.get("liquidation")
+    # An explicit null is a value (rejected below), not an absent key.
+    raw_leverage = payload.get("leverage", MISSING)
+    if raw is None and raw_leverage is MISSING:
         return {}
     try:
-        if not isinstance(raw, dict):
-            raise ValueError(f"expected an object, got {raw!r}")
-        settings = LiquidationSettings.from_params(
-            {
+        if raw is None:
+            params: dict[str, object] = {"leverage": raw_leverage}
+        else:
+            if not isinstance(raw, dict):
+                raise ValueError(f"expected an object, got {raw!r}")
+            note_leverage = raw.get("leverage", MISSING)
+            if note_leverage is MISSING and raw_leverage is MISSING:
+                note_leverage = DEFAULT_LEVERAGE
+            params = {
                 "liquidation_mode": raw.get("mode"),
-                "leverage": raw.get("leverage", DEFAULT_LEVERAGE),
+                "leverage": resolve_leverage(note_leverage, raw_leverage),
             }
-        )
+        settings = LiquidationSettings.from_params(params)
     except (ValueError, TypeError) as exc:
         raise HTTPException(
             status_code=409,
@@ -278,7 +295,12 @@ def _sync_discovery_statuses(jobs: BacktestJobManager) -> list[JobInfo]:
 # --- Launch ---
 
 
-def _discovery_cli_args(body: DiscoveryLaunchRequest, start_date: str, end_date: str) -> list[str]:
+def _discovery_cli_args(
+    body: DiscoveryLaunchRequest,
+    start_date: str,
+    end_date: str,
+    settings: LiquidationSettings,
+) -> list[str]:
     """CLI argv (everything after ``-m vibe_quant discovery``, minus ``--run-id``).
 
     Single source for the real command AND the launch precheck, so the
@@ -349,11 +371,14 @@ def _discovery_cli_args(body: DiscoveryLaunchRequest, start_date: str, end_date:
         command.extend(["--bootstrap-min-sharpe", str(body.bootstrap_min_sharpe)])
     if body.bnb_discount:
         command.append("--bnb-discount")
-    # Run-level liquidation settings are forwarded only when on, so a mode-off
-    # launch keeps its argv identical to today (E6/E7).
-    if body.liquidation_mode != "off":
-        command.extend(["--liquidation-mode", body.liquidation_mode])
-        command.extend(["--liquidation-leverage", str(body.liquidation_leverage)])
+    # Run-level leverage settings are forwarded only as needed (vibe-quant-6wq6w):
+    # the mode when on, and --leverage only when it is not the default, so a
+    # default launch keeps its argv identical to today (C6). The deprecated
+    # --liquidation-leverage spelling is never sent by the API.
+    if settings.on:
+        command.extend(["--liquidation-mode", settings.mode])
+    if "leverage" in settings.to_params():
+        command.extend(["--leverage", str(settings.leverage)])
     return command
 
 
@@ -383,6 +408,8 @@ async def launch_discovery(
     if body.seed_run_id is not None:
         _validate_seed_run_compiler(state, body.seed_run_id)
 
+    # Built once: the stored params, the argv and the precheck all read these.
+    settings = body.liquidation_settings()
     params: dict[str, object] = {
         "population": body.population,
         "generations": body.generations,
@@ -424,12 +451,11 @@ async def launch_discovery(
         params["bootstrap_min_sharpe"] = body.bootstrap_min_sharpe
     if body.bnb_discount:
         params["bnb_discount"] = True
-    # Record the liquidation settings only when on, so default runs' stored
-    # parameters are unchanged (E6). The CLI reads its argv, but the run's
-    # parameters carry the settings for replay/promote inheritance (RP1).
-    if body.liquidation_mode != "off":
-        params["liquidation_mode"] = body.liquidation_mode
-        params["leverage"] = body.liquidation_leverage
+    # Record the leverage settings the CLI will actually run with
+    # (vibe-quant-6wq6w): nothing for a default launch, {"leverage": L} when off
+    # at a non-default L, {"liquidation_mode", "leverage"} when on (C6/C8/C9).
+    # The stored parameters carry the settings for promote/replay inheritance.
+    params.update(settings.to_params())
 
     timeframe = body.timeframes[0] if body.timeframes else "4h"
     today = datetime.now()
@@ -438,7 +464,7 @@ async def launch_discovery(
 
     # Precheck BEFORE any run row exists: parse the exact argv the subprocess
     # will get and derive its windows (same code path as the CLI).
-    cli_args = _discovery_cli_args(body, start_date, end_date)
+    cli_args = _discovery_cli_args(body, start_date, end_date, settings)
     _precheck_discovery_config(cli_args)
 
     # Use strategy_id=None for discovery (no pre-existing strategy)

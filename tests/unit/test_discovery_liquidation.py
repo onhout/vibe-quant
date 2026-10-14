@@ -2,7 +2,8 @@
 
 Covers the discovery side of the liquidation contract:
 
-- ``--liquidation-mode`` / ``--liquidation-leverage`` CLI flags (E9) and the
+- ``--liquidation-mode`` / ``--liquidation-leverage`` CLI flags (E9; the alias
+  is the deprecated spelling of ``--leverage``, vibe-quant-6wq6w) and the
   refresh of the run's :class:`LiquidationSettings` (a ``LiquidationConfigError``
   fails the run).
 - C0: ``_make_nt_backtest_fn(..., liquidation=)`` is a REQUIRED keyword, and an
@@ -174,12 +175,18 @@ def test_liquidation_flag_defaults() -> None:
 
     args = build_parser().parse_args(["--run-id", "1"])
     assert args.liquidation_mode == "off"
-    assert args.liquidation_leverage == 10.0
+    # Both spellings default to None (no value given), never to 10 (C6/R4).
+    assert args.leverage is None
+    assert args.liquidation_leverage is None
+    primary = build_parser().parse_args(["--run-id", "1", "--leverage", "3"])
+    assert primary.leverage == 3.0
+    assert primary.liquidation_leverage is None
     accepted = build_parser().parse_args(
         ["--run-id", "1", "--liquidation-mode", "cross", "--liquidation-leverage", "125"]
     )
     assert accepted.liquidation_mode == "cross"
     assert accepted.liquidation_leverage == 125.0
+    assert accepted.leverage is None
 
 
 def test_invalid_leverage_fails_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
-from vibe_quant.liquidation_settings import DEFAULT_LEVERAGE, MAX_LEVERAGE
+from vibe_quant.liquidation_settings import (
+    DEFAULT_LEVERAGE,
+    MISSING,
+    LiquidationSettings,
+    resolve_leverage,
+)
 
 
 class DiscoveryLaunchRequest(BaseModel):
@@ -57,11 +62,32 @@ class DiscoveryLaunchRequest(BaseModel):
     entry_order: str = "market"
     # Run-level liquidation mode for every screening backtest of this discovery
     # (vibe-quant-2gyk1.1.10). Forwarded to the CLI only when on; the default
-    # keeps the mode off and the stored params unchanged (E6).
+    # keeps the mode off and the stored params unchanged (C6).
     liquidation_mode: Literal["off", "isolated", "cross"] = "off"
-    # Venue/liquidation leverage for a mode-on run: bound-checked at the request
-    # (E8) but only recorded/forwarded when the mode is on (E6).
-    liquidation_leverage: float = Field(DEFAULT_LEVERAGE, gt=0, le=MAX_LEVERAGE)
+    # Run-level leverage for every screening backtest of this discovery, in
+    # EVERY mode: a whole number in [1, 125] (vibe-quant-6wq6w). Forwarded and
+    # stored only when the mode is on or the value is not the default, so a
+    # default launch keeps its stored params and argv unchanged (C6).
+    leverage: float | None = None
+    # Deprecated alias for ``leverage``; the two must agree (A2).
+    liquidation_leverage: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_null_leverage(cls, data: object) -> object:
+        """An explicitly sent ``null`` is a 422, never a silent default (R1)."""
+        if isinstance(data, dict):
+            for key in ("leverage", "liquidation_leverage"):
+                if key in data and data[key] is None:
+                    msg = f"{key} must be a whole number in [1, 125], got None"
+                    raise ValueError(msg)
+        return data
+
+    @field_validator("leverage", "liquidation_leverage", mode="before")
+    @classmethod
+    def _validate_leverage(cls, value: Any) -> float:
+        """One parse rule for the value: the shared ``LiquidationSettings`` check."""
+        return LiquidationSettings(mode="off", leverage=value).leverage
 
     @field_validator("entry_order")
     @classmethod
@@ -80,6 +106,26 @@ class DiscoveryLaunchRequest(BaseModel):
             msg = "elite_count must be < population"
             raise ValueError(msg)
         return self
+
+    @model_validator(mode="after")
+    def _resolve_leverage_alias(self) -> DiscoveryLaunchRequest:
+        """Collapse ``leverage`` / ``liquidation_leverage`` through the shared rule.
+
+        Both supplied and equal is fine; different values are a 422 naming both
+        (A2). The resolved value is kept on ``leverage`` for the launch router.
+        """
+        if self.leverage is not None or self.liquidation_leverage is not None:
+            resolved = resolve_leverage(
+                MISSING if self.leverage is None else self.leverage,
+                MISSING if self.liquidation_leverage is None else self.liquidation_leverage,
+            )
+            self.leverage = cast("float", resolved)
+        return self
+
+    def liquidation_settings(self) -> LiquidationSettings:
+        """The run's validated settings (the launch router's single source)."""
+        leverage = self.leverage if self.leverage is not None else DEFAULT_LEVERAGE
+        return LiquidationSettings(mode=self.liquidation_mode, leverage=leverage)
 
 
 class DiscoveryJobResponse(BaseModel):
