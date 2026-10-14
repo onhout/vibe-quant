@@ -24,10 +24,12 @@ import {
 } from "@/components/ui/select";
 import { useDatasetDateRange } from "@/hooks/useDatasetDateRange";
 import {
-  DEFAULT_LIQUIDATION_LEVERAGE,
+  DEFAULT_LEVERAGE,
+  leveragePayload,
   LIQUIDATION_MODE_OPTIONS,
   liquidationPayload,
-  MAX_LIQUIDATION_LEVERAGE,
+  MAX_LEVERAGE,
+  MIN_LEVERAGE,
   type LiquidationMode,
 } from "@/lib/liquidation";
 import { formatApiErrorDetail } from "./apiErrorDetail";
@@ -92,9 +94,11 @@ export function DiscoveryConfig({ onConvergenceChange }: DiscoveryConfigProps) {
   // Fee schedule (bd vibe-quant-2gyk1.4): charge the BNB-discounted rate.
   const [bnbDiscount, setBnbDiscount] = useState(false);
 
-  // Liquidation (vibe-quant-2gyk1.1.10, E1/E6): off sends neither field.
+  // Liquidation / leverage (vibe-quant-6wq6w): one leverage value (whole
+  // number 1-125, default 10) is honoured in every mode; a default run sends
+  // neither key.
   const [liquidationMode, setLiquidationMode] = useState<LiquidationMode>("off");
-  const [liquidationLeverage, setLiquidationLeverage] = useState(DEFAULT_LIQUIDATION_LEVERAGE);
+  const [leverage, setLeverage] = useState(DEFAULT_LEVERAGE);
 
   const parsedCrossWindowMonths = crossWindowMonths
     .split(",")
@@ -218,8 +222,11 @@ export function DiscoveryConfig({ onConvergenceChange }: DiscoveryConfigProps) {
               bootstrap_min_sharpe: Number(bootstrapMinSharpe),
             }),
           ...(bnbDiscount && { bnb_discount: true }),
-          // Off sends no liquidation keys (E6); on sends mode + leverage.
-          ...liquidationPayload(liquidationMode, liquidationLeverage),
+          // A default run sends no liquidation/leverage keys (C6): the mode is
+          // sent when on, leverage when the mode is on or the value is not the
+          // default (vibe-quant-6wq6w).
+          ...liquidationPayload(liquidationMode),
+          ...leveragePayload(liquidationMode, leverage),
         } as DiscoveryLaunchRequest,
       },
       {
@@ -485,7 +492,8 @@ export function DiscoveryConfig({ onConvergenceChange }: DiscoveryConfigProps) {
             Pay fees in BNB (−10%)
           </Label>
         </div>
-        {/* Liquidation (vibe-quant-2gyk1.1.10, E1) */}
+        {/* Liquidation + leverage (vibe-quant-6wq6w): the venue runs at the
+            value in every mode, so the input is always visible. */}
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <Label htmlFor="disc-liquidation-mode">Liquidation</Label>
@@ -505,20 +513,21 @@ export function DiscoveryConfig({ onConvergenceChange }: DiscoveryConfigProps) {
               </SelectContent>
             </Select>
           </div>
-          {liquidationMode !== "off" && (
-            <div className="space-y-2">
-              <Label htmlFor="disc-liquidation-leverage">Liquidation leverage</Label>
-              <Input
-                id="disc-liquidation-leverage"
-                type="number"
-                min={0.5}
-                max={MAX_LIQUIDATION_LEVERAGE}
-                step={0.5}
-                value={liquidationLeverage}
-                onChange={(e) => setLiquidationLeverage(Number(e.target.value))}
-              />
-            </div>
-          )}
+          <div className="space-y-2">
+            <Label htmlFor="disc-leverage">Leverage (1-125)</Label>
+            <Input
+              id="disc-leverage"
+              type="number"
+              min={MIN_LEVERAGE}
+              max={MAX_LEVERAGE}
+              step={1}
+              value={leverage}
+              onChange={(e) => setLeverage(Number(e.target.value))}
+            />
+            <p className="text-xs text-muted-foreground">
+              Venue leverage; changes results only with Liquidation on.
+            </p>
+          </div>
         </div>
       </div>
 

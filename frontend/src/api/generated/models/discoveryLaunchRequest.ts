@@ -68,9 +68,6 @@ export interface DiscoveryLaunchRequest {
   bnb_discount?: boolean;
   entry_order?: string;
   liquidation_mode?: DiscoveryLaunchRequestLiquidationMode;
-  /**
-   * @maximum 125
-   * @exclusiveMinimum 0
-   */
-  liquidation_leverage?: number;
+  leverage?: number | null;
+  liquidation_leverage?: number | null;
 }

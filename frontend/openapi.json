@@ -6023,12 +6023,27 @@
             "title": "Liquidation Mode",
             "default": "off"
           },
+          "leverage": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leverage"
+          },
           "liquidation_leverage": {
-            "type": "number",
-            "maximum": 125.0,
-            "exclusiveMinimum": 0.0,
-            "title": "Liquidation Leverage",
-            "default": 10.0
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Liquidation Leverage"
           }
         },
         "additionalProperties": false,

@@ -446,9 +446,13 @@ export function BacktestLaunchForm() {
                 type="number"
                 min={1}
                 max={125}
+                step={1}
                 value={leverage}
                 onChange={(e) => setLeverage(Number(e.target.value))}
               />
+              <p className="text-xs text-muted-foreground">
+                Venue leverage; changes results only with Liquidation on.
+              </p>
             </div>
           </div>
 
