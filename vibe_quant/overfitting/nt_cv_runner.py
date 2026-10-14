@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vibe_quant.fees import FeeSchedule
 from vibe_quant.liquidation_settings import LiquidationSettings
 
 if TYPE_CHECKING:
@@ -87,6 +88,9 @@ class NTPurgedKFoldRunner:
         # Strategy param overrides of the candidate being CV'd (see bind_params)
         self._params: dict[str, float | int] = {}
         self._liquidation: LiquidationSettings = LiquidationSettings()
+        # The parent screening run's own fee schedule (VIP tier + BNB discount);
+        # default VIP0/no-BNB keeps a params-less run byte-identical (E2).
+        self._fee_schedule: FeeSchedule = FeeSchedule()
         self._ticks: ParentFillTicks | None = None
         self._resolve()
         self._load_bar_timestamps()
@@ -132,6 +136,9 @@ class NTPurgedKFoldRunner:
                 msg = f"backtest_runs.id={self._run_id} not found"
                 raise ValueError(msg)
             self._liquidation = LiquidationSettings.from_params(_run_params(run["parameters"]))
+            # Same params row: fail closed on an unknown tier rather than
+            # silently cross-validating a discounted run at VIP0 (E2).
+            self._fee_schedule = FeeSchedule.from_params(_run_params(run["parameters"]))
             strat = conn.execute(
                 "SELECT dsl_config FROM strategies WHERE id=?",
                 (run["strategy_id"],),
@@ -234,6 +241,8 @@ class NTPurgedKFoldRunner:
             start_date=start_date,
             end_date=end_date,
             catalog_path=str(self._catalog_path) if self._catalog_path else None,
+            # the parent run's own fee schedule (E2); VIP0/no-BNB by default
+            fee_schedule=self._fee_schedule,
             fill_ticks=self._ticks.get(start_date, end_date),
             # the screening run's own liquidation settings (E14); off by default
             liquidation_mode=self._liquidation.mode,

@@ -18,6 +18,7 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vibe_quant.fees import FeeSchedule
 from vibe_quant.liquidation_settings import LiquidationSettings
 
 if TYPE_CHECKING:
@@ -59,6 +60,9 @@ class NTWFARunner:
         self._dsl_dict: dict[str, object] = {}
         self._symbols: list[str] = []
         self._liquidation: LiquidationSettings = LiquidationSettings()
+        # The parent screening run's own fee schedule (VIP tier + BNB discount);
+        # default VIP0/no-BNB keeps a params-less run byte-identical (E2).
+        self._fee_schedule: FeeSchedule = FeeSchedule()
         self._ticks: ParentFillTicks | None = None
         self._resolve()
 
@@ -75,6 +79,9 @@ class NTWFARunner:
                 msg = f"backtest_runs.id={self._run_id} not found"
                 raise ValueError(msg)
             self._liquidation = LiquidationSettings.from_params(_run_params(run["parameters"]))
+            # Same params row: fail closed on an unknown tier rather than
+            # silently backtesting a discounted run at VIP0 (E2).
+            self._fee_schedule = FeeSchedule.from_params(_run_params(run["parameters"]))
             strat = conn.execute(
                 "SELECT dsl_config FROM strategies WHERE id=?",
                 (run["strategy_id"],),
@@ -124,6 +131,8 @@ class NTWFARunner:
             symbols=self._symbols,
             start_date=start_date.isoformat(),
             end_date=end_date.isoformat(),
+            # the parent run's own fee schedule (E2); VIP0/no-BNB by default
+            fee_schedule=self._fee_schedule,
             # resolved by this (parent) process, once per covered span
             fill_ticks=self._ticks.get(start_date.isoformat(), end_date.isoformat()),
             # the screening run's own liquidation settings (E14); off by default

@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from vibe_quant.fees import FeeSchedule
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -197,3 +199,120 @@ def test_runs_through_purgedkfoldcv(
     assert len(result.fold_results) == 3
     assert result.mean_oos_sharpe == 1.5
     assert result.is_robust is True
+
+
+# ---------------------------------------------------------------------------
+# E2 (vibe-quant-ldbwy + vibe-quant-rawtz): the CV runner must backtest with
+# the PARENT run's own fee schedule, not a silent VIP0 default.
+# ---------------------------------------------------------------------------
+
+
+def _seed_fee_db(tmp_path: Path, *, parameters: dict[str, object]) -> Path:
+    """Minimal state DB whose run row carries ``parameters`` (E2 contract)."""
+    db = tmp_path / "state.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        """
+        CREATE TABLE strategies (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            dsl_config TEXT NOT NULL
+        );
+        CREATE TABLE backtest_runs (
+            id INTEGER PRIMARY KEY,
+            strategy_id INTEGER,
+            symbols TEXT NOT NULL,
+            timeframe TEXT,
+            parameters JSON NOT NULL
+        );
+        """
+    )
+    dsl = {"name": "stub", "timeframe": "4h", "indicators": {}}
+    conn.execute(
+        "INSERT INTO strategies (id, name, dsl_config) VALUES (?,?,?)",
+        (1, "stub", json.dumps(dsl)),
+    )
+    conn.execute(
+        "INSERT INTO backtest_runs (id, strategy_id, symbols, timeframe, parameters) "
+        "VALUES (?,?,?,?,?)",
+        (42, 1, json.dumps(["BTCUSDT"]), "4h", json.dumps(parameters)),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+@pytest.fixture
+def cv_fee_kwargs(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Capture the kwargs the CV runner builds each NTScreeningRunner with (E2)."""
+    import vibe_quant.screening.nt_runner as ntr
+    import vibe_quant.screening.pipeline as sp
+    from vibe_quant.overfitting import nt_cv_runner
+
+    captured: list[dict[str, object]] = []
+
+    class _NoTicks:
+        def get(self, _start: str, _end: str) -> None:
+            return None
+
+    def _build(**kwargs: object) -> object:
+        captured.append(kwargs)
+
+        def _run(_params: dict[str, object]) -> object:
+            return type("M", (), {"sharpe_ratio": 1.0, "total_return": 0.1})()
+
+        return _run
+
+    monkeypatch.setattr(ntr, "NTScreeningRunner", _build)
+    monkeypatch.setattr(sp, "ParentFillTicks", lambda *a, **k: _NoTicks())
+    monkeypatch.setattr(
+        nt_cv_runner.NTPurgedKFoldRunner, "_load_bar_timestamps", lambda _self: None
+    )
+    return captured
+
+
+def test_cv_runner_builds_default_fee_schedule(
+    tmp_path: Path, cv_fee_kwargs: list[dict[str, object]]
+) -> None:
+    """E2 row 1: no fee params -> VIP0/no-BNB, so numbers stay unchanged."""
+    from vibe_quant.overfitting import nt_cv_runner
+
+    runner = nt_cv_runner.NTPurgedKFoldRunner(
+        run_id=42, db_path=_seed_fee_db(tmp_path, parameters={}), catalog_path=tmp_path / "catalog"
+    )
+    runner._backtest("2024-02-01", "2024-03-01")  # noqa: SLF001
+
+    assert cv_fee_kwargs[0]["fee_schedule"] == FeeSchedule()
+    assert cv_fee_kwargs[0]["fee_schedule"].is_default is True  # type: ignore[union-attr]
+
+
+def test_cv_runner_reads_bnb_discount(
+    tmp_path: Path, cv_fee_kwargs: list[dict[str, object]]
+) -> None:
+    """E2 row 2: the parent run's BNB discount reaches the CV runner (rawtz).
+
+    VIP0 is the only tier that ships, so the reachable non-default schedule
+    is VIP0 + BNB; the runner must forward it, not the plain default.
+    """
+    from vibe_quant.overfitting import nt_cv_runner
+
+    runner = nt_cv_runner.NTPurgedKFoldRunner(
+        run_id=42,
+        db_path=_seed_fee_db(tmp_path, parameters={"bnb_discount": True}),
+        catalog_path=tmp_path / "catalog",
+    )
+    runner._backtest("2024-02-01", "2024-03-01")  # noqa: SLF001
+
+    assert cv_fee_kwargs[0]["fee_schedule"] == FeeSchedule(tier="VIP0", bnb_discount=True)
+
+
+def test_cv_runner_unknown_fee_tier_fails_closed(tmp_path: Path) -> None:
+    """E2 row 3: an unknown tier raises at construction, never a silent VIP0."""
+    from vibe_quant.overfitting import nt_cv_runner
+
+    with pytest.raises(ValueError, match="unknown fee tier"):
+        nt_cv_runner.NTPurgedKFoldRunner(
+            run_id=42,
+            db_path=_seed_fee_db(tmp_path, parameters={"fee_tier": "VIP1"}),
+            catalog_path=tmp_path / "catalog",
+        )
