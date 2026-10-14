@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from vibe_quant.db.state_manager import StateManager
-from vibe_quant.errors import LiquidationIntegrityError
+from vibe_quant.errors import DataUnavailableError, LiquidationIntegrityError
 from vibe_quant.overfitting.types import FilterConfig
 from vibe_quant.overfitting.wfa import WFAConfig
 
@@ -166,14 +166,16 @@ def test_cv_runner_mode_off_defaults(
 # ---------------------------------------------------------------------------
 
 
-def _seed_pipeline_run(tmp_path: Path) -> tuple[Path, int]:
+def _seed_pipeline_run(
+    tmp_path: Path, parameters: dict[str, object] | None = None
+) -> tuple[Path, int]:
     """State DB with one screening run and two sweep candidates for the pipeline."""
     db = tmp_path / "t.db"
     sm = StateManager(db)
     sid = sm.create_strategy("s", {"timeframe": "4h", "indicators": {}})
     rid = sm.create_backtest_run(
         sid, "screening", ["BTCUSDT"], "4h", "2022-01-01", "2024-12-31",
-        {"liquidation_mode": "isolated", "leverage": 20},
+        parameters or {"liquidation_mode": "isolated", "leverage": 20},
     )
     sm.save_sweep_results_batch(
         rid,
@@ -242,6 +244,90 @@ def test_wfa_value_error_still_marked_passed_wfa_false(tmp_path: Path) -> None:
     assert result.passed_wfa == 0
     assert result.candidates
     assert all(c.passed_wfa is False for c in result.candidates)
+
+
+def test_wfa_data_unavailable_error_propagates_mode_off(tmp_path: Path) -> None:
+    """A missing-data error fails the run loudly with no passed_wfa=False row."""
+    from vibe_quant.overfitting.pipeline import OverfittingPipeline
+
+    exc = DataUnavailableError("no 1m bars for BTCUSDT 2022-01-01..2022-06-01")
+    db, rid = _seed_pipeline_run(tmp_path, parameters={"liquidation_mode": "off"})
+    pipeline = OverfittingPipeline(db, wfa_runner=_RaisingRunner(exc))
+    try:
+        with pytest.raises(DataUnavailableError, match="no 1m bars") as caught:
+            pipeline.run(rid, config=_wfa_only_config())
+    finally:
+        pipeline.close()
+
+    # Identity, not just a message prefix: a re-wrap that truncates the
+    # BTCUSDT/window diagnostics must fail this test.
+    assert caught.value is exc
+
+    conn = sqlite3.connect(str(db))
+    rows = conn.execute("SELECT passed_walk_forward FROM sweep_results").fetchall()
+    conn.close()
+    assert rows
+    assert all(row[0] is None for row in rows)
+
+
+def test_wfa_aux_data_unavailable_error_propagates(tmp_path: Path) -> None:
+    """An AuxDataUnavailableError (a DataUnavailableError subclass) propagates."""
+    from vibe_quant.dsl.aux_data import AuxDataUnavailableError
+    from vibe_quant.overfitting.pipeline import OverfittingPipeline
+
+    exc = AuxDataUnavailableError("aux series missing for BTCUSDT")
+    db, rid = _seed_pipeline_run(tmp_path, parameters={"liquidation_mode": "off"})
+    pipeline = OverfittingPipeline(db, wfa_runner=_RaisingRunner(exc))
+    try:
+        with pytest.raises(AuxDataUnavailableError, match="aux series missing") as caught:
+            pipeline.run(rid, config=_wfa_only_config())
+    finally:
+        pipeline.close()
+
+    # Identity, not just a message prefix (the subclass must not be re-wrapped).
+    assert caught.value is exc
+
+
+@pytest.mark.parametrize(("is_robust", "expected"), [(True, 2), (False, 0)])
+def test_wfa_result_is_robust_maps_to_passed_wfa(
+    tmp_path: Path,
+    monkeypatch: _pytest.MonkeyPatch,
+    is_robust: bool,
+    expected: int,
+) -> None:
+    """Row 5: passed_wfa follows wfa_result.is_robust, unchanged."""
+    from vibe_quant.overfitting import wfa as wfa_mod
+    from vibe_quant.overfitting.pipeline import OverfittingPipeline
+
+    db, rid = _seed_pipeline_run(tmp_path, parameters={"liquidation_mode": "off"})
+
+    def _fake_run(
+        self: wfa_mod.WalkForwardAnalysis,
+        strategy_id: str,
+        data_start: date,
+        data_end: date,
+        param_grid: dict[str, object],
+    ) -> wfa_mod.WFAResult:
+        return wfa_mod.WFAResult(
+            windows=(),
+            aggregated_oos_sharpe=0.0,
+            aggregated_oos_return=0.0,
+            efficiency=0.0,
+            is_vs_oos_degradation=0.0,
+            consistency_ratio=0.0,
+            is_robust=is_robust,
+            config=self.config,
+        )
+
+    monkeypatch.setattr(wfa_mod.WalkForwardAnalysis, "run", _fake_run)
+    pipeline = OverfittingPipeline(db, wfa_runner=_RaisingRunner(ValueError("unused")))
+    try:
+        result = pipeline.run(rid, config=_wfa_only_config())
+    finally:
+        pipeline.close()
+
+    assert result.passed_wfa == expected
+    assert all(c.passed_wfa is is_robust for c in result.candidates)
 
 
 def test_cli_run_real_wfa_propagates_integrity_error(
