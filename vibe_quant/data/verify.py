@@ -26,6 +26,13 @@ class VerifyResult(TypedDict):
     kline_count: int
 
 
+class MissingDays(TypedDict):
+    """Interior UTC days with zero archived rows, per archive table."""
+
+    klines: list[str]
+    mark_klines: list[str]
+
+
 _MINUTE_MS = 60 * 1000
 
 
@@ -183,3 +190,36 @@ def verify_symbol(
             - kline_count: int
     """
     return scan_klines(archive.get_klines(symbol, interval), max_gap_minutes)
+
+
+def interior_missing_days(
+    archive: RawDataArchive,
+    symbol: str,
+    interval: str = "1m",
+) -> MissingDays:
+    """Interior UTC days with zero archived rows, for klines and mark klines.
+
+    Binance Vision monthly zips silently omit whole days (and the 0.9
+    ``has_month_coverage`` smart skip hides that), so a gap in day coverage is
+    invisible to :func:`verify_symbol`'s minute-step gap scan — a 3-day hole is
+    just one gap tuple. These are the same days the ingest daily-fill pass
+    requests, reported as ISO date strings.
+
+    Args:
+        archive: RawDataArchive instance.
+        symbol: Trading symbol (e.g., 'BTCUSDT').
+        interval: Candle interval (default '1m').
+
+    Returns:
+        Dict with ``klines`` / ``mark_klines``: missing UTC days, oldest first.
+    """
+    return {
+        "klines": [
+            day.isoformat()
+            for day in archive.missing_days(symbol, interval, table="raw_klines")
+        ],
+        "mark_klines": [
+            day.isoformat()
+            for day in archive.missing_days(symbol, interval, table="raw_mark_klines")
+        ],
+    }

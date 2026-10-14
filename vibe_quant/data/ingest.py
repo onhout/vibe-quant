@@ -6,7 +6,7 @@ import json
 import logging
 import shutil
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path  # noqa: TC003 (used at runtime in rebuild_from_archive)
 from typing import Any
 
@@ -24,8 +24,11 @@ from vibe_quant.data.catalog import (
 )
 from vibe_quant.data.downloader import (
     SUPPORTED_SYMBOLS,
+    DailyDownloadError,
     MonthlyDownloadError,
     RestDownloadError,
+    download_daily_klines,
+    download_daily_mark_klines,
     download_funding_rates,
     download_monthly_klines,
     download_monthly_mark_klines,
@@ -34,7 +37,7 @@ from vibe_quant.data.downloader import (
     get_years_months_to_download,
 )
 from vibe_quant.data.mark_bars import build_mark_bars
-from vibe_quant.data.verify import verify_symbol
+from vibe_quant.data.verify import interior_missing_days, verify_symbol
 from vibe_quant.utils import generate_month_range
 
 logger = logging.getLogger(__name__)
@@ -51,16 +54,23 @@ def _failed_downloads_summary(
 ) -> tuple[bool, str | None]:
     """Summarize per-symbol download holes for the session audit row.
 
-    ``failed_months`` (Binance Vision months that errored) and ``failed_ranges``
-    (REST ranges that errored) are the holes worth re-running. Returns
-    ``(has_failures, compact JSON)``; no holes gives ``(False, None)``.
+    ``failed_months`` (Binance Vision months that errored), ``failed_ranges``
+    (REST ranges that errored) and ``missing_days`` (interior days whose daily
+    Vision zip was 404/failed, so still a hole in the archive) are the holes
+    worth re-running. Returns ``(has_holes, compact JSON)``; no holes gives
+    ``(False, None)``.
     """
     failed: dict[str, dict[str, list[str]]] = {}
     for symbol, counts in results.items():
         months = list(counts.get("failed_months", []))
         ranges = list(counts.get("failed_ranges", []))
-        if months or ranges:
-            failed[symbol] = {"failed_months": months, "failed_ranges": ranges}
+        days = list(counts.get("missing_days", []))
+        if months or ranges or days:
+            failed[symbol] = {
+                "failed_months": months,
+                "failed_ranges": ranges,
+                "missing_days": days,
+            }
     if not failed:
         return False, None
     summary = json.dumps(failed, sort_keys=True, separators=(",", ":"))
@@ -430,6 +440,116 @@ def update_all(
     return results
 
 
+def _format_days(days: list[str], limit: int = 10) -> str:
+    """Join ISO dates for a report line, eliding the tail."""
+    if len(days) <= limit:
+        return ", ".join(days)
+    return f"{', '.join(days[:limit])} ... and {len(days) - limit} more"
+
+
+def _final_missing_days(
+    archive: RawDataArchive,
+    symbol: str,
+    interval: str,
+    day_range: tuple[date, date],
+    *,
+    mark: bool,
+) -> list[str]:
+    """Interior days still without rows in the archive, as ISO dates.
+
+    Read from the archive itself (not from what one fill pass reports) so the
+    count reflects every pass that ran: a day repaired by REST drops out, a hole
+    that REST exposed is added.
+    """
+    table = "raw_mark_klines" if mark else "raw_klines"
+    return [
+        day.isoformat()
+        for day in archive.missing_days(symbol, interval, day_range[0], day_range[1], table=table)
+    ]
+
+
+def _fill_interior_missing_days(
+    symbol: str,
+    interval: str,
+    day_range: tuple[date, date],
+    archive: RawDataArchive,
+    counts: dict[str, Any],
+    *,
+    mark: bool,
+    verbose: bool,
+) -> list[str]:
+    """Fetch a daily Vision zip for every interior day with no archived rows.
+
+    A Binance Vision monthly zip can silently omit whole UTC days while still
+    clearing the 0.9 ``has_month_coverage`` skip (SOLUSDT 1m 2022-02 ships
+    25/28 days), so a re-ingest that only re-downloads months never repairs the
+    hole. This pass runs after the monthly loop over the whole requested range
+    — skipped months included — and is what actually fills it.
+
+    A 404 (not published) or a download that failed after retries is *returned*,
+    never raised: it is a hole, not a crashed run. The caller sets
+    ``counts['missing_days']`` from the archive once every fill pass (this one
+    and, for klines, REST) has run, and a nonempty list makes the session
+    'partial'.
+
+    Args:
+        symbol: Trading symbol.
+        interval: Candle interval.
+        day_range: Requested (first_day, last_day); clamped to the symbol's own
+            archived span by :meth:`RawDataArchive.missing_days`.
+        archive: Raw data archive (inserts go to ``raw_klines`` or
+            ``raw_mark_klines``).
+        counts: Per-symbol counts dict, updated in place.
+        mark: Select the mark-price table/downloader/counters.
+        verbose: Print one line per filled/missing day.
+
+    Returns:
+        ISO dates that could not be filled, oldest first.
+    """
+    table = "raw_mark_klines" if mark else "raw_klines"
+    source = "binance_vision_daily"
+    fetched_key = "mark_klines_fetched" if mark else "klines_fetched"
+    inserted_key = "mark_klines_inserted" if mark else "klines_inserted"
+
+    missing = archive.missing_days(symbol, interval, day_range[0], day_range[1], table=table)
+    unresolved: list[str] = []
+    for day in missing:
+        iso = day.isoformat()
+        try:
+            rows = (
+                download_daily_mark_klines(symbol, interval, day)
+                if mark
+                else download_daily_klines(symbol, interval, day)
+            )
+        except DailyDownloadError as e:
+            unresolved.append(iso)
+            logger.error("%s %s daily %s: FAILED: %s", symbol, interval, iso, e)
+            if verbose:
+                print(f"    {iso}: daily zip FAILED ({e})")
+            continue
+        if not rows:
+            unresolved.append(iso)
+            if verbose:
+                print(f"    {iso}: daily zip unavailable (404)")
+            continue
+        inserted = (
+            archive.insert_mark_klines(symbol, interval, rows, source)
+            if mark
+            else archive.insert_klines(symbol, interval, rows, source)
+        )
+        counts[fetched_key] += len(rows)
+        counts[inserted_key] += inserted
+        if verbose:
+            print(f"    {iso}: {len(rows)} rows from daily zip ({inserted} new)")
+
+    if verbose and missing:
+        print(
+            f"  Interior missing days: {len(missing)} found, "
+            f"{len(missing) - len(unresolved)} filled, {len(unresolved)} unresolved"
+        )
+    return unresolved
+
+
 def ingest_symbol(
     symbol: str,
     years: int = 2,
@@ -475,9 +595,12 @@ def ingest_symbol(
     if start_date is not None:
         effective_end = end_date or datetime.now(UTC)
         months = get_months_in_range(start_date, effective_end)
+        range_start_day = start_date.date()
     else:
         months = get_years_months_to_download(years)
         effective_end = datetime.now(UTC)
+        range_start_day = (effective_end - timedelta(days=365 * years)).date()
+    day_range = (range_start_day, effective_end.date())
 
     # Smart skip: check which months already have sufficient coverage
     skipped: list[tuple[int, int]] = []
@@ -514,6 +637,13 @@ def ingest_symbol(
             unavailable_months.append(f"{year}-{month:02d}")
             if verbose:
                 print(f"  {year}-{month:02d}: unavailable (not published)")
+
+    # Repair interior days the monthly zips omitted (also covers skipped months).
+    # The final ``missing_days`` is set after the REST pass below: REST can both
+    # repair a day the daily zip lacked and expose a new interior hole.
+    _fill_interior_missing_days(
+        symbol, "1m", day_range, archive, counts, mark=False, verbose=verbose
+    )
 
     counts["months_skipped"] = len(skipped)
     counts["months_downloaded"] = len(to_download) - len(failed_months)
@@ -560,6 +690,11 @@ def ingest_symbol(
                 counts["klines_inserted"] += inserted
                 if verbose:
                     print(f"  REST API: {len(recent)} fetched ({inserted} new)")
+
+    # Final unresolved interior days, read from the archive after ALL fill passes.
+    counts["missing_days"] = _final_missing_days(
+        archive, symbol, "1m", day_range, mark=False
+    )
 
     # Create and write instrument
     instrument = create_instrument(symbol)
@@ -661,6 +796,7 @@ def ingest_mark_klines(
             utc_start.replace(day=1, hour=0, minute=0, second=0, microsecond=0), utc_end
         )
     )
+    day_range = (utc_start.date(), utc_end.date())
 
     # Smart skip: months already carrying most of their 1m mark price are done.
     skipped: list[tuple[int, int]] = []
@@ -705,6 +841,12 @@ def ingest_mark_klines(
                     f"  {year}-{month:02d}: unavailable (not yet published) - "
                     f"mark coverage ends {coverage_end}"
                 )
+
+    # Repair interior days the monthly mark zips omitted (skipped months included).
+    _fill_interior_missing_days(
+        symbol, "1m", day_range, archive, counts, mark=True, verbose=verbose
+    )
+    counts["missing_days"] = _final_missing_days(archive, symbol, "1m", day_range, mark=True)
 
     counts["months_skipped"] = len(skipped)
     counts["months_downloaded"] = len(to_download) - len(failed_months)
@@ -1005,6 +1147,11 @@ def _print_summary(
             print(f"    FAILED months (re-run ingest): {', '.join(cnts['failed_months'])}")
         if cnts.get("failed_ranges"):
             print(f"    FAILED REST ranges (re-run): {', '.join(cnts['failed_ranges'])}")
+        if cnts.get("missing_days"):
+            print(
+                "    UNFILLED interior days (re-run ingest): "
+                f"{_format_days(cnts['missing_days'])}"
+            )
         print(f"    Klines: {fetched:,} fetched, {inserted:,} new")
         print(f"    Archive total: {bars_1m:,} 1m bars")
 
@@ -1504,7 +1651,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "verify":
         archive = RawDataArchive()
         symbols = (
-            [s.strip() for s in args.symbols.split(",")] if args.symbols else archive.get_symbols()
+            [s.strip() for s in args.symbols.split(",")]
+            if args.symbols
+            else archive.get_symbols_with_mark()
         )
 
         if not symbols:
@@ -1523,6 +1672,24 @@ def main(argv: list[str] | None = None) -> int:
             kline_count = result["kline_count"]
 
             print(f"\n{symbol}: {kline_count} klines")
+
+            missing = interior_missing_days(archive, symbol)
+            missing_klines = missing["klines"]
+            missing_mark = missing["mark_klines"]
+            if missing_klines or missing_mark:
+                has_issues = True
+                if missing_klines:
+                    print(
+                        f"  MISSING 1m DAYS (klines): {len(missing_klines)} interior "
+                        f"missing day(s): {_format_days(missing_klines)}"
+                    )
+                if missing_mark:
+                    print(
+                        f"  MISSING 1m DAYS (mark klines): {len(missing_mark)} interior "
+                        f"missing day(s): {_format_days(missing_mark)}"
+                    )
+            else:
+                print("  Missing 1m days: None")
 
             if kline_count == 0:
                 has_issues = True

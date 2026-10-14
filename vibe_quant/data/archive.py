@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import calendar
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -87,6 +87,13 @@ CREATE TABLE IF NOT EXISTS download_sessions (
     error_message TEXT
 );
 """
+
+
+# Milliseconds per UTC day, the bucket width of ``missing_days``.
+_DAY_MS = 24 * 60 * 60 * 1000
+
+# Days since the Unix epoch of ``_DAY_MS`` buckets (open_time // _DAY_MS).
+_EPOCH_DATE = date(1970, 1, 1)
 
 
 def _month_bounds_ms(year: int, month: int) -> tuple[int, int]:
@@ -573,6 +580,73 @@ class RawDataArchive:
         actual = self._count_month_rows(table, symbol, interval, year, month)
         return actual >= expected * threshold
 
+    def missing_days(
+        self,
+        symbol: str,
+        interval: str,
+        start_day: date | None = None,
+        end_day: date | None = None,
+        table: str = "raw_klines",
+    ) -> list[date]:
+        """UTC days in [start_day, end_day] with ZERO rows in *table*.
+
+        Only *interior* days are reported: the window is clamped to the symbol's
+        own first and last archived day, so neither a not-yet-listed start nor a
+        not-yet-published tail (both legitimately empty) shows up. Binance
+        Vision monthly zips silently drop whole days while still clearing the
+        0.9 ``has_month_coverage`` bar (SOLUSDT 1m 2022-02 ships 25/28), so this
+        is the only way to see such a hole.
+
+        A short day (>0 rows, <1440) is real exchange maintenance and is *not*
+        reported: the test is "no row at all".
+
+        Args:
+            symbol: Trading symbol.
+            interval: Candle interval.
+            start_day: Lower bound (inclusive); None = the symbol's first day.
+            end_day: Upper bound (inclusive); None = the symbol's last day.
+            table: ``raw_klines`` or ``raw_mark_klines``. Always one of this
+                module's table constants, never user input, so interpolating it
+                is safe (values stay parameterized).
+
+        Returns:
+            Missing UTC days, oldest first.
+        """
+        row = self.conn.execute(
+            f"SELECT MIN(open_time), MAX(open_time) FROM {table} "
+            "WHERE symbol = ? AND interval = ?",
+            (symbol, interval),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return []
+
+        first_day = datetime.fromtimestamp(row[0] / 1000, tz=UTC).date()
+        last_day = datetime.fromtimestamp(row[1] / 1000, tz=UTC).date()
+        lo = max(start_day, first_day) if start_day else first_day
+        hi = min(end_day, last_day) if end_day else last_day
+        if lo > hi:
+            return []
+
+        lo_ms = int(datetime(lo.year, lo.month, lo.day, tzinfo=UTC).timestamp() * 1000)
+        hi_ms = int(datetime(hi.year, hi.month, hi.day, tzinfo=UTC).timestamp() * 1000) + _DAY_MS
+        present = {
+            bucket[0]
+            for bucket in self.conn.execute(
+                f"""SELECT DISTINCT open_time / {_DAY_MS} FROM {table}
+                    WHERE symbol = ? AND interval = ?
+                    AND open_time >= ? AND open_time < ?""",
+                (symbol, interval, lo_ms, hi_ms),
+            )
+        }
+
+        missing: list[date] = []
+        day = lo
+        while day <= hi:
+            if (day - _EPOCH_DATE).days not in present:
+                missing.append(day)
+            day += timedelta(days=1)
+        return missing
+
     def get_symbols(self) -> list[str]:
         """Get list of symbols in archive.
 
@@ -580,6 +654,21 @@ class RawDataArchive:
             List of unique symbols.
         """
         rows = self.conn.execute("SELECT DISTINCT symbol FROM raw_klines ORDER BY symbol")
+        return [r[0] for r in rows]
+
+    def get_symbols_with_mark(self) -> list[str]:
+        """Symbols present in ``raw_klines`` OR ``raw_mark_klines``.
+
+        ``get_symbols`` reads only ``raw_klines``, so a symbol archived solely
+        through ``download-mark`` is invisible to it.
+
+        Returns:
+            Sorted unique symbols from both tables.
+        """
+        rows = self.conn.execute(
+            "SELECT symbol FROM raw_klines UNION SELECT symbol FROM raw_mark_klines "
+            "ORDER BY symbol"
+        )
         return [r[0] for r in rows]
 
     def get_coverage_rows(
