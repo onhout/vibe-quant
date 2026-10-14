@@ -41,7 +41,7 @@ STEPS:
 
 DONE WHEN: <checkable criterion: command + expected output>.
 
-GIT: <either "Do not commit." or "Commit in the worktree with a verbose message in the format of docs/orchestration/prompts/commit-message.md (Why / What / How / Decisions / Verification): `git add <paths> && git commit -F <msgfile>`">. Never push, never touch main.
+GIT: <either "Do not commit." or "Commit WIP after each green step (`git commit -m 'wip(<slug>): <step>'`; the chief squashes at Land, and a quota kill then loses nothing), and finish by committing in the worktree with a verbose message in the format of docs/orchestration/prompts/commit-message.md (Why / What / How / Decisions / Verification): `git add <paths> && git commit -F <msgfile>`">. Never push, never touch main.
 
 <bus-protocol block from docs/orchestration/prompts/bus-protocol.md, placeholders filled: {AGENT}=<slug>, {BUS}=<abs job bus dir>, {SCOPE_PATHS}=<the task's SCOPE files/globs, space-separated, globs quoted>, {REPO}=/Users/verebelyin/projects/vibe-quant, {PEERS}=<parallel agents: id: scope; ...>>
 
