@@ -236,6 +236,11 @@ def test_record_writes_full_schema(_isolated_ledger: Path) -> None:
         "wall_s": 12.5,
         "bead": "vibe-quant-1",
         "note": "hello",
+        "source": None,
+        "comms_asked": None,
+        "comms_dms": None,
+        "comms_replies": None,
+        "board_relied": None,
     }
     assert list(rec) == [
         "ts",
@@ -252,6 +257,11 @@ def test_record_writes_full_schema(_isolated_ledger: Path) -> None:
         "wall_s",
         "bead",
         "note",
+        "source",
+        "comms_asked",
+        "comms_dms",
+        "comms_replies",
+        "board_relied",
     ]
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", rec["ts"])  # UTC ISO
 
@@ -296,7 +306,7 @@ def test_record_rejects_unknown_enums(_isolated_ledger: Path) -> None:
     tel.main(
         base
     )  # seed: the review subcommand must fail on the enum itself, not on "unknown task"
-    for extra in (["--runtime", "codex"], ["--outcome", "maybe"], ["--review", "MAYBE"]):
+    for extra in (["--runtime", "gemini"], ["--outcome", "maybe"], ["--review", "MAYBE"]):
         with pytest.raises(SystemExit):
             tel.main([*base, *extra])
     with pytest.raises(SystemExit):
@@ -340,6 +350,11 @@ def test_ingest_success_parses_result(_isolated_ledger: Path, tmp_path: Path) ->
         "wall_s": 315.493,
         "bead": None,
         "note": None,
+        "source": None,
+        "comms_asked": None,
+        "comms_dms": None,
+        "comms_replies": None,
+        "board_relied": None,
     }
 
 
@@ -914,3 +929,181 @@ def test_attempts_column_printed_for_every_group_by(
     assert lines[0].endswith("| attempts |")
     row = next(line for line in lines if line.startswith("| w1 "))
     assert row.endswith("| 2 |")
+
+
+# --- ingest-runs: T3 delegated tasks, Command Code sessions, Claude subagent transcripts -------
+
+JOB = "20261014-demo"
+HANDOFF_COMMS = (
+    "status: done\ncomms: asked=1 dms=2 replies=0; board posts relied on: "
+    "18de7ab5245b2778-1430, 18de7ad6d75e3ec0-0531 (fee gotcha)\nimprove: none"
+)
+
+
+def _t3_db(path: Path, rows: list[dict[str, Any]]) -> Path:
+    import sqlite3
+
+    con = sqlite3.connect(path)
+    con.execute(
+        "create table orchestration_v2_projection_subagents (subagent_id text primary key, "
+        "provider text, origin text, status text, started_at text, completed_at text, payload_json text)"
+    )
+    for i, r in enumerate(rows):
+        cid = r["cid"]
+        payload = {
+            "id": f"node:delegated-task:command%3Amcp%3Aabc%3Adelegate-task%3A{cid}",
+            "prompt": r["prompt"],
+            "model": r["model"],
+            "result": r.get("result"),
+            "usage": r.get("usage"),
+        }
+        con.execute(
+            "insert into orchestration_v2_projection_subagents values (?,?,?,?,?,?,?)",
+            (f"s{i}", r["provider"], "app_owned", r["status"], r["start"], r.get("end"), json.dumps(payload)),
+        )
+    con.commit()
+    con.close()
+    return path
+
+
+def _cmd_session(d: Path, start: str, prompt: str, usages: list[tuple[int, int]]) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    lines = [
+        {"type": "session", "id": "x", "timestamp": start, "cwd": "/repo"},
+        {"type": "message", "id": "u1", "timestamp": start,
+         "message": {"role": "user", "content": [{"type": "text", "text": f"<t3_code_instructions>mode</t3_code_instructions>\n{prompt}"}]}},
+    ]
+    for k, (i, o) in enumerate(usages):
+        lines.append({"type": "message", "id": f"a{k}", "timestamp": start,
+                      "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+                      "usage": {"inputTokens": i, "outputTokens": o, "cacheReadTokens": i - 10}})
+    (d / f"{start[-6:-1]}.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8")
+
+
+def _claude_subagent(d: Path, agent_id: str, name: str, prompt: str, final: str, error: str | None = None) -> None:
+    sub = d / "sess1" / "subagents"
+    sub.mkdir(parents=True, exist_ok=True)
+    (sub / f"agent-{agent_id}.meta.json").write_text(json.dumps({"agentType": "implementer", "name": name}), encoding="utf-8")
+    msgs: list[dict[str, Any]] = [
+        {"type": "user", "timestamp": "2026-10-14T10:00:00.000Z", "message": {"role": "user", "content": prompt}},
+        # the same API message is logged once per content block: usage must be counted once
+        {"type": "assistant", "timestamp": "2026-10-14T10:01:00.000Z", "message": {"id": "m1", "model": "claude-sonnet-5-5",
+         "content": [{"type": "thinking", "thinking": "x"}], "usage": {"input_tokens": 3, "cache_creation_input_tokens": 100,
+         "cache_read_input_tokens": 1000, "output_tokens": 50}}},
+        {"type": "assistant", "timestamp": "2026-10-14T10:01:00.000Z", "message": {"id": "m1", "model": "claude-sonnet-5-5",
+         "content": [{"type": "tool_use", "id": "t", "name": "Bash", "input": {}}], "usage": {"input_tokens": 3,
+         "cache_creation_input_tokens": 100, "cache_read_input_tokens": 1000, "output_tokens": 50}}},
+        {"type": "assistant", "timestamp": "2026-10-14T10:05:30.000Z", "message": {"id": "m2", "model": "claude-sonnet-5-5",
+         "content": [{"type": "text", "text": final}], "usage": {"input_tokens": 2, "cache_creation_input_tokens": 0,
+         "cache_read_input_tokens": 2000, "output_tokens": 70}}},
+    ]
+    if error:
+        msgs.append({"type": "assistant", "timestamp": "2026-10-14T10:06:00.000Z", "isApiErrorMessage": True,
+                     "message": {"id": "e", "model": "<synthetic>", "content": [{"type": "text", "text": error}]}})
+    (sub / f"agent-{agent_id}.jsonl").write_text("".join(json.dumps(m) + "\n" for m in msgs), encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(sub / f"agent-{agent_id}.jsonl", (old, old))
+
+
+def _sources(tmp_path: Path) -> dict[str, Path]:
+    db = _t3_db(tmp_path / "t3.sqlite", [
+        {"cid": "cc-liq-e3-2", "provider": "commandcode_command", "status": "completed",
+         "start": "2026-10-14T09:00:00.000Z", "end": "2026-10-14T09:07:30.000Z", "model": "deepseek/deepseek-v4.1-flash",
+         "prompt": f"ROLE: Command Code worker (agent id cc-liq-e3), job {JOB}. Fix the docs.", "result": HANDOFF_COMMS,
+         "usage": {"totalTokens": 73591, "approximate": True}},
+        {"cid": "rev-liq-e3-r1-20261014", "provider": "codex", "status": "failed",
+         "start": "2026-10-14T09:10:00.000Z", "end": "2026-10-14T09:10:04.000Z", "model": "gpt-6.1-sol",
+         "prompt": f"You are the reviewer (agent id rev-liq-e3-r1), job {JOB}.",
+         "result": "You've hit your usage limit. Try again at 1:07 AM.", "usage": {"inputTokens": 900, "outputTokens": 9}},
+        {"cid": "cc-other-1", "provider": "commandcode_command", "status": "completed",
+         "start": "2026-10-14T09:00:00.000Z", "end": "2026-10-14T09:01:00.000Z", "model": "deepseek/deepseek-v4.1-flash",
+         "prompt": "job 20261001-unrelated", "result": "done"},
+        {"cid": "cc-running-1", "provider": "commandcode_command", "status": "running",
+         "start": "2026-10-14T09:00:00.000Z", "model": "deepseek/deepseek-v4.1-flash", "prompt": f"job {JOB}"},
+    ])
+    cmd = tmp_path / "cmd"
+    _cmd_session(cmd / "proj", "2026-10-14T09:00:01.500Z",
+                 f"ROLE: Command Code worker (agent id cc-liq-e3), job {JOB}. Fix the docs.", [(1000, 20), (2000, 30)])
+    claude = tmp_path / "claude"
+    _claude_subagent(claude, "a1", "impl-liq-t2a-opus5",
+                     f"TELEMETRY: task=liq-t2a round=5\nROLE: implementer, job {JOB}", HANDOFF_COMMS)
+    _claude_subagent(claude, "a2", "rev-liq-t3-r2", f"ROLE: reviewer, job {JOB}", "verdict BLOCK\ncomms: asked=0 dms=1 replies=0; board posts relied on: none",
+                     error="API Error: You've hit your session limit")
+    return {"t3_db": db, "cmd_dir": cmd, "claude_dir": claude}
+
+
+def test_parse_comms_line() -> None:
+    assert tel.parse_comms(HANDOFF_COMMS) == {"comms_asked": 1, "comms_dms": 2, "comms_replies": 0, "board_relied": 2}
+    assert tel.parse_comms("comms: asked=0 dms=0 replies=0; board posts relied on: none")["board_relied"] == 0
+    assert tel.parse_comms("comms: asked=3 dms=0 replies=1; board posts relied on: `18dd86415580cc90-8734` (x)")["board_relied"] == 1
+    assert tel.parse_comms("no comms line here") is None
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("cc-liq-e3-2", ("cc-liq-e3", "liq-e3", 2)),  # T3 clientRequestId cc-<slug>-<round>
+        ("cc-liq-e3-1", ("cc-liq-e3", "liq-e3", 1)),
+        ("cc-liq-t1-r4-1", ("cc-liq-t1-r4", "liq-t1", 4)),  # round in the slug wins over the retry digit
+        ("rev-liq-e3-r1-20261014", ("rev-liq-e3-r1", "review:liq-e3", 1)),  # dated Codex id
+        ("rev-liq-t3-r2", ("rev-liq-t3-r2", "review:liq-t3", 2)),
+        ("revlite-liq-e3", ("revlite-liq-e3", "review:liq-e3", 1)),
+        ("impl-liq-t2a-opus5", ("impl-liq-t2a-opus5", "liq-t2a", 5)),
+        ("impl-sqlite", ("impl-sqlite", "sqlite", 1)),
+        ("verifier-p1d", ("verifier-p1d", "verify:p1d", 1)),
+        ("architect-liq", ("architect-liq", "design:liq", 1)),
+        ("impl-d4-fix2", ("impl-d4-fix2", "d4", 3)),
+    ],
+)
+def test_identity_from_name(name: str, expected: tuple[str, str, int]) -> None:
+    assert tel.identity_from_name(name) == expected
+
+
+def test_ingest_runs_reads_t3_command_code_and_claude(_isolated_ledger: Path, tmp_path: Path) -> None:
+    src = _sources(tmp_path)
+    added = tel.ingest_runs(JOB, **src)
+    rows = {r["source"]: r for r in _ledger_rows(_isolated_ledger)}
+    assert len(added) == 4 and set(rows) == {"t3:cc-liq-e3-2", "t3:rev-liq-e3-r1-20261014", "claude:a1", "claude:a2"}
+    cc = rows["t3:cc-liq-e3-2"]
+    assert (cc["job"], cc["task"], cc["agent"], cc["round"], cc["runtime"]) == (JOB, "liq-e3", "cc-liq-e3", 2, "cmd")
+    # T3's Command Code usage is a last-context approximation: tokens come from the session file
+    assert (cc["tokens_in"], cc["tokens_out"], cc["wall_s"], cc["outcome"]) == (3000, 50, 450.0, "done")
+    assert (cc["comms_asked"], cc["comms_dms"], cc["comms_replies"], cc["board_relied"]) == (1, 2, 0, 2)
+    cdx = rows["t3:rev-liq-e3-r1-20261014"]
+    assert (cdx["runtime"], cdx["task"], cdx["outcome"], cdx["tokens_in"], cdx["tokens_out"]) == ("codex", "review:liq-e3", "error", 900, 9)
+    assert "usage limit" in cdx["note"]
+    a1 = rows["claude:a1"]  # TELEMETRY line beats the name heuristic
+    assert (a1["task"], a1["round"], a1["agent"], a1["model"]) == ("liq-t2a", 5, "impl-liq-t2a-opus5", "claude-sonnet-5-5")
+    assert (a1["tokens_in"], a1["tokens_out"], a1["wall_s"]) == (1103 + 2002, 120, 330.0)  # m1 counted once
+    assert a1["board_relied"] == 2
+    a2 = rows["claude:a2"]
+    assert (a2["outcome"], a2["task"], a2["round"], a2["board_relied"]) == ("error", "review:liq-t3", 2, 0)
+    assert "session limit" in a2["note"]
+
+
+def test_ingest_runs_is_idempotent_and_skips_manual_records(_isolated_ledger: Path, tmp_path: Path) -> None:
+    src = _sources(tmp_path)
+    tel.main(["record", "--job", JOB, "--task", "liq-e3", "--agent", "cc-liq-e3", "--runtime", "cmd", "--round", "2"])
+    first = tel.ingest_runs(JOB, **src)
+    assert {r["source"] for r in first} == {"t3:rev-liq-e3-r1-20261014", "claude:a1", "claude:a2"}
+    assert tel.ingest_runs(JOB, **src) == []  # nothing new on a re-run
+    assert len(_ledger_rows(_isolated_ledger)) == 4
+
+
+def test_ingest_runs_dry_run_writes_nothing(_isolated_ledger: Path, tmp_path: Path) -> None:
+    src = _sources(tmp_path)
+    assert len(tel.ingest_runs(JOB, dry_run=True, **src)) == 4
+    assert not _isolated_ledger.exists()
+
+
+def test_report_by_board_and_asked(_isolated_ledger: Path) -> None:
+    recs = [
+        _rec(task="a", round=1, review="PASS", board_relied=2, comms_asked=0),
+        _rec(task="b", round=1, review="BLOCK", board_relied=0, comms_asked=1),
+        _rec(task="c", round=1, review="PASS", board_relied=0, comms_asked=0),
+        _rec(task="d", round=1, review="PASS"),
+    ]
+    by_board = {r["group"]: (r["pass1_passes"], r["pass1_attempts"]) for r in tel.report_rows(recs, by="board")}
+    assert by_board == {"relied>0": (1, 1), "relied=0": (1, 2), "unknown": (1, 1)}
+    by_asked = {r["group"]: (r["pass1_passes"], r["pass1_attempts"]) for r in tel.report_rows(recs, by="asked")}
+    assert by_asked == {"asked>0": (0, 1), "asked=0": (2, 2), "unknown": (1, 1)}

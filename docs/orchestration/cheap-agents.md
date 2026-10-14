@@ -35,7 +35,7 @@
 
 - **Bus:** paste the block from [`prompts/bus-protocol.md`](prompts/bus-protocol.md) (placeholders filled, agent id = the `clientRequestId` slug) into the brief, same as for Claude subagents.
 - **Stalls:** `scripts/agents/stall_watch.py` only tracks `cmd-task.sh` processes, so it doesn't see T3 children. Supervise through `task_status` (`workState`) when a child's notification is overdue (> ~45 min for a code-tier task) and through `git -C <worktree> status` (edits appearing?). A child with no edits after ~15–20 min is the read-loop stall: ask the user before cancelling (rule 3), then re-delegate the round to a Claude `implementer`.
-- **Telemetry:** record each finished round yourself: `scripts/agents/telemetry.py record --job <job> --task <slug> --agent <slug> --runtime cmd --model <slug> --round N --outcome done|failed|stalled|error [--review PASS|SHOULD-FIX|BLOCK] [--wall-s S] [--bead <id>]`.
+- **Telemetry:** don't hand-record rounds. `scripts/agents/telemetry.py ingest-runs --job <job>` reads every finished T3 child (Command Code tokens come from its session file, Codex from T3 usage) and every Claude subagent transcript of the job: tokens, wall time, outcome, and the handoff `comms:` line. It is idempotent, so run it before each review verdict and at Land, then `telemetry.py review --job <job> --task <task> --round N --review PASS|SHOULD-FIX|BLOCK`. Put `TELEMETRY: task=<task> round=<n>` in every brief so the run maps to the right task and round. Without it the name heuristic (`cc-<slug>-<n>`, `-rN`, `-fixN`, `-opusN`) applies.
 
 ### Legacy: `scripts/agents/cmd-task.sh`
 

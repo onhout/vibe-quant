@@ -3,7 +3,8 @@ Brief template for a Command Code T3 subagent (delegate_task `task` field; see d
 Save the filled brief to data/swarm/<job>/prompts/<slug>.md for the ledger, then pass its full text as `task`.
 Fill every <...>, delete these comments. Keep it self-contained: the child sees ONLY this text — none of the chief's conversation.
 -->
-ROLE: Command Code worker (agent id "<slug>", bead <bead-id>)
+ROLE: Command Code worker (agent id "<slug>", bead <bead-id>), job <job id>
+TELEMETRY: task=<task> round=<n>
 
 WORKSPACE (mandatory): work only inside the git worktree `<absolute worktree path>` (branch `<branch>`).
 Your session starts in a different directory (the main checkout) — do not edit anything there.

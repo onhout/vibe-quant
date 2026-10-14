@@ -9,7 +9,10 @@ ISO with a trailing "Z". Models are normalised to lowercase once, in make_record
 Record schema (all keys present, null when unknown):
     ts, job, task, agent, runtime ("cmd"|"claude"), model, round (int, 1 = first attempt),
     outcome ("done"|"failed"|"stalled"|"error"), review ("PASS"|"SHOULD-FIX"|"BLOCK"|null),
-    tokens_in, tokens_out, wall_s, bead, note
+    tokens_in, tokens_out, wall_s, bead, note,
+    source ("t3:<clientRequestId>" | "claude:<agentId>" | null for manual/legacy records),
+    comms_asked, comms_dms, comms_replies, board_relied (from the handoff line
+    `comms: asked=N dms=N replies=N; board posts relied on: <ids|none>`; board_relied = ids named)
 
     telemetry.py record --job J --task T --agent A --runtime cmd|claude --model M
                         [--round N] [--outcome X] [--review R] [--tokens-in N] [--tokens-out N]
@@ -17,7 +20,20 @@ Record schema (all keys present, null when unknown):
     telemetry.py ingest-cmd-log <log.ndjson> --job J --task T --agent A [--round N | --auto-round]
                         [--model M] [--force]
     telemetry.py review --job J --task T --review PASS|SHOULD-FIX|BLOCK [--round N]
-    telemetry.py report [--by model|runtime|agent] [--since YYYY-MM-DD] [--markdown]
+    telemetry.py ingest-runs --job J [--t3-db P] [--cmd-dir P] [--claude-dir P] [--dry-run] [--force]
+    telemetry.py report [--by model|runtime|agent|board|asked] [--since YYYY-MM-DD] [--markdown]
+
+`ingest-runs` appends one record per FINISHED run of job J (the job id appears in its brief):
+T3 delegated tasks from ~/.t3/userdata/statev2.sqlite (runtime "cmd" for Command Code, "codex"
+for Codex; Command Code tokens are summed from the matching ~/.commandcode session file, because
+T3's own number is a last-context approximation; Codex tokens come from T3 usage) and Claude
+subagent transcripts under ~/.claude/projects/<main checkout>/*/subagents (tokens_in = input +
+cache creation + cache read, once per API message; transcripts modified < 120 s ago are skipped
+unless --force). Identity: a `TELEMETRY: task=<t> round=<n> [agent=<a>]` line in the brief wins;
+otherwise identity_from_name (cc-<slug>-<n>, -rN, -fixN, -opusN; reviewer/verifier/architect
+runs get task "review:<t>"/"verify:<t>"/"design:<t>"). Idempotent: a known source is skipped, and
+so is a run the chief already recorded by hand (same job, agent, round, no source).
+`--by board` / `--by asked` group by the round's comms fields: relied>0 | relied=0 | unknown.
 
 The ledger is append-only: `review` appends a copy of the record for (job, task, round) (default:
 the latest round) with the review set and a FRESH ts; the pass-1 rate and rounds-to-done read
@@ -82,6 +98,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from typing import Any
 
 SCHEMA = (
@@ -99,11 +116,16 @@ SCHEMA = (
     "wall_s",
     "bead",
     "note",
+    "source",
+    "comms_asked",
+    "comms_dms",
+    "comms_replies",
+    "board_relied",
 )
 OUTCOMES = ("done", "failed", "stalled", "error")
 REVIEWS = ("PASS", "SHOULD-FIX", "BLOCK")
-RUNTIMES = ("cmd", "claude")
-GROUPS = ("model", "runtime", "agent")
+RUNTIMES = ("cmd", "claude", "codex")
+GROUPS = ("model", "runtime", "agent", "board", "asked")
 KNOWN_VENDORS = (
     "xiaomi",
     "deepseek",
@@ -116,24 +138,27 @@ KNOWN_VENDORS = (
 )
 
 
+def _main_checkout() -> Path:
+    """The main checkout (not a worktree), via git's common dir."""
+    here = Path(__file__).resolve().parent
+    try:
+        common = subprocess.run(
+            ["git", "-C", str(here), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, OSError):
+        sys.exit("telemetry: not inside a git repo; set SWARM_TELEMETRY to a ledger path")
+    return Path(common).parent
+
+
 def ledger_path() -> Path:
     """$SWARM_TELEMETRY, else <main checkout>/docs/orchestration/telemetry/tasks.jsonl."""
     raw = os.environ.get("SWARM_TELEMETRY")
     if raw:
-        p = Path(raw)
-    else:
-        here = Path(__file__).resolve().parent
-        try:
-            common = subprocess.run(
-                ["git", "-C", str(here), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
-        except (subprocess.CalledProcessError, OSError):
-            sys.exit("telemetry: not inside a git repo; set SWARM_TELEMETRY to a ledger path")
-        p = Path(common).parent / "docs" / "orchestration" / "telemetry" / "tasks.jsonl"
-    return p
+        return Path(raw)
+    return _main_checkout() / "docs" / "orchestration" / "telemetry" / "tasks.jsonl"
 
 
 def _now_ts() -> str:
@@ -176,7 +201,10 @@ def make_record(
     wall_s: float | None = None,
     bead: str | None = None,
     note: str | None = None,
+    source: str | None = None,
+    comms: dict[str, int] | None = None,
 ) -> dict[str, Any]:
+    comms = comms or {}
     return {
         "ts": _now_ts(),
         "job": job,
@@ -192,6 +220,11 @@ def make_record(
         "wall_s": wall_s,
         "bead": bead,
         "note": note,
+        "source": source,
+        "comms_asked": comms.get("comms_asked"),
+        "comms_dms": comms.get("comms_dms"),
+        "comms_replies": comms.get("comms_replies"),
+        "board_relied": comms.get("board_relied"),
     }
 
 
@@ -411,6 +444,12 @@ def _windowed(records: list[dict[str, Any]], since: str | None) -> list[dict[str
 
 
 def _group_key(rec: dict[str, Any], by: str) -> str:
+    if by in ("board", "asked"):  # derived from the handoff comms line
+        field, label = ("board_relied", "relied") if by == "board" else ("comms_asked", "asked")
+        n = rec.get(field)
+        if not isinstance(n, int) or isinstance(n, bool):
+            return "unknown"
+        return f"{label}>0" if n > 0 else f"{label}=0"
     key = rec.get(by)
     text = key if isinstance(key, str) else str(key)
     return text.lower() if by == "model" else text
@@ -553,6 +592,272 @@ def format_table(
     return "\n".join(lines)
 
 
+_COMMS_RE = re.compile(
+    r"comms:\s*asked=(\d+)\s*dms=(\d+)\s*replies=(\d+)\s*;?\s*board posts relied on:\s*([^\n]*)",
+    re.IGNORECASE,
+)
+_POST_ID_RE = re.compile(r"\b[0-9a-f]{12,16}-\d{3,4}\b")
+_TELEMETRY_LINE_RE = re.compile(r"^TELEMETRY:\s*(.+)$", re.MULTILINE)
+_ROLE_TASK_PREFIX = (  # longest first: "revlite-" before "rev-"
+    ("architect-", "design:"), ("arch-", "design:"),
+    ("reviewer-", "review:"), ("revlite-", "review:"), ("rev-", "review:"),
+    ("verifier-", "verify:"), ("ver-", "verify:"),
+    ("impl-", ""), ("cmd-", ""), ("cc-", ""),
+)
+_MODEL_SUFFIX_RE = re.compile(r"^(?P<base>.+?)-(?:opus|sonnet|haiku)(?P<n>\d*)$")
+_T3_ROUND_RE = re.compile(r"^(?P<base>cc-.+)-(?P<n>\d+)$")
+STATUS_OUTCOME = {"completed": "done", "failed": "error", "interrupted": "stalled", "cancelled": "stalled"}
+
+
+def parse_comms(text: str | None) -> dict[str, int] | None:
+    """The handoff line `comms: asked=N dms=N replies=N; board posts relied on: <ids|none>`.
+
+    board_relied = number of board post ids named (0 for "none"); None when the line is absent.
+    """
+    m = _COMMS_RE.search(text or "")
+    if m is None:
+        return None
+    return {
+        "comms_asked": int(m.group(1)),
+        "comms_dms": int(m.group(2)),
+        "comms_replies": int(m.group(3)),
+        "board_relied": len(set(_POST_ID_RE.findall(m.group(4)))),
+    }
+
+
+def identity_from_name(name: str) -> tuple[str, str, int]:
+    """(agent, task, round) from a swarm agent name or T3 clientRequestId.
+
+    "cc-<slug>-<n>" (T3 id) -> agent cc-<slug>, round n; "-rN"/"-fixN" -> round as derive_round;
+    "-opusN"/"-sonnet" model suffixes -> round N (default 1); a dated Codex id loses its
+    "-YYYYMMDD". The task drops the maker prefix (cc-/impl-/cmd-) and maps checker roles to
+    "review:", "verify:" or "design:" so they never mix with maker tasks. Briefs can override
+    all of this with a `TELEMETRY: task=<t> round=<n>` line (see identity_from_prompt).
+    """
+    name = re.sub(r"-20\d{6}$", "", name.strip())
+    agent, base, rnd = name, name, 1
+    t3 = _T3_ROUND_RE.match(name)
+    if t3 is not None:
+        agent = base = t3.group("base")
+        rnd = int(t3.group("n"))
+        if (inner := derive_round(base)) is not None:  # cc-x-r4-1: the -r4 is the round
+            base, rnd = inner
+    elif (derived := derive_round(name)) is not None:
+        base, rnd = derived
+    elif (ms := _MODEL_SUFFIX_RE.match(name)) is not None:
+        base, rnd = ms.group("base"), int(ms.group("n") or 1)
+    task = base
+    for prefix, label in _ROLE_TASK_PREFIX:
+        if base.startswith(prefix):
+            task = label + base[len(prefix) :]
+            break
+    return agent, task, rnd
+
+
+def identity_from_prompt(prompt: str, name: str) -> tuple[str, str, int]:
+    """identity_from_name, overridden by `TELEMETRY: task=<t> round=<n> [agent=<a>]` in the brief."""
+    agent, task, rnd = identity_from_name(name)
+    m = _TELEMETRY_LINE_RE.search(prompt or "")
+    if m is not None:
+        kv = dict(re.findall(r"(\w+)=(\S+)", m.group(1)))
+        task = kv.get("task", task)
+        agent = kv.get("agent", agent)
+        if kv.get("round", "").isdigit():
+            rnd = int(kv["round"])
+    return agent, task, rnd
+
+
+def _iso_s(raw: object) -> float | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _jsonl(path: Path) -> Iterator[dict[str, Any]]:
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict):
+            yield rec
+
+
+def _cmd_session_usage(cmd_dir: Path, start: float, prompt: str) -> tuple[int, int] | None:
+    """(input, output) tokens summed over the Command Code session that ran this T3 task.
+
+    T3's own usage for Command Code is absent or a last-context approximation, so the session
+    file is the truth. Match: session starts within [-5 s, +120 s] of the T3 start and its first
+    user message contains the start of the brief.
+    """
+    needle = prompt.strip()[:80]
+    for path in sorted(cmd_dir.glob("*/*.jsonl")):
+        if path.name.endswith(".checkpoints.jsonl"):
+            continue
+        recs = list(_jsonl(path))
+        t0 = _iso_s(recs[0].get("timestamp")) if recs else None
+        if t0 is None or not -5 <= t0 - start <= 120:
+            continue
+        first_user = next((r for r in recs if (r.get("message") or {}).get("role") == "user"), None)
+        content = ((first_user or {}).get("message") or {}).get("content")
+        text = " ".join(b.get("text", "") for b in content if isinstance(b, dict)) if isinstance(content, list) else str(content or "")
+        if needle not in text:
+            continue
+        seen: set[object] = set()
+        tin = tout = 0
+        for r in recs:
+            usage = r.get("usage")
+            if (r.get("message") or {}).get("role") == "assistant" and isinstance(usage, dict) and r.get("id") not in seen:
+                seen.add(r.get("id"))
+                tin += int(usage.get("inputTokens") or 0)
+                tout += int(usage.get("outputTokens") or 0)
+        return tin, tout
+    return None
+
+
+def _t3_runs(job: str, db: Path, cmd_dir: Path) -> list[dict[str, Any]]:
+    """Finished T3 delegated tasks (Command Code + Codex) whose brief names the job."""
+    import sqlite3
+    from urllib.parse import unquote
+
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        rows = con.execute(
+            "select provider, status, started_at, completed_at, payload_json "
+            "from orchestration_v2_projection_subagents where origin = 'app_owned'"
+        ).fetchall()
+    finally:
+        con.close()
+    out = []
+    for provider, status, started, completed, payload_json in rows:
+        if status not in STATUS_OUTCOME:
+            continue  # still running
+        payload = json.loads(payload_json)
+        prompt = str(payload.get("prompt") or "")
+        if job not in prompt:
+            continue
+        cid = unquote(str(payload.get("id") or "")).rsplit("delegate-task:", 1)[-1]
+        agent, task, rnd = identity_from_prompt(prompt, cid)
+        start, end = _iso_s(started), _iso_s(completed)
+        result = payload.get("result") if isinstance(payload.get("result"), str) else ""
+        outcome = STATUS_OUTCOME[status]
+        notes = [] if outcome == "done" else [str(result)[:160]]
+        tokens: tuple[int, int] | None = None
+        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        runtime = "codex" if "codex" in str(provider) else "cmd"
+        if runtime == "codex":
+            if usage.get("inputTokens") is not None:
+                tokens = (int(usage["inputTokens"]), int(usage.get("outputTokens") or 0))
+        elif start is not None:
+            tokens = _cmd_session_usage(cmd_dir, start, prompt)
+        if tokens is None:
+            notes.append("tokens unknown")
+        out.append(make_record(
+            job=job, task=task, agent=agent, runtime=runtime, model=payload.get("model"), round=rnd,
+            outcome=outcome, tokens_in=tokens[0] if tokens else None, tokens_out=tokens[1] if tokens else None,
+            wall_s=(end - start) if start is not None and end is not None else None,
+            note="; ".join(notes) or None, source=f"t3:{cid}", comms=parse_comms(result),
+        ))
+    return out
+
+
+def _claude_runs(job: str, claude_dir: Path, force: bool) -> list[dict[str, Any]]:
+    """Finished Claude subagents (Agent tool) whose first prompt names the job."""
+    out = []
+    for path in sorted(claude_dir.glob("*/subagents/agent-*.jsonl")):
+        if not force and time.time() - path.stat().st_mtime < STALE_LOG_S:
+            continue  # probably still running
+        recs = list(_jsonl(path))
+        first = next((r for r in recs if r.get("type") == "user"), None)
+        content = ((first or {}).get("message") or {}).get("content")
+        prompt = content if isinstance(content, str) else " ".join(
+            b.get("text", "") for b in content or [] if isinstance(b, dict)
+        )
+        if job not in prompt:
+            continue
+        agent_id = path.stem.removeprefix("agent-")
+        meta_path = path.with_name(f"agent-{agent_id}.meta.json")
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        usage_by_id: dict[object, tuple[str, dict[str, Any]]] = {}
+        stamps: list[float] = []
+        final, error = "", ""
+        for r in recs:
+            t = _iso_s(r.get("timestamp"))
+            if t is not None:
+                stamps.append(t)
+            msg = r.get("message") or {}
+            if r.get("type") != "assistant":
+                continue
+            text = " ".join(b.get("text", "") for b in msg.get("content") or [] if isinstance(b, dict) and b.get("type") == "text")
+            if r.get("isApiErrorMessage") or msg.get("model") == "<synthetic>":
+                error = text
+                continue
+            if isinstance(msg.get("usage"), dict):
+                usage_by_id[msg.get("id")] = (str(msg.get("model")), msg["usage"])
+            if text:
+                final = text
+        models: dict[str, int] = {}
+        tin = tout = 0
+        for model, u in usage_by_id.values():  # one entry per API message (logged once per block)
+            models[model] = models.get(model, 0) + 1
+            tin += sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+            tout += int(u.get("output_tokens") or 0)
+        agent, task, rnd = identity_from_prompt(prompt, str(meta.get("name") or agent_id))
+        out.append(make_record(
+            job=job, task=task, agent=agent, runtime="claude",
+            model=max(models, key=lambda k: models[k]) if models else None, round=rnd,
+            outcome="error" if error else "done", tokens_in=tin if usage_by_id else None,
+            tokens_out=tout if usage_by_id else None,
+            wall_s=(max(stamps) - min(stamps)) if stamps else None,
+            note=error[:160] or None, source=f"claude:{agent_id}", comms=parse_comms(final),
+        ))
+    return out
+
+
+def _default_claude_dir() -> Path:
+    """~/.claude/projects/<main checkout path with / -> ->, where subagent transcripts live."""
+    return Path.home() / ".claude" / "projects" / str(_main_checkout()).replace("/", "-")
+
+
+def ingest_runs(
+    job: str,
+    t3_db: Path | None = None,
+    cmd_dir: Path | None = None,
+    claude_dir: Path | None = None,
+    dry_run: bool = False,
+    force: bool = False,
+) -> list[dict[str, Any]]:
+    """Append one record per finished run of ``job`` found in T3, Command Code and Claude logs.
+
+    Idempotent: a run whose ``source`` is already in the ledger is skipped, and so is a run that
+    the chief already recorded by hand (same job, agent and round, no source). Returns the new
+    records (with dry_run, the ones it would append).
+    """
+    t3_db = t3_db or Path.home() / ".t3" / "userdata" / "statev2.sqlite"
+    cmd_dir = cmd_dir or Path.home() / ".commandcode" / "projects"
+    claude_dir = claude_dir or _default_claude_dir()
+    found: list[dict[str, Any]] = []
+    if t3_db.exists():
+        found += _t3_runs(job, t3_db, cmd_dir)
+    else:
+        print(f"telemetry: no T3 database at {t3_db}; skipping T3 runs", file=sys.stderr)
+    if claude_dir.exists():
+        found += _claude_runs(job, claude_dir, force)
+    existing = read_records()
+    sources = {r.get("source") for r in existing if r.get("source")}
+    manual = {(r.get("job"), r.get("agent"), r.get("round")) for r in existing if not r.get("source")}
+    added = []
+    for rec in sorted(found, key=lambda r: str(r["source"])):
+        if rec["source"] in sources or (rec["job"], rec["agent"], rec["round"]) in manual:
+            continue
+        sources.add(rec["source"])
+        added.append(rec if dry_run else append_record(rec))
+    return added
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="telemetry.py",
@@ -585,6 +890,13 @@ def main(argv: list[str] | None = None) -> int:
         "--force", action="store_true", help="ingest even a log modified < 120 s ago"
     )
     ing_p.add_argument("--model")
+    run_p = sub.add_parser("ingest-runs", help="records for every finished run of a job (T3 + Claude)")
+    run_p.add_argument("--job", required=True)
+    run_p.add_argument("--t3-db", dest="t3_db", type=Path)
+    run_p.add_argument("--cmd-dir", dest="cmd_dir", type=Path)
+    run_p.add_argument("--claude-dir", dest="claude_dir", type=Path)
+    run_p.add_argument("--dry-run", dest="dry_run", action="store_true")
+    run_p.add_argument("--force", action="store_true", help="include transcripts modified < 120 s ago")
     rev_p = sub.add_parser("review", help="append a review update for the latest record")
     rev_p.add_argument("--job", required=True)
     rev_p.add_argument("--task", required=True)
@@ -625,6 +937,12 @@ def main(argv: list[str] | None = None) -> int:
             force=args.force,
             auto_round=args.auto_round and args.round is None,
         )
+    elif args.cmd == "ingest-runs":
+        added = ingest_runs(args.job, args.t3_db, args.cmd_dir, args.claude_dir, args.dry_run, args.force)
+        for new in added:
+            print(json.dumps(new, ensure_ascii=False))
+        print(f"telemetry: {len(added)} run(s) {'found' if args.dry_run else 'recorded'} for {args.job}", file=sys.stderr)
+        return 0
     elif args.cmd == "review":
         rec = apply_review(args.job, args.task, args.review, args.round)
     else:
