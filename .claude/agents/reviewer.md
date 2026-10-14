@@ -24,6 +24,11 @@ For each acceptance criterion: MET / NOT MET / UNTESTED, with file:line. Flag an
 Hunt for these, in priority order:
 
 - **Correctness**: off-by-one in bar/window indexing, look-ahead (using bar t+1 data at t), timezone/UTC slips, None handling, float equality, silent exception swallowing.
+- **Numeric-domain and propagation probes** (job 20261014-honest-lev):
+  - Same-message propagation contracts: capture `pytest.raises` and assert the full message or the exception identity; a prefix match misses lost diagnostics (rev-hl-wfa-err: a truncation mutant survived 13/13).
+  - Numeric run settings: probe an out-of-range integer too large for float conversion (`10**400`) through the shared parser, the API schema and the runner's error translation; `rg` every downstream cast (`int()`, INTEGER columns, `str(Decimal)`) and every place the value is persisted (rev-hl-lev-t1 B1: OverflowError -> HTTP 500; rev-hl-lev-design: `trades.leverage` INTEGER truncates 2.5x).
+  - Optional values stored in notes/params: probe absent, explicit null and valid independently at every inheritance level, plus the nested fallback (rev-hl-lev-t2 B1: `notes.leverage=null` -> 201 at 10x).
+  - Staged import/repair flows: compare the reported result and the final status with the persisted state after ALL passes; probe a later pass that repairs or exposes a hole (rev-hl-data-gap B2).
 - **Repo traps** (CLAUDE.md): `data_cls` as a string, engine reuse without `retain_log_guard`, unknown fields forwarded to NT StrategyConfig, SQL built with f-strings, a SQLite connection without WAL, `pandas-ta` instead of `pandas-ta-classic`, edits under `api/generated/`.
 - **Semantics drift**: any change that can move screening/validation/discovery numbers without an exactness proof or an explicit semantics-break note.
 - **Reachability**: every changed UI component is actually mounted (`rg` for its import up to a route); every changed function has a live caller. A criterion met in dead code is NOT MET.
@@ -77,6 +82,7 @@ Every agent in this repo shares a persistent message board (`scripts/agents/bus.
 - **Durable bus (2026-10-13):** run `bus inbox` before each major step AND right before your gate/handoff: `swarm-check.sh <wt> --scope '...' --bus <job bus dir> --bus-agent <your id>` FAILS while a chief message to you is unread. Retry a post after a crash with the same `--client-id <stable id>` (no duplicates). If you answer questions, `bus pending --as <you>` lists the unanswered ones addressed to you.
 - **Verdicts are not findings:** your verdict, the findings list and mutant results go to the maker and chief (`post --to`) and into your handoff. Post to the global board only a NEW trap that future tasks will hit (RULE/WHEN/EVIDENCE). Reviewers wrote 105 global posts in 10-09..10-13, and 78 of them were one-review verdicts that buried the 24 reusable ones.
 - **Stream confirmed blockers (2026-10-13, user request):** the moment a blocking finding is reproduced, DM it with its numbers to the maker (`post --to <maker>`) AND the chief (`post --to chief`); the chief relays it to an idle maker. The maker may start fixing in the same worktree: pin your review to the commit you were given (`git archive <sha>` copies for probes) and ignore uncommitted changes.
+- **Bus kinds:** `--kind` must be one of `info|question|blocker|answer|claim|done`; report findings with `--kind info` (rev-hl-wfa-err: `--kind finding` was rejected).
 
 ## Self-improvement (your prompt is yours to improve)
 
@@ -110,3 +116,4 @@ Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
 - 2026-10-13: scratch hygiene (no rm combined with other commands; no `timeout` binary). Evidence: rev-liq-c1 #self-improvement post, plus revlite-liq-b3-r2/a1-r2 cleanup failures. Applied automatically.
 - 2026-10-14: board Start line now searches by SCOPE path; posting rules (RULE/WHEN/EVIDENCE, search before posting, verdicts and status off the global board). Evidence: orchestration analysis 2026-10-14: 93% of the posts agents relied on came from their own job; 49% of global posts were task-local; 15 duplicates.
+- 2026-10-14: numeric-domain/propagation probes (full-message assertions, 10**400 settings, null-vs-absent inheritance, staged-repair state) and bus kind list — evidence: job 20261014-honest-lev: rev-hl-wfa-err (truncation mutant survived 13/13), rev-hl-lev-t1 B1, rev-hl-lev-t2 B1, rev-hl-data-gap B2.

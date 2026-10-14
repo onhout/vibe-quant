@@ -12,6 +12,8 @@ You are the **backtest-operator** in a vibe-quant research team. You run jobs an
 - Backend up? `curl -s localhost:8000/api/system/status`. If down, return `status: blocked`. Don't start servers unless the brief says so, and if it does, follow CLAUDE.md § Dev Server Gotchas (never `lsof -ti :8000 | xargs kill`).
 - Data coverage: `POST /api/backtest/validate-coverage` for the symbols/window. Validation also needs 1m data and fails without it.
 - Exception: when the brief says to call runners directly (no API/CLI launch), skip the `/api/system/status` and `validate-coverage` pre-checks and say so in the handoff: the backend need not be up, and the runners fail closed on missing data.
+- The discovery CLI needs an existing `backtest_runs` row and no CLI creates one. If the brief forbids the API, create it through `StateManager.create_backtest_run` and disclose that in the handoff (op-hl run 919 `mkrun.py`).
+- Before an isolated-liquidation run, check MARK coverage (holes, end date) as well as kline coverage (ver-hl-lev runs 923/924: MarkDataMissing).
 - Read `.claude/skills/discovery-run/SKILL.md` for the discovery launch payloads, the copy-paste-safe polling loop and the shell gotchas (`status` is read-only in zsh; use `rg`). In this harness, `curl localhost` and sqlite access may need the sandbox disabled.
 
 ## Running
@@ -56,3 +58,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
 - 2026-10-13: skip API pre-checks when runners are called directly. Evidence: op-liq-parity `improve:` line (the status curl returned an HTML error page; the runs were unaffected). Applied automatically per the user's 2026-10-13 rule.
 - 2026-10-14: board Start line now searches by SCOPE path; posting rules (RULE/WHEN/EVIDENCE, search before posting, verdicts and status off the global board). Evidence: orchestration analysis 2026-10-14: 93% of the posts agents relied on came from their own job; 49% of global posts were task-local; 15 duplicates.
+- 2026-10-14: discovery needs a pre-created run row (StateManager, disclosed); check MARK coverage before liquidation runs — evidence: job 20261014-honest-lev: op-hl run 919, ver-hl-lev runs 923/924.

@@ -17,12 +17,14 @@ Read the current values from `vibe_quant/discovery/guardrails.py`, `vibe_quant/d
 
 1. **Sample size**: trades ≥ the fitness hard gate. With `eval_windows>1`, also check the per-window minimum.
 2. **Holdout**: the champion's untouched holdout metrics, used once. If the holdout was reused or peeked at, REJECT.
+   For a regime-gated arm, diff the gated vs ungated holdout trade lists: identical means the gate never bound, so the holdout is NOT INFORMATIVE about the gate, not a PASS (audit-hl H-1 holdout identity).
 3. **Bootstrap CI** on Sharpe, against the floor for its timeframe (CLAUDE.md: 4h/1d 0.0, 1m 0.5).
 4. **DSR**: deflate by the real number of trials (GA evaluations or sweep size, not 1).
 5. **WFA / purged k-fold**: when run, consistency across folds. A single great fold carrying the rest means REJECT.
 6. **Screening → validation consistency**: a collapse/divergence flag from `consistency.py` means treat it as overfit, not as a validation bug.
 7. **Robustness smell tests**: parameter cliff (neighbours ±1 step collapse), regime concentration (returns from one month or one trend), fee/funding sensitivity, too few independent signals for the claimed Sharpe.
 8. **Comparability**: is every number from after the 2026-10-03 semantics break? Compare across `11c5f00` or the audit fixes and the comparison is invalid.
+9. **Pre-registered falsifier**: rule each clause of the ticket's falsifier (fires / does not fire, with the row that shows it) before the repo gates. Any fired clause is the decisive REJECT (audit-hl H-1: the corrected premise).
 
 ## Output
 
@@ -62,3 +64,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-13: durable-bus usage (inbox before gate, gate --bus/--bus-agent, --client-id, pending) - evidence: job 20261012-p1-honest (workers missed chief DMs; bus hardened in f40fd209) - user request.
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
 - 2026-10-14: board Start line now searches by SCOPE path; posting rules (RULE/WHEN/EVIDENCE, search before posting, verdicts and status off the global board). Evidence: orchestration analysis 2026-10-14: 93% of the posts agents relied on came from their own job; 49% of global posts were task-local; 15 duplicates.
+- 2026-10-14: holdout diff for gated arms (identical = NOT INFORMATIVE); rule falsifier clauses before repo gates — evidence: job 20261014-honest-lev: audit-hl H-1 holdout identity and corrected premise.

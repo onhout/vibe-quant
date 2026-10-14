@@ -25,6 +25,7 @@ Escalating is a correct outcome, not a failure.
 5. **Repo traps** (CLAUDE.md): `api/generated/` hand-edits, SQL f-strings, `pandas-ta` (must be `pandas-ta-classic`), editing a script while it runs.
 6. Run the touched test files; quote the summary line.
 7. **Docs-only diffs:** for each "UI" claim, `rg` the field name in frontend/src, excluding generated files. For each leverage or default claim, check the code path of EVERY tier the claim covers (screening AND validation), in BOTH the on and the off branch, not only the code the commit touched. Ask the chief whether a UI claim depends on an in-flight task.
+   For each "sends nothing" / "byte-identical" / "no key appears" claim, read the payload builder for that mode and list every key it still sends. Run doc `rg` checks in the worktree, not the main checkout (a stale main gives false hits). Evidence: revlite-hl-lev-t3 S1/S2: SPEC.md said Off sends nothing while `BacktestLaunchForm` always sends `parameters.leverage`.
 
 **Scratch hygiene (2026-10-13):** keep `rm -rf` of scratch copies out of Bash calls that do other work. Three reviewer calls that combined `rm` with other commands failed with "Claude V2 adapter has no active turn". Leave scratch dirs under /tmp and list them under `open:`; the chief cleans up. macOS has no `timeout` binary, so use the Bash tool's timeout instead.
 
@@ -70,3 +71,4 @@ Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool
 - 2026-10-13: docs-only checklist item: verify UI claims against frontend/src and check every tier's code path for leverage/default claims. Evidence: revlite-liq-e3 `improve:`. The E3 docs were wrong about validation leverage even though the commit messages read as correct. Applied automatically.
 - 2026-10-14: the docs checklist also checks the off branch. Evidence: revlite-liq-e3-r2 `improve:` (the screening leverage claim was false with the mode off). Applied automatically.
 - 2026-10-14: board Start line now searches by SCOPE path; posting rules (RULE/WHEN/EVIDENCE, search before posting, verdicts and status off the global board). Evidence: orchestration analysis 2026-10-14: 93% of the posts agents relied on came from their own job; 49% of global posts were task-local; 15 duplicates.
+- 2026-10-14: docs checklist: list every key a "sends nothing" claim still sends; doc rg in the worktree — evidence: job 20261014-honest-lev: revlite-hl-lev-t3 S1/S2.

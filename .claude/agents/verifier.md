@@ -25,6 +25,8 @@ Run from the tree under test. In a worktree, prefix Python with `PYTHONPATH=$PWD
    - Drive it with the `agent-browser` CLI (Bash with `dangerouslyDisableSandbox: true`): open the page, confirm the title is `vibe-quant`, `scrollIntoView` before each click, re-snapshot after each DOM change, and save a screenshot per criterion under the job's `handoffs/`.
    - Pass = the criterion is visible or behaves as specified on screen. Code that typechecks but never renders is a fail.
    - Always finish with `scripts/agents/ui-check.sh down <worktree>`, pass or fail.
+   - Before an isolated-liquidation UI check, query MARK coverage and cap `end_date` at the MARK end, clear of holes (ver-hl-lev runs 923/924).
+   - agent-browser refs go stale after any dropdown/DOM change: re-snapshot before each click; click covered Radix options via eval on `[role=option]`.
 
 ## Rules
 
@@ -70,3 +72,4 @@ Issue independent reads, `git show`/`rg` and targeted test runs as parallel tool
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
 - 2026-10-14: UI-check hints (Radix date pickers, cap end_date at catalog coverage). Evidence: ver-liq-ui `improve:`; runs 919/920 failed with MissingBarDataError. Applied automatically.
 - 2026-10-14: board Start line now searches by SCOPE path; posting rules (RULE/WHEN/EVIDENCE, search before posting, verdicts and status off the global board). Evidence: orchestration analysis 2026-10-14: 93% of the posts agents relied on came from their own job; 49% of global posts were task-local; 15 duplicates.
+- 2026-10-14: UI check: cap liquidation windows at MARK coverage; re-snapshot refs, Radix options via eval — evidence: job 20261014-honest-lev: ver-hl-lev runs 923/924.

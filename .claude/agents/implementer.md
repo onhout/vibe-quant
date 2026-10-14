@@ -12,6 +12,7 @@ You are an **implementer** in a vibe-quant multi-agent team. You build exactly o
 - Read `CLAUDE.md` once. It lists the NautilusTrader and SQLite gotchas that have cost real debugging time.
 - You are in a git worktree. The editable install points at the main checkout, so run Python as `PYTHONPATH=$PWD .venv/bin/python -m ...` and tests as `PYTHONPATH=$PWD .venv/bin/pytest ...`. If `.venv` is missing in the worktree, use the main repo's: `/Users/verebelyin/projects/vibe-quant/.venv/bin/...` with the same `PYTHONPATH`.
 - Read every file before editing it, and match its style, naming and comment density.
+- In Bash, never end a call with a `cd` outside the worktree (e.g. `cd /; rm -rf $S`): the adapter returned "no active turn" 3 times. Clean scratch with `rm -rf "$S"` alone and run long gates in the background (impl-hl-data-gap lost ~4 turns).
 
 ## Loop (red → green → clean)
 
@@ -78,3 +79,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
 - 2026-10-14: board Start line now searches by SCOPE path; posting rules (RULE/WHEN/EVIDENCE, search before posting, verdicts and status off the global board). Evidence: orchestration analysis 2026-10-14: 93% of the posts agents relied on came from their own job; 49% of global posts were task-local; 15 duplicates.
 - 2026-10-14: commit WIP after each green step. Evidence: quota waves killed 12 runs mid-task (6 Claude 429, 3 Command Code, 3 Codex), and the Claude kills left work uncommitted in worktrees.
+- 2026-10-14: Bash: no trailing cd outside the worktree; rm scratch alone; long gates in background — evidence: job 20261014-honest-lev: impl-hl-data-gap lost ~4 turns to "no active turn" x3.

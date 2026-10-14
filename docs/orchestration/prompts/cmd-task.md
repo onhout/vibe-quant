@@ -25,6 +25,8 @@ SPEED RULES (measured: one model turn costs 4–10 s; the full test suite costs 
 - E2E: iterate with `playwright test <spec> -g "<scenario>"`; run the full spec once at the end.
 - Tests of anything launched asynchronously (API returns 201/running, work happens in a subprocess) must poll the run's FINAL status and fail on `failed` — a 201 proves nothing.
 - Mutation self-check: at most 3 mutants, only on the lines you changed, each run against the targeted test file only.
+- New test files must satisfy ruff flake8-type-checking (TCH001/2/3): type-only imports get `# noqa: TCH00x`, as `tests/unit/api/test_liquidation_launch.py` does (cc-hl-lev-t2: 3 TC errors).
+- Frontend edits: the gate fails only on NEW lint diagnostics (worktree errors > main errors; main baseline 77 errors on 2026-10-14, bead vibe-quant-mi71m). Target no new diagnostics (cc-hl-lev-t3).
 
 FACTS YOU NEED (exact code excerpts / line ranges, so you don't have to search):
 - <pasted schema / signature / convention>
