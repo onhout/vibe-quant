@@ -199,6 +199,47 @@ def test_future_job_sees_previous_jobs_knowledge(tmp_path: Path, monkeypatch: py
     assert "## #findings" in bus.render(gdir)
 
 
+def _seed_search_board(b: Path) -> None:
+    bus.post(b, "cc-a", "board", "info", "nt_runner.py:1337 swallows DataUnavailableError; preflight first", topic="gotchas")
+    bus.post(b, "rev-b", "board", "info", "vibe_quant/liquidation/scan.py: funding cut at end_ns-1ms", topic="findings")
+    bus.post(b, "impl-c", "board", "claim", "editing vibe_quant/liquidation/tiers.py", topic="design")
+    bus.post(b, "chief", "board", "info", "Ruling: clearance fee counts as a cost", topic="decisions")
+    bus.post(b, "cc-d", "chief", "done", "liquidation scan.py done")  # a DM, never a search hit
+
+
+def test_board_search_by_path_topic_and_grep_without_moving_cursor(tmp_path: Path) -> None:
+    _seed_search_board(tmp_path)
+    by_file = bus.board_search(tmp_path, paths=["vibe_quant/screening/nt_runner.py"])  # basename match
+    assert [m["from"] for m in by_file] == ["cc-a"]
+    by_dir = bus.board_search(tmp_path, paths=["vibe_quant/liquidation/**"])  # glob = directory prefix
+    assert [m["from"] for m in by_dir] == ["rev-b", "impl-c"]
+    # several --topic are OR, several --grep are AND (case-insensitive), filters combine with AND
+    assert [m["from"] for m in bus.board_search(tmp_path, topics=["#Findings", "decisions"])] == ["rev-b", "chief"]
+    assert [m["from"] for m in bus.board_search(tmp_path, terms=["CLEARANCE", "cost"])] == ["chief"]
+    assert bus.board_search(tmp_path, terms=["clearance", "funding"]) == []
+    assert [m["from"] for m in bus.board_search(tmp_path, paths=["vibe_quant/liquidation"], topics=["design"])] == ["impl-c"]
+    assert [m["from"] for m in bus.board_search(tmp_path, topics=["findings", "gotchas", "decisions"], limit=2)] == ["rev-b", "chief"]
+    # searching never advances a read cursor: a later plain read still sees every post
+    assert len(bus.board_read(tmp_path, "cc-a")) == 4
+
+
+def test_board_search_cli_requires_a_filter_and_prints_hits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gdir = tmp_path / "global"
+    monkeypatch.setenv("SWARM_BOARD", str(gdir))
+    _seed_search_board(gdir)
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exc:
+        bus.main(["--as", "x", "board", "search", "--global"])
+    assert exc.value.code == 2
+    assert bus.main(["--as", "x", "board", "search", "--global", "--path", "tiers.py", "nt_runner.py"]) == 0
+    out = capsys.readouterr().out
+    assert "#gotchas cc-a" in out and "#design impl-c" in out and "rev-b" not in out
+    assert bus.main(["--as", "x", "board", "search", "--global", "--grep", "nothing-matches-this"]) == 0
+    assert "(no matching board posts)" in capsys.readouterr().out
+
+
 def test_cli_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     gdir = tmp_path / "global"
     monkeypatch.setenv("SWARM_BOARD", str(gdir))
@@ -249,7 +290,7 @@ def test_brief_lists_usage_and_latest_posts(tmp_path: Path, monkeypatch: pytest.
     for k in range(5):
         bus.post(gdir, "w", "board", "info", f"gotcha {k}", topic="gotchas")
     text = bus.brief(per_topic=2)
-    assert "board read --global" in text and "#gotchas w: gotcha 4" in text and "gotcha 2" not in text
+    assert "board search --global --path" in text and "#gotchas w: gotcha 4" in text and "gotcha 2" not in text
 
 
 # --- needs-user decision queue ------------------------------------------------

@@ -185,7 +185,7 @@ Large jobs use the `orchestrate` skill + [`docs/orchestration/`](docs/orchestrat
 
 **Self-improvement is top priority (user 2026-10-13):** every agent handoff ends with `improve: <change + evidence> | none`. At every Land step, and whenever a task reaches its 3rd review round, the chief sweeps every `.claude/agents/*.md`, the orchestrate skill and `docs/orchestration/prompts/`. It applies evidence-backed improvements without asking, commits them separately (`self-improve: ...`), and reports them. Gates, verification rules and hard rules still need the user to weaken them.
 
-**Swarm board** — shared memory and chat for every agent (`scripts/agents/bus.py`; human view `docs/orchestration/board/BOARD.md`): catch up with `python3 scripts/agents/bus.py --as <you> board read --global --recent 30`; record with `board post --topic findings|gotchas|decisions|model-notes|thoughts --body "..."`; ask the chief with `ask --to chief`, message peers with `post --to <agent>`, answer with `reply --ref <id>`.
+**Swarm board** — shared memory and chat for every agent (`scripts/agents/bus.py`; human view `docs/orchestration/board/BOARD.md`): catch up with `python3 scripts/agents/bus.py --as <you> board search --global --path <files you will touch> --topic gotchas findings decisions` (plus `board read --global --topic gotchas --recent 15`); record with `board post --topic findings|gotchas|decisions|model-notes|thoughts --body "..."`; ask the chief with `ask --to chief`, message peers with `post --to <agent>`, answer with `reply --ref <id>`.
 
 ## Historical documentation
 

@@ -20,6 +20,9 @@ Any agent with a shell can use it (Claude subagents, `cmd` workers). One bus per
     bus.py board post   --topic design --body TEXT [--kind info|question|claim|...] [--client-id TEXT]
     bus.py board read   [--topic design] [--all]   # unread posts (per-agent, per-topic cursor); --all = full history
     bus.py board topics                            # topics with post counts + latest post
+    bus.py board search [--topic T ...] [--path P ...] [--grep W ...] [--limit N]   # no cursor change;
+                                     # topics OR, greps AND (case-insensitive); a file matches by path or
+                                     # basename, a dir/glob by '<dir>/'; add --global for the persistent board
     bus.py reply  --ref MSG_ID --body TEXT          # threads under a board post, or answers a DM
     bus.py thread MSG_ID                            # a post and all replies, indented
     bus.py board render [--out board.md]            # Markdown view of the whole board (for humans)
@@ -361,6 +364,52 @@ def board_read(
     return out[-recent:] if recent else out
 
 
+def _path_needles(paths: list[str]) -> set[str]:
+    """Strings whose presence in a post body means it talks about one of ``paths``.
+
+    A file matches by its full path or its basename (posts cite ``nt_runner.py:1337``); a
+    directory or glob (``vibe_quant/liquidation/**``) by its path or ``<last dir>/``.
+    """
+    out: set[str] = set()
+    for raw in paths:
+        p = raw.strip()
+        while p.endswith(("*", "/")):
+            p = p.rstrip("*").rstrip("/")
+        if not p:
+            continue
+        base = p.rsplit("/", 1)[-1]
+        out |= {p, base if "." in base else f"{base}/"}
+    return out
+
+
+def board_search(
+    bus: Path,
+    topics: list[str] | None = None,
+    paths: list[str] | None = None,
+    terms: list[str] | None = None,
+    limit: int | None = None,
+) -> list[dict[str, object]]:
+    """Board posts matching every given filter, oldest first; never moves a read cursor.
+
+    topics: any of them (OR). paths: the body names any of them (see _path_needles).
+    terms: the body contains all of them, case-insensitive (AND). limit: keep the newest N.
+    """
+    want = {t.lstrip("#").lower() for t in topics or []}
+    needles = _path_needles(paths or [])
+    words = [t.lower() for t in terms or []]
+    out = []
+    for m in _all(bus):
+        if m.get("to") != "board" or (want and m.get("topic") not in want):
+            continue
+        body = str(m["body"])
+        if needles and not any(n in body for n in needles):
+            continue
+        if words and not all(w in body.lower() for w in words):
+            continue
+        out.append(m)
+    return out[-limit:] if limit else out
+
+
 def topics(bus: Path) -> dict[str, dict[str, object]]:
     seen: dict[str, dict[str, object]] = {}
     for m in _all(bus):
@@ -643,7 +692,8 @@ def brief(per_topic: int = 3) -> str:
     g = global_board_dir()
     lines = [
         "SWARM BOARD — shared memory + chat for every agent (persistent across sessions/jobs).",
-        "  python3 scripts/agents/bus.py --as <you> board read --global --recent 30   # catch up",
+        "  python3 scripts/agents/bus.py --as <you> board search --global --path <files you will touch> --topic gotchas findings decisions   # catch up",
+        "  python3 scripts/agents/bus.py --as <you> board search --global --grep '<keyword>'   # has someone hit this before?",
         "  python3 scripts/agents/bus.py --as <you> board post --topic findings|gotchas|decisions|model-notes|thoughts|chat --body '...'",
         "  python3 scripts/agents/bus.py --as <you> reply --ref <id> --body '...'   |   inbox   |   ask --to chief --body '...'",
         "Post what future agents should know (findings, gotchas, decisions, thoughts); chat freely on #chat.",
@@ -728,6 +778,12 @@ def main(argv: list[str] | None = None) -> int:
     br.add_argument("--all", action="store_true")
     br.add_argument("--recent", type=int)
     br.add_argument("--global", dest="glob", action="store_true")
+    bs = bsub.add_parser("search")
+    bs.add_argument("--topic", action="extend", nargs="+", help="one or more; any of them matches")
+    bs.add_argument("--path", action="extend", nargs="+", help="one or more files/dirs/globs the post names (a shell-expanded glob works too)")
+    bs.add_argument("--grep", action="append", help="repeatable; all must appear (case-insensitive)")
+    bs.add_argument("--limit", type=int, default=40, help="newest N hits (default 40)")
+    bs.add_argument("--global", dest="glob", action="store_true")
     bt = bsub.add_parser("topics")
     bt.add_argument("--global", dest="glob", action="store_true")
     bbr = bsub.add_parser("brief")
@@ -808,6 +864,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(fmt(m))
             if not msgs:
                 print("(no new board posts)")
+        elif args.bcmd == "search":
+            if not (args.topic or args.path or args.grep):
+                _refuse("board search needs at least one --topic, --path or --grep")
+            hits = board_search(bus, args.topic, args.path, args.grep, args.limit)
+            for m in hits:
+                print(fmt(m))
+            if not hits:
+                print("(no matching board posts)")
         elif args.bcmd == "topics":
             for name, info in sorted(topics(bus).items()):
                 last = info["last"]

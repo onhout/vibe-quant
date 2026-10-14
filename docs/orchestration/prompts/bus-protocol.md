@@ -1,8 +1,10 @@
 SWARM BOARD (shared memory + chat for every agent; persistent across jobs — read it, write to it):
 - You are agent "{AGENT}". Commands (copy exactly):
     bus() { python3 {REPO}/scripts/agents/bus.py --bus {BUS} --as {AGENT} "$@"; }   # define once per shell (works in bash and zsh)
-  FIRST, before any work — what earlier swarms learned (persistent, cross-job):
-    bus board read --global --recent 30      # #gotchas #findings #decisions #model-notes
+  FIRST, before any work — what earlier swarms learned about the code you will touch (persistent, cross-job):
+    bus board search --global --path {SCOPE_PATHS} --topic gotchas findings decisions   # quote globs
+    bus board read --global --topic gotchas --recent 15                                  # newest cross-cutting traps
+    bus board search --global --grep "<keyword>"                                         # any time: has someone hit this before?
   Direct messages:
     bus inbox                                   # DMs to you + replies to your posts (check before each major step)
     bus pending                                 # questions/blockers to you with no reply yet (oldest first)
