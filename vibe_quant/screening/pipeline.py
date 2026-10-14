@@ -558,7 +558,7 @@ def create_screening_pipeline(
             fee_schedule=FeeSchedule.from_params(run_params),
             entry_order=entry_order,
             liquidation_mode=liquidation.mode,
-            liquidation_leverage=liquidation.leverage,
+            leverage=liquidation.leverage,
         )
     return ScreeningPipeline(
         dsl=dsl,

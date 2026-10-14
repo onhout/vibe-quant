@@ -511,17 +511,22 @@ def test_liquidation_mode_is_not_a_strategy_param_and_is_resolved_from_launch_pa
     try:
         cfg: dict[str, object] = {"parameters": {"rsi_period": 14, "liquidation_mode": "cross"}}
         assert runner._build_strategy_params(cfg) == {"rsi_period": 14}
-        assert runner._resolve_liquidation_mode(cfg) == "cross"
-        assert runner._resolve_liquidation_mode({"parameters": {}}) == "off"
-        assert runner._resolve_liquidation_mode({}) == "off"
+        assert runner._resolve_liquidation_mode(cfg).mode == "cross"
+        assert runner._resolve_liquidation_mode({"parameters": {}}).mode == "off"
+        assert runner._resolve_liquidation_mode({}).mode == "off"
         for bad in ("margin", "", None, 1, True, ["isolated"]):
             with pytest.raises(ValidationRunnerError, match="liquidation_mode"):
                 runner._resolve_liquidation_mode({"parameters": {"liquidation_mode": bad}})
-        # E11: mode on with leverage 0 used to fall back to 10x silently; now it fails.
-        with pytest.raises(ValidationRunnerError, match="leverage must be a number in"):
+        # E11/C14: mode on with leverage 0 used to fall back to 10x silently; now it fails.
+        with pytest.raises(ValidationRunnerError, match="leverage must be a whole number in"):
             runner._resolve_liquidation_mode(
                 {"parameters": {"liquidation_mode": "isolated", "leverage": 0}}
             )
+        # C14: the leverage is validated in EVERY mode (off included) through the one rule.
+        for bad_lev in (0, 2.5, True, "10"):
+            with pytest.raises(ValidationRunnerError, match=r"\[1, 125\]"):
+                runner._resolve_liquidation_mode({"parameters": {"leverage": bad_lev}})
+        assert runner._resolve_liquidation_mode({"parameters": {"leverage": 3}}).leverage == 3.0
     finally:
         runner.close()
 
@@ -539,6 +544,30 @@ def test_validation_venue_uses_the_run_leverage_when_liquidation_is_on(tmp_path:
         }
         venue = runner._create_venue_config(cfg, None, timeframe="1h")
         assert venue.default_leverage == Decimal("20")
+    finally:
+        runner.close()
+
+
+def test_validation_venue_uses_the_off_leverage_and_rejects_bad_values(tmp_path: Path) -> None:
+    """C14/R2: the venue follows ``leverage`` in every mode; a bad value fails the run.
+
+    R2: a stored integer 10 stays ``Decimal("10")`` (== today's bytes for NautilusTrader).
+    """
+    runner = _runner(tmp_path)
+    try:
+        off_three = runner._create_venue_config(
+            {"parameters": {"leverage": 3, "initial_balance": 10000}}, None, timeframe="1h"
+        )
+        assert off_three.default_leverage == Decimal("3")
+        stored_ten = runner._create_venue_config(
+            {"parameters": {"leverage": 10, "initial_balance": 10000}}, None, timeframe="1h"
+        )
+        assert stored_ten.default_leverage == Decimal("10")
+        for bad in (0, 2.5, True, "10", None):
+            with pytest.raises(ValidationRunnerError, match=r"\[1, 125\]"):
+                runner._create_venue_config(
+                    {"parameters": {"leverage": bad}}, None, timeframe="1h"
+                )
     finally:
         runner.close()
 
@@ -1565,7 +1594,7 @@ def _extract_end_fill_window(
         venue_config=venue,  # type: ignore[arg-type]
         primary_timeframe="1m", run_start_date="2024-01-01T01:40:00", run_end_date=END,
         execution_timeframe="1m", catalog_path=catalog_path,
-        liquidation_mode=runner._resolve_liquidation_mode(kw["run_config"]),
+        liquidation_mode=runner._resolve_liquidation_mode(kw["run_config"]).mode,
     )
 
 

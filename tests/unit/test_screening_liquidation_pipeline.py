@@ -426,7 +426,7 @@ def test_factory_passes_liquidation_to_runner_and_pipeline(
         parameters={"liquidation_mode": "isolated", "leverage": 20.0},
     )
     assert on._runner._liquidation_mode == "isolated"
-    assert on._runner._liquidation_leverage == 20.0
+    assert on._runner._leverage == 20.0
     assert on._liquidation.on
     assert on._liquidation.leverage == 20.0
 

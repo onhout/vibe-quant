@@ -1,7 +1,7 @@
 """The one parse rule for liquidation settings (bead vibe-quant-2gyk1.1.8).
 
 Contract rows P1-P4, L1-L4: the mode is case-sensitive, ``None`` is NOT "off", and the
-leverage is validated ((0, 125]) only while the mode is on.
+leverage is validated in EVERY mode (L4) as a whole number in [1, 125].
 """
 
 from __future__ import annotations
@@ -12,8 +12,11 @@ from vibe_quant.liquidation_settings import (
     DEFAULT_LEVERAGE,
     LIQUIDATION_MODES,
     MAX_LEVERAGE,
+    MIN_LEVERAGE,
+    MISSING,
     LiquidationConfigError,
     LiquidationSettings,
+    resolve_leverage,
 )
 
 
@@ -70,7 +73,7 @@ def test_l1_on_without_leverage_defaults_to_ten() -> None:
     assert settings.leverage == DEFAULT_LEVERAGE
 
 
-@pytest.mark.parametrize("leverage", [0.5, 1, 20, 125, 125.0])
+@pytest.mark.parametrize("leverage", [1, 20, 125, 125.0])
 def test_l2_valid_leverage_is_stored_as_float(leverage: float) -> None:
     settings = LiquidationSettings(mode="isolated", leverage=leverage)
     assert settings.leverage == float(leverage)
@@ -78,17 +81,54 @@ def test_l2_valid_leverage_is_stored_as_float(leverage: float) -> None:
 
 
 @pytest.mark.parametrize(
-    "leverage", [0, -1, 125.0001, float("nan"), float("inf"), True, "20", None]
+    "leverage",
+    [0, -1, 126, 0.999, 2.5, 125.0001, float("nan"), float("inf"), True, "20", None],
 )
 def test_l3_bad_leverage_is_rejected(leverage: object) -> None:
     with pytest.raises(LiquidationConfigError) as err:
         LiquidationSettings(mode="isolated", leverage=leverage)  # type: ignore[arg-type]
-    assert str(err.value) == f"leverage must be a number in (0, 125], got {leverage!r}"
+    assert str(err.value) == f"leverage must be a whole number in [1, 125], got {leverage!r}"
 
 
-def test_l4_off_never_validates_leverage() -> None:
-    assert LiquidationSettings(mode="off", leverage=0).leverage == 0.0
-    assert LiquidationSettings(mode="off", leverage=float("nan")).to_params() == {}
+@pytest.mark.parametrize("mode", ["off", "isolated", "cross"])
+@pytest.mark.parametrize(
+    "leverage",
+    [10**400, -(10**400), 1e308, -1e308, float("inf"), float("-inf"), float("nan")],
+    ids=["huge-int", "huge-neg-int", "1e308", "-1e308", "inf", "-inf", "nan"],
+)
+def test_l3b_out_of_float_range_leverage_is_a_config_error_in_every_mode(
+    mode: str, leverage: float
+) -> None:
+    """``float(10**400)`` overflows: the rule must still raise LiquidationConfigError, never
+    an OverflowError (the API would answer 500, validation would crash instead of failing)."""
+    with pytest.raises(LiquidationConfigError, match=r"\[1, 125\]"):
+        LiquidationSettings(mode=mode, leverage=leverage)  # type: ignore[arg-type]
+    with pytest.raises(LiquidationConfigError, match=r"\[1, 125\]"):
+        LiquidationSettings.from_params({"liquidation_mode": mode, "leverage": leverage})
+
+
+def test_l4_off_validates_leverage_too() -> None:
+    """L4: the domain is checked in EVERY mode, not only while liquidation is on."""
+    with pytest.raises(LiquidationConfigError, match=r"\[1, 125\]"):
+        LiquidationSettings(mode="off", leverage=0)
+    assert LiquidationSettings(mode="off", leverage=3).leverage == 3.0
+
+
+def test_l4_explicit_none_leverage_is_rejected() -> None:
+    with pytest.raises(LiquidationConfigError, match=r"\[1, 125\]"):
+        LiquidationSettings(leverage=None)  # type: ignore[arg-type]
+    with pytest.raises(LiquidationConfigError, match=r"\[1, 125\]"):
+        LiquidationSettings.from_params({"leverage": None})
+
+
+def test_to_params_off_non_default_leverage() -> None:
+    """Off at a non-default leverage stores just the value; off at 10 stays empty."""
+    assert LiquidationSettings(mode="off", leverage=3).to_params() == {"leverage": 3.0}
+    assert LiquidationSettings(mode="off", leverage=DEFAULT_LEVERAGE).to_params() == {}
+    assert LiquidationSettings(mode="isolated", leverage=3).to_params() == {
+        "liquidation_mode": "isolated",
+        "leverage": 3.0,
+    }
 
 
 def test_from_params_reads_both_keys() -> None:
@@ -96,5 +136,22 @@ def test_from_params_reads_both_keys() -> None:
     assert settings.mode == "cross" and settings.leverage == 50.0
 
 
-def test_max_leverage_is_the_shared_constant() -> None:
+def test_shared_constants() -> None:
     assert MAX_LEVERAGE == 125.0
+    assert MIN_LEVERAGE == 1.0
+
+
+# --------------------------------------------------------------- resolve_leverage (H1)
+
+
+def test_resolve_leverage_picks_the_first_supplied() -> None:
+    assert resolve_leverage(MISSING, MISSING) is MISSING
+    assert resolve_leverage(3, MISSING) == 3
+    assert resolve_leverage(MISSING, 20) == 20
+    assert resolve_leverage(3, 3.0) == 3  # 3 == 3.0; the first value wins unchanged
+
+
+def test_resolve_leverage_conflict_raises() -> None:
+    with pytest.raises(LiquidationConfigError) as err:
+        resolve_leverage(3, 20)
+    assert str(err.value) == "conflicting leverage 3 and liquidation_leverage 20"

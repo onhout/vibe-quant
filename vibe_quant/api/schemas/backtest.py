@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from vibe_quant.api.schemas._validators import KNOWN_TIMEFRAMES, check_date_range, clean_symbols
-from vibe_quant.liquidation_settings import MAX_LEVERAGE
+from vibe_quant.liquidation_settings import LiquidationConfigError, LiquidationSettings
 
 
 def _positive_number(params: dict[str, object], key: str, upper: float | None = None) -> None:
@@ -73,7 +73,13 @@ class BacktestLaunchRequest(BaseModel):
             )
             raise ValueError(msg)
         # Runners fall back to 10x / 1000 USDT on non-positive values — reject instead.
-        _positive_number(self.parameters, "leverage", upper=MAX_LEVERAGE)
+        # Leverage goes through the ONE shared rule (whole number in [1, 125]) in EVERY
+        # mode (vibe-quant-6wq6w), so the API, CLI and stored params agree.
+        if "leverage" in self.parameters:
+            try:
+                LiquidationSettings(leverage=cast("float", self.parameters["leverage"]))
+            except LiquidationConfigError as exc:
+                raise ValueError(f"parameters.leverage: {exc}") from exc
         _positive_number(self.parameters, "initial_balance")
         return self
 

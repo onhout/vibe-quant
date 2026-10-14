@@ -259,7 +259,7 @@ class NTScreeningRunner:
         fee_schedule: FeeSchedule | None = None,
         entry_order: str = "market",
         liquidation_mode: LiquidationMode = "off",
-        liquidation_leverage: float = DEFAULT_LEVERAGE,
+        leverage: float = DEFAULT_LEVERAGE,
     ) -> None:
         """Initialize NTScreeningRunner.
 
@@ -295,20 +295,20 @@ class NTScreeningRunner:
                 truncated ledgers (bead vibe-quant-2gyk1.1.6). Any failure on that path
                 fails the run closed as ``LiquidationIntegrityError``, wrapping the
                 original error (missing MARK bars, a fill outside the run, ...).
-            liquidation_leverage: Venue leverage when the mode is on: the screening
-                venue runs at this leverage and the liquidation prices assume it. Off
-                (the default) keeps the venue's fixed 10x, byte-identical to today;
-                the value is recorded in ``last_liquidation_notes``.
+            leverage: The venue leverage, in EVERY mode (vibe-quant-6wq6w): the screening
+                venue runs at this leverage and, when the mode is on, the liquidation prices
+                assume it (recorded in ``last_liquidation_notes``). The default 10 keeps every
+                pre-existing number byte-identical.
 
         Raises:
             ValueError: ``entry_order`` is not ``"market"``, or the liquidation settings
                 are invalid (:class:`~vibe_quant.liquidation_settings.LiquidationConfigError`:
-                an unknown mode, or a leverage outside (0, 125] while the mode is on).
+                an unknown mode, or a leverage that is not a whole number in [1, 125]).
         """
         refuse_non_market_entry(entry_order)
-        settings = LiquidationSettings(mode=liquidation_mode, leverage=liquidation_leverage)
+        settings = LiquidationSettings(mode=liquidation_mode, leverage=leverage)
         self._liquidation_mode: LiquidationMode = settings.mode
-        self._liquidation_leverage = settings.leverage
+        self._leverage = settings.leverage
         # Liquidation summary of the last run (``OverlayResult.result.to_notes``) for the
         # discovery/result notes plumbing; None when the mode is off or the run failed.
         self.last_liquidation_notes: dict[str, Any] | None = None
@@ -666,13 +666,10 @@ class NTScreeningRunner:
         config = replace(
             create_venue_config_for_screening(), fee_schedule=self._fee_schedule
         )
-        if self._liquidation_mode != "off":
-            # V1/V2: when the mode is on the venue runs at the chosen liquidation
-            # leverage; off keeps the screening venue's fixed 10x, byte-identical.
-            config = replace(
-                config, default_leverage=Decimal(str(self._liquidation_leverage))
-            )
-        return config
+        # The venue runs at the run's leverage in EVERY mode (vibe-quant-6wq6w): today it is
+        # only moved when liquidation is on. The default 10 is the venue's own default, so a
+        # default run stays byte-identical.
+        return replace(config, default_leverage=Decimal(str(self._leverage)))
 
     def _run_backtest(self, params: dict[str, float | int], start_time: float) -> BacktestMetrics:
         """Execute the NautilusTrader backtest."""
@@ -1315,7 +1312,7 @@ class NTScreeningRunner:
         overlay = apply_liquidation(
             [*closed, *still_open],
             mode=self._liquidation_mode,  # type: ignore[arg-type]  # "off" excluded by caller
-            leverage=self._liquidation_leverage,
+            leverage=self._leverage,
             starting_balance=starting_balance,
             catalog_path=catalog_path,
             start_ns=start_ns,

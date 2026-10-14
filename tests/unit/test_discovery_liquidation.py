@@ -194,7 +194,7 @@ def test_invalid_leverage_fails_run(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert rc == 1
     assert run["status"] == "failed"
     assert "LiquidationConfigError" in run["error_message"]
-    assert "leverage must be a number in (0, 125], got 0.0" in run["error_message"]
+    assert "leverage must be a whole number in [1, 125], got 0.0" in run["error_message"]
 
 
 # ---------------------------------------------------------------------------

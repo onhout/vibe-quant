@@ -248,6 +248,11 @@ async def test_cross_origin_json_preflight_rejected(client: Client) -> None:
         {"parameters": {"leverage": -5}},
         {"parameters": {"leverage": 500}},
         {"parameters": {"leverage": True}},
+        {"parameters": {"leverage": 2.5}},
+        {"parameters": {"leverage": 126}},
+        {"parameters": {"leverage": 1e308}},
+        {"parameters": {"leverage": 10**400}},  # float(10**400) overflows: still a 422, not a 500
+        {"parameters": {"leverage": -(10**400)}},
         {"parameters": {"initial_balance": 0}},
         {"sizing_config_id": 1},
         {"risk_config_id": 1},

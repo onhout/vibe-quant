@@ -114,7 +114,7 @@ def test_wfa_runner_reads_liquidation_settings(
     runner.backtest("x", date(2024, 2, 1), date(2024, 3, 1), {})
 
     assert capture_runner[0]["liquidation_mode"] == "isolated"
-    assert capture_runner[0]["liquidation_leverage"] == 20.0
+    assert capture_runner[0]["leverage"] == 20.0
 
 
 def test_wfa_runner_mode_off_defaults(
@@ -128,7 +128,7 @@ def test_wfa_runner_mode_off_defaults(
     runner.backtest("x", date(2024, 2, 1), date(2024, 3, 1), {})
 
     assert capture_runner[0]["liquidation_mode"] == "off"
-    assert capture_runner[0]["liquidation_leverage"] == 10.0
+    assert capture_runner[0]["leverage"] == 10.0
 
 
 def test_cv_runner_reads_liquidation_settings(
@@ -143,7 +143,7 @@ def test_cv_runner_reads_liquidation_settings(
     runner._backtest("2024-02-01", "2024-03-01")  # noqa: SLF001
 
     assert capture_runner[0]["liquidation_mode"] == "cross"
-    assert capture_runner[0]["liquidation_leverage"] == 50.0
+    assert capture_runner[0]["leverage"] == 50.0
 
 
 def test_cv_runner_mode_off_defaults(
@@ -158,7 +158,7 @@ def test_cv_runner_mode_off_defaults(
     runner._backtest("2024-02-01", "2024-03-01")  # noqa: SLF001
 
     assert capture_runner[0]["liquidation_mode"] == "off"
-    assert capture_runner[0]["liquidation_leverage"] == 10.0
+    assert capture_runner[0]["leverage"] == 10.0
 
 
 # ---------------------------------------------------------------------------

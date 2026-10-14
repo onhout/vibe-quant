@@ -137,7 +137,7 @@ class NTWFARunner:
             fill_ticks=self._ticks.get(start_date.isoformat(), end_date.isoformat()),
             # the screening run's own liquidation settings (E14); off by default
             liquidation_mode=self._liquidation.mode,
-            liquidation_leverage=self._liquidation.leverage,
+            leverage=self._liquidation.leverage,
         )
         numeric_params: dict[str, float | int] = {
             k: v

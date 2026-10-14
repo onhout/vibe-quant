@@ -123,12 +123,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         # Run-level liquidation settings come from the run's own parameters (no
         # screening CLI flag). Log the effective settings the way the fee
-        # schedule is logged; an invalid stored mode raises here (E10) before
-        # any engine exists.
+        # schedule is logged; an invalid stored mode or leverage raises here (E10)
+        # before any engine exists. The venue leverage applies in EVERY mode
+        # (vibe-quant-6wq6w), so log it separately from the mode-on liquidation notes.
         from vibe_quant.liquidation_settings import LiquidationSettings
 
         liquidation = LiquidationSettings.from_params(parameters)
         print(f"Screening liquidation: {liquidation.to_notes()}")
+        print(f"Screening venue leverage: {liquidation.leverage:g}x")
 
         pipeline = create_screening_pipeline(
             dsl,

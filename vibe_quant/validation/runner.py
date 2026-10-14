@@ -146,8 +146,9 @@ class ValidationRunner:
             raise
 
         # Liquidation overlay is opt-in; a bad mode fails the run before the engine starts.
+        # Parsed ONCE per run: the venue config and every extraction reuse these settings.
         try:
-            self._resolve_liquidation_mode(run_config)
+            liquidation_settings = self._resolve_liquidation_mode(run_config)
         except ValidationRunnerError as exc:
             self._state.update_backtest_run_status(run_id, "failed", error_message=str(exc))
             raise
@@ -179,6 +180,7 @@ class ValidationRunner:
                 effective_latency,
                 timeframe=dsl.timeframe,
                 has_detail_data=effective_detail is not None,
+                liquidation_settings=liquidation_settings,
             )
         except ValidationRunnerError as exc:
             self._state.update_backtest_run_status(run_id, "failed", error_message=str(exc))
@@ -233,6 +235,7 @@ class ValidationRunner:
                     run_config=run_config,
                     writer=writer,
                     detail_timeframe=effective_detail,
+                    liquidation_settings=liquidation_settings,
                 )
 
                 # Market-mode TWIN of the identical backtest (same window,
@@ -252,6 +255,7 @@ class ValidationRunner:
                             run_config=run_config,
                             writer=writer,
                             detail_timeframe=effective_detail,
+                            liquidation_settings=liquidation_settings,
                         )
 
                 self._write_completion_event(writer, run_id, strategy_name, result)
@@ -363,8 +367,9 @@ class ValidationRunner:
         dsl = self._validate_dsl(dsl_config, strategy_name=strategy_name)
 
         # A bad liquidation mode fails the run before any window's engine starts.
+        # Parsed ONCE per run: the venue config and every window's extraction reuse it.
         try:
-            self._resolve_liquidation_mode(run_config)
+            liquidation_settings = self._resolve_liquidation_mode(run_config)
         except ValidationRunnerError as exc:
             self._state.update_backtest_run_status(run_id, "failed", error_message=str(exc))
             raise
@@ -386,6 +391,7 @@ class ValidationRunner:
                 effective_latency,
                 timeframe=dsl.timeframe,
                 has_detail_data=effective_detail is not None,
+                liquidation_settings=liquidation_settings,
             )
         except ValidationRunnerError as exc:
             self._state.update_backtest_run_status(run_id, "failed", error_message=str(exc))
@@ -450,6 +456,7 @@ class ValidationRunner:
                         run_config=window_run_config,
                         writer=writer,
                         detail_timeframe=effective_detail,
+                        liquidation_settings=liquidation_settings,
                     )
                     window_results.append(window_result)
                     writer.write(
@@ -797,6 +804,7 @@ class ValidationRunner:
         timeframe: str = "4h",
         *,
         has_detail_data: bool = False,
+        liquidation_settings: LiquidationSettings | None = None,
     ) -> VenueConfig:
         """Create venue configuration for validation.
 
@@ -815,6 +823,8 @@ class ValidationRunner:
             latency_preset: Latency preset to use.
             timeframe: Strategy primary timeframe.
             has_detail_data: Whether sub-bar detail data is loaded.
+            liquidation_settings: The run's already-parsed settings (``run`` parses them
+                once); parsed from ``run_config`` when omitted (direct callers).
 
         Returns:
             Configured VenueConfig.
@@ -837,14 +847,12 @@ class ValidationRunner:
         if isinstance(balance, bool) or not isinstance(balance, (int, float)) or balance <= 0:
             balance = DEFAULT_STARTING_BALANCE_USDT
 
-        leverage_raw = launch_params.get("leverage")
-        default_leverage = Decimal("10")
-        if (
-            not isinstance(leverage_raw, bool)
-            and isinstance(leverage_raw, (int, float))
-            and leverage_raw > 0
-        ):
-            default_leverage = Decimal(str(leverage_raw))
+        # One rule with screening (vibe-quant-6wq6w): the leverage is validated in EVERY mode
+        # and never silently falls back to 10x. A bad value fails the run (ValidationRunnerError
+        # from _resolve_liquidation_mode), parsed once per run and passed in by ``run``.
+        if liquidation_settings is None:
+            liquidation_settings = self._resolve_liquidation_mode(run_config)
+        default_leverage = Decimal(str(liquidation_settings.leverage))
 
         # Fee schedule (VIP tier + optional BNB discount) is venue-level. A bad
         # value fails the run with a clear error instead of silently defaulting.
@@ -898,6 +906,7 @@ class ValidationRunner:
         detail_timeframe: str | None = None,
         entry_order_override: str | None = None,
         write_trade_events: bool = True,
+        liquidation_settings: LiquidationSettings | None = None,
     ) -> ValidationResult:
         """Run NautilusTrader backtest with full-fidelity execution.
 
@@ -924,6 +933,9 @@ class ValidationRunner:
                 twin of a post_only run); None keeps the run's own parameter.
             write_trade_events: False for the twin, which must not write trade
                 events (it also never reaches result storage).
+            liquidation_settings: The run's already-parsed settings (``run`` /
+                ``run_walk_forward`` parse them once); parsed from ``run_config`` when
+                omitted (direct callers).
 
         Returns:
             ValidationResult with real metrics and trades.
@@ -931,6 +943,9 @@ class ValidationRunner:
         Raises:
             ValidationRunnerError: If backtest setup or execution fails.
         """
+        if liquidation_settings is None:
+            liquidation_settings = self._resolve_liquidation_mode(run_config)
+
         from nautilus_trader.backtest.node import BacktestNode
         from nautilus_trader.config import (
             BacktestDataConfig,
@@ -1191,7 +1206,7 @@ class ValidationRunner:
                     all_timeframes | ({detail_timeframe} if detail_timeframe else set())
                 ),
                 catalog_path=catalog_path,
-                liquidation_mode=self._resolve_liquidation_mode(run_config),
+                liquidation_mode=liquidation_settings.mode,
             )
 
             # Log trade events (the market-mode twin writes none)
@@ -1284,6 +1299,7 @@ class ValidationRunner:
         run_config: dict[str, object],
         writer: EventWriter,
         detail_timeframe: str | None,
+        liquidation_settings: LiquidationSettings,
     ) -> dict[str, object]:
         """Market-mode twin of a post_only run, as the notes entry (D3-6).
 
@@ -1301,6 +1317,7 @@ class ValidationRunner:
                 detail_timeframe=detail_timeframe,
                 entry_order_override="market",
                 write_trade_events=False,
+                liquidation_settings=liquidation_settings,
             )
         except Exception as exc:
             logger.exception("Run %d: market twin failed; the post_only result is kept", run_id)
@@ -1339,14 +1356,14 @@ class ValidationRunner:
                     raise ValidationRunnerError(msg)
         return str(entry_order)
 
-    def _resolve_liquidation_mode(self, run_config: dict[str, object]) -> str:
-        """The run's ``liquidation_mode`` launch parameter: "off" (default), "isolated", "cross".
+    def _resolve_liquidation_mode(self, run_config: dict[str, object]) -> LiquidationSettings:
+        """The run's validated :class:`~vibe_quant.liquidation_settings.LiquidationSettings`.
 
-        Parsed through the shared :class:`~vibe_quant.liquidation_settings.LiquidationSettings`
-        (one rule with screening). An unknown mode, or a mode-on leverage outside (0, 125]
-        (previously a silent 10x fallback), fails the run before any engine starts. Leverage
-        for the overlay is the run's ``leverage`` parameter (the venue's ``default_leverage``,
-        see :meth:`_create_venue_config`).
+        Parsed through the shared rule (one rule with screening): the mode is ``"off"``
+        (default), ``"isolated"`` or ``"cross"`` and the leverage is a whole number in
+        ``[1, 125]`` in EVERY mode (an unknown mode, or a bad leverage, used to fall back
+        silently to 10x). Callers use ``.mode`` for the overlay and ``.leverage`` for the
+        venue (``_create_venue_config``).
 
         Raises:
             ValidationRunnerError: For any invalid value (an unknown mode never runs as "off").
@@ -1354,7 +1371,7 @@ class ValidationRunner:
         raw_params = run_config.get("parameters")
         params = raw_params if isinstance(raw_params, dict) else {}
         try:
-            return LiquidationSettings.from_params(params).mode
+            return LiquidationSettings.from_params(params)
         except LiquidationConfigError as exc:
             raise ValidationRunnerError(str(exc)) from exc
 

@@ -177,7 +177,7 @@ class NTBacktestFn:
             fee_schedule=self.fee_schedule,
             entry_order=self.entry_order,
             liquidation_mode=self.liquidation.mode,
-            liquidation_leverage=self.liquidation.leverage,
+            leverage=self.liquidation.leverage,
         )
 
     def _run_single(

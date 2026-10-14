@@ -263,7 +263,7 @@ def test_setting_reaches_the_runner_and_venue_leverage() -> None:
     )
     runner = on._make_runner({"name": "probe", "timeframe": "4h"}, "2024-01-01", "2024-06-01")
     assert runner._liquidation_mode == "isolated"
-    assert runner._liquidation_leverage == 20.0
+    assert runner._leverage == 20.0
     assert runner._venue_config().default_leverage == Decimal("20")
 
     off = NTBacktestFn(["BTCUSDT"], "4h", "2024-01-01", "2024-06-01")

@@ -456,36 +456,41 @@ def test_unknown_liquidation_mode_raises(mode: Any) -> None:
         NTScreeningRunner({}, ["BTCUSDT"], "2025-01-01", "2025-01-02", liquidation_mode=mode)
 
 
-@pytest.mark.parametrize("leverage", [0.0, -3.0, float("nan"), float("inf"), 125.0001])
+@pytest.mark.parametrize("leverage", [0.0, -3.0, 2.5, float("nan"), float("inf"), 125.0001])
 def test_bad_leverage_raises_when_the_mode_is_on(leverage: float) -> None:
-    with pytest.raises(ValueError, match="leverage must be a number in"):
+    with pytest.raises(ValueError, match="leverage must be a whole number in"):
         NTScreeningRunner(
             {}, ["BTCUSDT"], "2025-01-01", "2025-01-02",
-            liquidation_mode="isolated", liquidation_leverage=leverage,
+            liquidation_mode="isolated", leverage=leverage,
         )  # fmt: skip
 
 
 def test_defaults_are_off_at_ten_x() -> None:
     r = NTScreeningRunner({}, ["BTCUSDT"], "2025-01-01", "2025-01-02")
-    assert r._liquidation_mode == "off" and r._liquidation_leverage == 10.0
+    assert r._liquidation_mode == "off" and r._leverage == 10.0
     assert r.last_liquidation_notes is None
 
 
-def test_venue_leverage_follows_the_chosen_leverage_when_on() -> None:
-    """V1/V2/V3/V4: the screening venue runs at the liquidation leverage when the mode is on;
-    off (and on at 10x) keeps the fixed 10x venue, byte-identical."""
+def test_venue_leverage_follows_the_chosen_leverage_in_every_mode() -> None:
+    """V1-V5: the screening venue runs at the leverage in EVERY mode (off included); the default
+    10 stays byte-identical to today."""
     from decimal import Decimal
 
     off = NTScreeningRunner({}, ["BTCUSDT"], "2025-01-01", "2025-01-02")
     assert off._venue_config().default_leverage == Decimal("10")
+    off_three = NTScreeningRunner(
+        {}, ["BTCUSDT"], "2025-01-01", "2025-01-02", leverage=3,
+    )  # fmt: skip
+    assert off_three._liquidation_mode == "off"
+    assert off_three._venue_config().default_leverage == Decimal("3")
     on = NTScreeningRunner(
         {}, ["BTCUSDT"], "2025-01-01", "2025-01-02",
-        liquidation_mode="isolated", liquidation_leverage=20.0,
+        liquidation_mode="isolated", leverage=20.0,
     )  # fmt: skip
     assert on._venue_config().default_leverage == Decimal("20")
     ten = NTScreeningRunner(
         {}, ["BTCUSDT"], "2025-01-01", "2025-01-02",
-        liquidation_mode="cross", liquidation_leverage=10.0,
+        liquidation_mode="cross", leverage=10.0,
     )  # fmt: skip
     assert ten._venue_config().default_leverage == Decimal("10")
 

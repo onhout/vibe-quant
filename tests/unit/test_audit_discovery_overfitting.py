@@ -287,7 +287,7 @@ def test_wfa_on_2022_run_uses_2022_dates(tmp_path: Path, monkeypatch: pytest.Mon
                      catalog_path: Any = None, fill_ticks: Any = None,
                      fee_schedule: Any = None,
                      liquidation_mode: str = "off",
-                     liquidation_leverage: float = 10.0) -> None:
+                     leverage: float = 10.0) -> None:
             seen.append((start_date, end_date))
 
         def __call__(self, params: Any) -> Any:
@@ -321,7 +321,7 @@ def test_cv_runner_forwards_each_candidates_params(
                      catalog_path: Any = None, fill_ticks: Any = None,
                      fee_schedule: Any = None,
                      liquidation_mode: str = "off",
-                     liquidation_leverage: float = 10.0) -> None:
+                     leverage: float = 10.0) -> None:
             pass
 
         def __call__(self, params: dict[str, Any]) -> Any:

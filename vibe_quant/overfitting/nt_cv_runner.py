@@ -246,7 +246,7 @@ class NTPurgedKFoldRunner:
             fill_ticks=self._ticks.get(start_date, end_date),
             # the screening run's own liquidation settings (E14); off by default
             liquidation_mode=self._liquidation.mode,
-            liquidation_leverage=self._liquidation.leverage,
+            leverage=self._liquidation.leverage,
         )
         # The bound candidate's sweep params (empty for discovery champions,
         # whose params are baked into the DSL). Running ``{}`` for everyone
