@@ -4,6 +4,29 @@ Research diary tracking GA strategy discovery experiments, screening verificatio
 
 ---
 
+## 2026-10-14: Seven quick tests on BTC/ETH/SOL/BNB (H-20261014-1..7), all REJECTED; the DSR wall on 4h
+
+Job 20261014-honest-lev, research lane (user: "find an edge, incl. exotic variants; each run ≤ 3–5 min"). Tickets with pre-registered falsifiers: `data/swarm/20261014-honest-lev/hypotheses/H-20261014-{1..7}.json` (scout-hl). Fixed-DSL YAMLs + run plan: `.../strategies/` (author-hl). Raw runs: `.../runs/*.jsonl` (op-hl). Step-1 event studies: `.../step1/` (scout-hl). Verdicts: overfit-auditor audit-hl, `.../handoffs/17-audit-hl.md`. Engine: main 6323e4ad semantics, liquidation off, 10x.
+
+**DSR wall (MEASURED, scout-hl, `calculate_dsr` bisection, MTM ann Sharpe √252, skew 0 / kurt 3).** At T=1700 d, DSR p<0.05 needs: N=1 0.63, N=10 1.24, N=100 1.61, N=700 1.85, N=22000 2.20. Cumulative gate N today (runs 910–913 `notes.dsr_trials`): 4h 21870, 1h 2277, 15m 739, 1d 0 before run 919. So a new 4h GA champion needs MTM Sharpe ≈ 2.2; fixed hand-authored tests (declared N ≤ 10) are the honest quick test, GA on 4h is exploratory only.
+
+| Ticket | Idea | Test | Decisive result | Verdict |
+|---|---|---|---|---|
+| H-1 | short TREND_ENSEMBLE breakdowns on ETH/SOL/BNB 4h, only while BTC < EMA200 | fixed DSL, N=3, 2021-11-01..2026-09-30 | pooled FULL Sharpe 0.1638258543792746 < 0.6; gated − ungated 0.16176060019638389 < 0.2; MTM-DSR TRAIN N=3 p=0.8533281948016527 | REJECT |
+| H-2 | long FUNDING_Z(90) > 2 continuation, 4 coins 4h, fresh 2020-10..2021-12 data | fixed DSL, N=2 | WIN-B (2022-26) net/trade -0.681630908785598 USD (sign flip); MTM-DSR WIN-A N=2 p=0.6315400514079827 | REJECT |
+| H-3 | short RSI > 70 rallies on ETH/SOL/BNB 4h, only while BTC < EMA200 | fixed DSL, N=3 | pooled FULL Sharpe 0.22713201500367988 < 0.6; MTM-DSR TRAIN N=3 p=0.6530138885138672 (gate adds +0.6044855120396246 vs ungated, but the base loses) | REJECT |
+| H-4 | Sunday ≤ -2% → Monday reversal (calendar) | off-engine event study, 10 bps | window B n=150 mean net 0.0019835154571452678 (needs > 0.003), t=0.5272667345653029; vs weekday-drop null p=0.30033498325083746 | REJECT |
+| H-5 | LAST-vs-MARK 15m dislocation fade | off-engine, top 0.5% |premium| | gross 10.735089380662652 bps (needs ≥ 20), t=2.9616365807415606; net of 10 bps 0.7350893806626517 bps. Real but shrinking (21.67 bps 2020 → 2.85 bps 2025); maker-only idea (bead vibe-quant-2gyk1.4) | REJECT |
+| H-6 | BTC-led catch-up on 1h (BTC ROC − own ROC) | off-engine, Newey-West, 2022-06..2026-09 | next-1h t ETH -0.09929287986141658 / SOL 0.4148085275230993 / BNB 1.484476670207456 (needs ≥ 2.5 on 2 of 3); sign flips between halves | REJECT |
+| H-7 | first 1d discovery run (zero prior 1d trials) | run 919, pop 16 × 4 gens, seed 20261407, 76 s | 49 evaluated, 0 champions; best pooled MTM ann Sharpe 0.409, DSR p=0.8814 at N=49, bootstrap lower bound -0.43 | REJECT |
+
+- **What this rules out:** the BTC-below-EMA200 short family on 4h alts (breakdown and fade entries); funding continuation; Sunday-dip, mark-premium and BTC-lead effects at taker cost; and "1d is blocked only by trial count" — at N=49 the best 1d genome has Sharpe 0.409, so the wall there is lack of edge.
+- **Holdout caveat (audit-hl, corrected):** H-1's gated and ungated holdouts (2025-10-07..2026-09-30) are identical to the digit because its entry signal never fired while BTC was above EMA200 — the gate never bound, so that holdout says nothing about the gate. The regime itself did switch in the holdout (H-3 gated 149 vs ungated 191 trades). The holdout is also the bear (EW 3-coin B&H ann -0.5640287236053038), which flatters shorts.
+- **Data hole found:** SOLUSDT 1d catalog lacks 2022-02-26/27/28 and 2022-04-01/02, so the B&H gate fails closed on every SOL-inclusive 1d window over 2022 (bead vibe-quant-cekup).
+- **Leverage is not an edge:** Sharpe is leverage-invariant; 1–3x only lowers ruin risk.
+
+---
+
 ## 2026-10-12: Re-score of strategy 239 + old discovery champions under the buy-and-hold and MTM-DSR gates (0 of 15 pass both)
 
 Job 20261012-p1-honest, task 4 (user-approved). Main @ e40796bc. Script, raw output and full tables are in `data/swarm/20261012-p1-honest/research/rescore.{py,json,md}`. Every candidate was re-run on today's semantics (screening, worst-of-N where the run used eval windows). Two gates were applied to each re-run:
