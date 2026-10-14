@@ -460,9 +460,19 @@ class ScreeningPipeline:
             }
             # D1: the liquidation summary is written ONLY when the mode is on, so
             # a mode-off run (and every older row) keeps both columns NULL.
+            # A sentinel row (crashed / stalled combo, sharpe == -999) is not a
+            # measurement: it stores NULLs, so the UI shows "-" and never a fake
+            # "0 hits". Both keys are still set on EVERY mode-on row, because
+            # save_sweep_results_batch derives its column list from the first row
+            # and binds each row's values positionally (mixed key sets inside one
+            # batch raise a sqlite3.ProgrammingError).
             if self._liquidation.on:
-                row["liquidation_count"] = int(metrics.liquidation_count)
-                row["liquidation_forfeited"] = float(metrics.liquidation_forfeited)
+                if metrics.sharpe_ratio == FAILED_BACKTEST_SHARPE:
+                    row["liquidation_count"] = None
+                    row["liquidation_forfeited"] = None
+                else:
+                    row["liquidation_count"] = int(metrics.liquidation_count)
+                    row["liquidation_forfeited"] = float(metrics.liquidation_forfeited)
             result_dicts.append(row)
 
         # Batch save

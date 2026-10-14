@@ -23,7 +23,11 @@ from vibe_quant.db.state_manager import StateManager
 from vibe_quant.dsl import parse_strategy_string
 from vibe_quant.errors import LiquidationIntegrityError
 from vibe_quant.liquidation_settings import LiquidationConfigError, LiquidationSettings
-from vibe_quant.screening.pipeline import ScreeningPipeline, create_screening_pipeline
+from vibe_quant.screening.pipeline import (
+    FAILED_BACKTEST_SHARPE,
+    ScreeningPipeline,
+    create_screening_pipeline,
+)
 from vibe_quant.screening.types import BacktestMetrics, ScreeningResult
 
 if TYPE_CHECKING:
@@ -340,6 +344,67 @@ def test_save_results_writes_liquidation_only_when_on(tmp_path: Path) -> None:
         assert cols(hit_run) == (3, 12.5)
         assert cols(miss_run) == (0, 0.0)
         assert cols(off_run) == (None, None)
+    finally:
+        state.close()
+
+
+def test_save_results_leaves_liquidation_null_for_sentinel_row(tmp_path: Path) -> None:
+    """D1 (row 4): a crashed/stalled combo (-999) stores NULLs, never 0 hits.
+
+    A sentinel row never ran the engine, so liquidation_count=0 would be a
+    fake measurement: the UI must read "-", not "0 hits". The batch therefore
+    MIXES a sentinel row and a real 0-hit row, the case that would otherwise
+    raise a sqlite3.ProgrammingError in save_sweep_results_batch.
+    """
+    db = tmp_path / "d1_sentinel.db"
+    state = StateManager(db)
+    try:
+        strategy_id = state.create_strategy(name="liq_probe", dsl_config=_STRATEGY)
+        run_id = state.create_backtest_run(
+            strategy_id=strategy_id,
+            run_mode="screening",
+            symbols=["BTCUSDT"],
+            timeframe="4h",
+            start_date="2024-01-01",
+            end_date="2024-03-01",
+            parameters={"liquidation_mode": "isolated", "leverage": 50.0},
+        )
+
+        ScreeningPipeline(
+            dsl=_dsl(), liquidation=LiquidationSettings(mode="isolated", leverage=50.0)
+        ).save_results(
+            ScreeningResult(
+                "liq_probe", 2, 1, 0.1,
+                [
+                    BacktestMetrics(
+                        parameters={"a": 1},
+                        sharpe_ratio=FAILED_BACKTEST_SHARPE,
+                        liquidation_count=3,
+                        liquidation_forfeited=12.5,
+                    ),
+                    BacktestMetrics(
+                        parameters={"a": 2},
+                        sharpe_ratio=1.0,
+                        liquidation_count=0,
+                        liquidation_forfeited=0.0,
+                    ),
+                ],
+                [1],
+            ),
+            state,
+            run_id,
+        )
+
+        cols_by_sharpe = {
+            row[0]: (row[1], row[2])
+            for row in state.conn.execute(
+                "SELECT sharpe_ratio, liquidation_count, liquidation_forfeited "
+                "FROM sweep_results WHERE run_id = ?",
+                (run_id,),
+            ).fetchall()
+        }
+        assert cols_by_sharpe[FAILED_BACKTEST_SHARPE] == (None, None)
+        assert cols_by_sharpe[1.0] == (0, 0.0)
     finally:
         state.close()
 
