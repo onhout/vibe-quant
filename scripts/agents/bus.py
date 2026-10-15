@@ -23,7 +23,10 @@ Any agent with a shell can use it (Claude subagents, `cmd` workers). One bus per
     bus.py board search [--topic T ...] [--path P ...] [--grep W ...] [--limit N]   # no cursor change;
                                      # topics OR, greps AND (case-insensitive); a file matches by path or
                                      # basename, a dir/glob by '<dir>/'; add --global for the persistent board
-    bus.py reply  --ref MSG_ID --body TEXT          # threads under a board post, or answers a DM
+    bus.py reply  --ref MSG_ID --body TEXT          # threads under a post, or answers a DM;
+                                     # --ref accepts ANY id `board search --global` prints — the
+                                     # reply lands on the bus that HOLDS the post (see it with
+                                     # `bus.py thread --global MSG_ID`)
     bus.py thread MSG_ID                            # a post and all replies, indented
     bus.py board render [--out board.md]            # Markdown view of the whole board (for humans)
   Decisions only the human user can make (topic needs-user; surfaced by board brief + digest):
@@ -341,6 +344,26 @@ def _all(bus: Path) -> list[dict[str, object]]:
     return _read_from(bus, 0)[0]
 
 
+def _locate(bus: Path, ref: str) -> tuple[Path, dict[str, object]] | None:
+    """The bus that HOLDS the message ``ref``, as ``(holding_bus, message)``, or None.
+
+    The selected bus is searched first (a reply to something on it behaves exactly as before),
+    then the global board, then every job bus (_job_buses) — so any id ``board search --global``
+    prints, or that another job's bus holds, can be replied to. No directory is searched twice:
+    the selected bus is often the global board or one of the job buses.
+    """
+    seen: set[str] = set()
+    for src in [bus, global_board_dir(), *_job_buses()]:
+        key = str(src.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        hit = next((m for m in _all(src) if m["id"] == ref), None)
+        if hit is not None:
+            return src, hit
+    return None
+
+
 def inbox(bus: Path, me: str, peek: bool = False) -> list[dict[str, object]]:
     """Direct messages, broadcasts, and replies to anything I posted (incl. board threads)."""
     msgs, off = _read_from(bus, _get_cursor(bus, me))
@@ -424,15 +447,28 @@ def topics(bus: Path) -> dict[str, dict[str, object]]:
 def reply(
     bus: Path, me: str, ref: str, body: str, kind: str = "info", client_id: str | None = None
 ) -> dict[str, object]:
-    parent = next((m for m in _all(bus) if m["id"] == ref), None)
-    if parent is None:
+    """Thread under a board post, or answer a DM, wherever the parent lives.
+
+    ``ref`` may be any id another bus printed (e.g. by ``board search --global``): the parent is
+    looked up with ``_locate`` and the reply is posted on the bus that HOLDS it.
+    """
+    found = _locate(bus, ref)
+    if found is None:
         sys.exit(f"bus: no message {ref}")
+    holder, parent = found
     if parent.get("to") == "board":  # inherit the parent's topic; a topic-less parent never blocks a reply
-        return post(bus, me, "board", kind, body, ref=ref, topic=str(parent.get("topic") or "general"), client_id=client_id)
+        # a reply to a post that lives on the GLOBAL board is tagged with the REPLIER's job, exactly
+        # as post() tags a mirrored post — the board is shared, so the reply stays on it (no second copy)
+        on_global = holder.resolve() == global_board_dir().resolve() and holder.resolve() != bus.resolve()
+        extra = {"job": bus.resolve().parent.name} if on_global else None
+        return post(
+            holder, me, "board", kind, body, ref=ref, topic=str(parent.get("topic") or "general"),
+            extra=extra, client_id=client_id,
+        )
     target = parent["from"] if parent["from"] != me else parent["to"]
     if kind == "info" and parent.get("kind") == "question":
         kind = "answer"
-    return post(bus, me, str(target), kind, body, ref=ref, client_id=client_id)
+    return post(holder, me, str(target), kind, body, ref=ref, client_id=client_id)
 
 
 def pending(bus: Path, me: str) -> list[dict[str, object]]:
@@ -525,18 +561,13 @@ def needs_user_answer(bus: Path, by: str, ref: str, body: str) -> dict[str, obje
 
     ``from`` is always "user"; ``by`` names who relayed it (--as/$SWARM_AGENT, or "user").
     Refuses (exit 2) when ``ref`` is not a needs-user question. When it is not on ``bus``,
-    the global board and job buses are searched and the answer is posted on the bus that
-    holds the question. Mirrored to the global board only when the question itself was.
+    the global board and job buses are searched (``_locate``) and the answer is posted on the
+    bus that holds the question. Mirrored to the global board only when the question itself was.
     """
-    parent = next((m for m in _all(bus) if m["id"] == ref), None)
-    if parent is None:  # not on the selected bus: look where the questions live
-        for src in [global_board_dir(), *_job_buses()]:
-            parent = next((m for m in _all(src) if m["id"] == ref), None)
-            if parent is not None:
-                bus = src
-                break
-    if parent is None:
+    found = _locate(bus, ref)
+    if found is None:
         sys.exit(f"bus: no message {ref}")
+    bus, parent = found
     if parent.get("kind") != "question" or parent.get("topic") != "needs-user":
         _refuse(f"bus: {ref} is not a needs-user question")
     mirrored = any(m["id"] == ref for m in _all(global_board_dir()))

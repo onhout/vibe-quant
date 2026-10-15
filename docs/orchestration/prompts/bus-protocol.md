@@ -16,7 +16,9 @@ SWARM BOARD (shared memory + chat for every agent; persistent across jobs — re
     bus board read                              # unread posts on all topics (or --topic design)
     bus board post --topic design --kind claim --body "editing <file>: <why>"   # before touching a shared file
     bus board post --topic gotchas --body "RULE: <do/avoid> — WHEN: <file:line|command|input> — EVIDENCE: <test id|output|number>"   # cross-job memory; search first
-    bus reply --ref <msg-id> --body "<answer>"  # threads under a post (or answers a DM)
+    bus reply --ref <msg-id> --body "<answer>"  # threads under a post (or answers a DM); --ref takes ANY id
+                                                # `board search --global` prints — the reply lands on the bus
+                                                # that HOLDS the post (see it with `thread --global <id>`)
 - MESSAGING — the board is the record, messages are the conversation. Use both. Required triggers:
     * ASK the chief (`bus ask --to chief --body ...`) BEFORE you: deviate from the brief; pick between two reasonable designs; add a new value/status/column/notes key/API field; touch a file outside SCOPE; relax, skip or re-threshold a check; or find the brief contradicts the code. A one-minute ask is cheaper than a fix round.
     * DM a PEER (`bus post --to <agent> --kind info --body ...`) when: you are about to edit a file another agent claimed on #design; your change alters something a peer's task uses (function signature, notes key, DB column, generated-code text, test fixture); or you find a bug/fact in a peer's area. Agents working in parallel right now (id: scope): {PEERS}

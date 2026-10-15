@@ -944,3 +944,132 @@ def test_reply_to_a_board_question_without_a_topic_is_always_stored(
     # a NEW board post still requires an explicit topic
     with pytest.raises(SystemExit):
         bus.post(g, "sa", "board", "info", "no topic")
+
+
+# --- reply: the bus that HOLDS the parent (cross-job ids) ---------------------
+
+
+def _make_job_bus(root: Path, name: str) -> Path:
+    b = root / name / "bus"
+    b.mkdir(parents=True)
+    return b
+
+
+def test_reply_finds_a_mirrored_post_on_the_global_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R3/R8: an id `board search --global` printed replies on the global board, job-tagged."""
+    gdir = tmp_path / "global"
+    monkeypatch.setenv("SWARM_BOARD", str(gdir))
+    jobs = tmp_path / "jobs"
+    monkeypatch.setenv("SWARM_JOBS", str(jobs))
+    job_a = _make_job_bus(jobs, "20261015-job-a")  # the replier's own bus
+    job_b = _make_job_bus(jobs, "20261015-job-b")  # where the mirrored post came from
+    root = bus.post(job_b, "w2", "board", "info", "NaN reject rule", topic="findings")
+    # the id the board hands out for that post is the mirrored copy's
+    assert [m["id"] for m in bus.board_search(bus.global_board_dir(), topics=["findings"])] == [str(root["id"])]
+    r = bus.reply(job_a, "x", str(root["id"]), "confirmed")
+    assert r["to"] == "board" and r["topic"] == "findings" and r["ref"] == root["id"]
+    assert r["job"] == "20261015-job-a"  # tagged with the REPLIER's job, like a mirrored post
+    assert [m["id"] for m in bus._all(gdir)] == [root["id"], r["id"]]  # only the global board grew
+    assert bus._all(job_a) == []  # never the replier's job bus
+    assert [m["id"] for m in bus._all(job_b)] == [root["id"]]  # never the origin job bus
+    assert [(d, m["body"]) for d, m in bus.thread(bus.global_board_dir(), str(root["id"]))] == [
+        (0, "NaN reject rule"),
+        (1, "confirmed"),
+    ]
+
+
+def test_reply_finds_a_dm_on_another_job_bus_and_answers_the_asker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R4: an id that lives on another job bus (a DM) is answered there; the asker's inbox gets it."""
+    gdir = tmp_path / "global"
+    monkeypatch.setenv("SWARM_BOARD", str(gdir))
+    jobs = tmp_path / "jobs"
+    monkeypatch.setenv("SWARM_JOBS", str(jobs))
+    job_a = _make_job_bus(jobs, "20261015-job-a")
+    job_b = _make_job_bus(jobs, "20261015-job-b")
+    q = bus.post(job_b, "w2", "x", "question", "which lookback?")
+    a = bus.reply(job_a, "x", str(q["id"]), "2*period")
+    assert a["to"] == "w2" and a["kind"] == "answer" and a["ref"] == q["id"]
+    assert "job" not in a  # the job tag is for replies landing on the global board only
+    assert [m["body"] for m in bus._all(job_b)] == ["which lookback?", "2*period"]  # on the holding bus
+    assert bus._all(job_a) == []  # not on the replier's bus
+    assert bus._all(gdir) == []  # a DM is not a board post: no mirror
+    assert [m["body"] for m in bus.inbox(job_b, "w2")] == ["2*period"]  # the asker reads it there
+
+
+def test_reply_unknown_id_fails_with_the_same_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R5: an id nowhere (even with job buses present) still exits with the unchanged text."""
+    monkeypatch.setenv("SWARM_BOARD", str(tmp_path / "global"))
+    monkeypatch.setenv("SWARM_JOBS", str(tmp_path / "jobs"))
+    _make_job_bus(tmp_path / "jobs", "20261015-job-a")
+    with pytest.raises(SystemExit) as e:
+        bus.reply(tmp_path, "x", "nosuchid", "?")
+    assert str(e.value) == "bus: no message nosuchid"
+
+
+def test_reply_is_idempotent_on_the_holding_bus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """R6: a repeat reply with the same (sender, client_id) is stored once, on the holding bus."""
+    gdir = tmp_path / "global"
+    monkeypatch.setenv("SWARM_BOARD", str(gdir))
+    jobs = tmp_path / "jobs"
+    monkeypatch.setenv("SWARM_JOBS", str(jobs))
+    job_a = _make_job_bus(jobs, "20261015-job-a")
+    job_b = _make_job_bus(jobs, "20261015-job-b")
+    root = bus.post(job_b, "w2", "board", "info", "a gotcha", topic="gotchas")
+    first = bus.reply(job_a, "x", str(root["id"]), "same", client_id="k1")
+    again = bus.reply(job_a, "x", str(root["id"]), "same", client_id="k1")
+    assert first["id"] == again["id"]
+    assert [m["body"] for m in bus._all(gdir)] == ["a gotcha", "same"]  # exactly one reply line
+
+
+def test_reply_cli_from_a_job_bus_reaches_a_mirrored_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reported bug: `bus reply --ref <id from board search --global>` from a job bus."""
+    gdir = tmp_path / "global"
+    monkeypatch.setenv("SWARM_BOARD", str(gdir))
+    jobs = tmp_path / "jobs"
+    monkeypatch.setenv("SWARM_JOBS", str(jobs))
+    job_a = _make_job_bus(jobs, "20261015-job-a")
+    job_b = _make_job_bus(jobs, "20261015-job-b")
+    root = bus.post(job_b, "w2", "board", "info", "a gotcha", topic="gotchas")
+    argv = ["--bus", str(job_a), "--as", "x", "reply", "--ref", str(root["id"]), "--body", "confirmed"]
+    assert bus.main(argv) == 0
+    out = capsys.readouterr().out
+    assert "#gotchas" in out and "confirmed" in out and "@20261015-job-a" in out
+    assert [m["ref"] for m in bus._all(gdir) if m.get("ref")] == [root["id"]]
+
+
+def test_locate_prefers_the_selected_bus_then_global_then_jobs_and_searches_none_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2: first hit wins in [selected, global, job buses...] and no directory is searched twice."""
+    gdir = tmp_path / "global"
+    monkeypatch.setenv("SWARM_BOARD", str(gdir))
+    jobs = tmp_path / "jobs"
+    monkeypatch.setenv("SWARM_JOBS", str(jobs))
+    job_a = _make_job_bus(jobs, "20261015-job-a")
+    job_b = _make_job_bus(jobs, "20261015-job-b")
+    gdir.mkdir(parents=True, exist_ok=True)
+    for src, body in ((gdir, "on the global board"), (job_a, "on the selected bus"), (job_b, "on another job bus")):
+        bus._append(src, {"id": "dup", "from": "w", "to": "board", "kind": "info", "topic": "findings", "body": body})
+    found = bus._locate(job_a, "dup")
+    assert found is not None and found[0] == job_a and found[1]["body"] == "on the selected bus"
+    found = bus._locate(tmp_path / "elsewhere", "dup")  # nothing on the selected bus -> global first
+    assert found is not None and found[0] == gdir
+    assert bus._locate(job_a, "nowhere") is None
+    searched: list[Path] = []
+    real_all = bus._all
+
+    def spy(src: Path) -> list[dict[str, object]]:
+        searched.append(src)
+        return real_all(src)
+
+    monkeypatch.setattr(bus, "_all", spy)
+    assert bus._locate(gdir, "nowhere") is None
+    assert searched == [gdir, job_a, job_b]  # the global board is asked once, not twice
