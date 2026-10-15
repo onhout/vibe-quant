@@ -140,6 +140,16 @@ class FundingCalculator:
         _RATE_CACHE[key] = (times, rates)
         return times, rates
 
+    def settlements(self, symbol: str) -> tuple[tuple[int, ...], tuple[float, ...]]:
+        """Read-only copies of a symbol's archived settlement times (ns) and rates.
+
+        Returns:
+            ``(times_ns, rates)`` as tuples, so a caller can neither mutate the
+            process-level rate cache nor observe a later load of the same symbol.
+        """
+        times, rates = self._load_rates(symbol)
+        return tuple(times), tuple(rates)
+
     def accrue(
         self,
         instrument_id: str,
