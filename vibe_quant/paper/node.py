@@ -32,6 +32,7 @@ from vibe_quant.db.state_manager import StateManager
 from vibe_quant.dsl.compiler import StrategyCompiler
 from vibe_quant.dsl.parser import validate_strategy_dict
 from vibe_quant.fees import FeeSchedule
+from vibe_quant.liquidation_settings import LiquidationConfigError, LiquidationSettings
 from vibe_quant.logging.events import Event, EventType, create_event
 from vibe_quant.logging.writer import EventWriter
 from vibe_quant.paper.config import (
@@ -214,13 +215,49 @@ def validated_run_strategy_params(run: dict[str, Any]) -> dict[str, object]:
     return runner._build_strategy_params(run)
 
 
-def validated_run_leverage(run: dict[str, Any]) -> float:
-    """Venue leverage used by ``ValidationRunner._create_venue_config`` for this run."""
+def validated_run_liquidation(run: dict[str, Any]) -> LiquidationSettings:
+    """The stored ``liquidation_mode`` + ``leverage`` of a validation run.
+
+    One shared rule for reading a run's settings
+    (:meth:`LiquidationSettings.from_params`): a missing key is the default, and
+    an explicit ``None`` / garbage value is rejected instead of silently
+    defaulted. ``ValidationRunner._create_venue_config`` uses ``leverage``.
+
+    Raises:
+        ConfigurationError: If the run's stored liquidation settings are invalid.
+    """
     params = run.get("parameters")
-    raw = params.get("leverage") if isinstance(params, dict) else None
-    if not isinstance(raw, bool) and isinstance(raw, (int, float)) and raw > 0:
-        return float(raw)
-    return float(DEFAULT_VALIDATION_LEVERAGE)
+    try:
+        return LiquidationSettings.from_params(params if isinstance(params, dict) else {})
+    except LiquidationConfigError as exc:
+        raise ConfigurationError(
+            f"Validation run {run.get('id')} has invalid liquidation settings: {exc}"
+        ) from exc
+
+
+def validated_run_leverage(run: dict[str, Any]) -> float:
+    """Venue leverage used by ``ValidationRunner._create_venue_config`` for this run.
+
+    A thin wrapper over :func:`validated_run_liquidation` (the single parse rule).
+    """
+    return validated_run_liquidation(run).leverage
+
+
+def validated_leverage_override(value: object) -> int:
+    """An explicit ``leverage`` override (config-file / :class:`PaperTradingConfig`).
+
+    The same shared whole-number-in-``[1, 125]`` rule as the stored settings, so
+    ``int()`` truncation (``2.5`` -> ``2``) and ``bool`` (``True`` -> ``1``) can
+    never reach the venue.
+
+    Raises:
+        ConfigurationError: If ``value`` is not a whole number in ``[1, 125]``.
+    """
+    try:
+        settings = LiquidationSettings.from_params({"leverage": value})
+    except LiquidationConfigError as exc:
+        raise ConfigurationError(str(exc)) from exc
+    return int(settings.leverage)
 
 
 class _GuardBridge(GuardListener):
@@ -545,11 +582,7 @@ class PaperTradingNode:
             raise ConfigurationError(f"Strategy config has no fields {unknown}")
 
         if cfg.leverage is not None:
-            leverage_f = float(cfg.leverage)
-        if leverage_f != int(leverage_f):
-            raise ConfigurationError(
-                f"Binance futures leverage must be an integer, validation used {leverage_f}"
-            )
+            leverage_f = float(validated_leverage_override(cfg.leverage))
         leverage = int(leverage_f)
         if leverage > cfg.sizing.max_leverage:
             raise ConfigurationError(
@@ -1606,6 +1639,8 @@ __all__ = [
     "PaperTradingNode",
     "ResolvedRunConfig",
     "run_paper_trading",
+    "validated_leverage_override",
     "validated_run_leverage",
+    "validated_run_liquidation",
     "validated_run_strategy_params",
 ]

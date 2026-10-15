@@ -27,7 +27,7 @@ from vibe_quant.paper.config import (
     SizingModuleConfig,
     credential_env_names,
 )
-from vibe_quant.paper.node import run_paper_trading
+from vibe_quant.paper.node import run_paper_trading, validated_leverage_override
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -102,8 +102,11 @@ def load_config_from_json(config_path: Path) -> PaperTradingConfig:
 
     db_path_str = data.get("db_path")
     logs_path_str = data.get("logs_path", str(DEFAULT_PAPER_LOGS_PATH))
-    leverage = data.get("leverage")
+    raw_leverage = data.get("leverage")
     validation_run_id = data.get("validation_run_id")
+    # The override is validated by the shared whole-number rule, never int()-cast
+    # (which silently turned 2.5 into 2 and True into 1).
+    leverage = validated_leverage_override(raw_leverage) if raw_leverage is not None else None
 
     return PaperTradingConfig(
         trader_id=data["trader_id"],
@@ -111,7 +114,7 @@ def load_config_from_json(config_path: Path) -> PaperTradingConfig:
         symbols=list(data.get("symbols") or []),
         strategy_id=data.get("strategy_id"),
         validation_run_id=int(validation_run_id) if validation_run_id is not None else None,
-        leverage=int(leverage) if leverage is not None else None,
+        leverage=leverage,
         margin_type=str(data.get("margin_type", DEFAULT_MARGIN_TYPE)),
         sizing=sizing,
         risk=risk,
