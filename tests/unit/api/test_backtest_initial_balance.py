@@ -8,10 +8,8 @@ R1/R2: a valid value (or none at all) launches, and the stored parameters keep t
 value the client sent.
 
 NaN and Infinity are deliberately NOT in the API parametrization: they are not JSON
-values, and any request body that carries one and fails validation is already answered
-with a 500 by the framework (FastAPI cannot serialize the error's ``input`` with
-``allow_nan=False``) -- measured on HEAD for the pre-existing leverage rule
-(``parameters.leverage=nan`` -> 500, while an unrelated ``nan`` param launches fine).
+values, and a launch body that carries one is a 422 naming the path
+(``must be a finite number``, see ``test_launch_non_finite.py``).
 Both are still rejected by the shared parser (R5) and by the validation runner (R7,
 where a stored NaN reached through the parameters JSON fails the run).
 """

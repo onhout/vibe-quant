@@ -6,6 +6,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
+from vibe_quant.api.schemas.finite import reject_non_finite
 from vibe_quant.liquidation_settings import (
     DEFAULT_LEVERAGE,
     MISSING,
@@ -81,6 +82,18 @@ class DiscoveryLaunchRequest(BaseModel):
                 if key in data and data[key] is None:
                     msg = f"{key} must be a whole number in [1, 125], got None"
                     raise ValueError(msg)
+        return data
+
+    # Declared AFTER every other before-validator on purpose: Pydantic runs
+    # model before-validators in reverse declaration order (last declared first), so
+    # this one runs first and a non-finite number is always named, never hidden by
+    # another before-validator's error (review B1).
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_non_finite(cls, data: object) -> object:
+        # JSON's bare NaN/Infinity/-Infinity are not JSON values, and a NaN
+        # leverage used to make FastAPI's own 422 un-serialisable -> 500.
+        reject_non_finite(data)
         return data
 
     @field_validator("leverage", "liquidation_leverage", mode="before")

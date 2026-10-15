@@ -7,6 +7,7 @@ from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from vibe_quant.api.schemas._validators import KNOWN_TIMEFRAMES, check_date_range, clean_symbols
+from vibe_quant.api.schemas.finite import reject_non_finite
 from vibe_quant.balance_settings import BalanceConfigError, parse_initial_balance
 from vibe_quant.liquidation_settings import LiquidationConfigError, LiquidationSettings
 
@@ -50,6 +51,15 @@ class BacktestLaunchRequest(BaseModel):
         if v not in KNOWN_TIMEFRAMES:
             raise ValueError(f"timeframe must be one of {sorted(KNOWN_TIMEFRAMES)}, got {v!r}")
         return v
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_non_finite(cls, data: object) -> object:
+        # JSON's bare NaN/Infinity/-Infinity are not JSON values; a 422 naming the
+        # path is the only sensible answer (a NaN parameter used to launch at 201,
+        # and a NaN leverage made FastAPI's own 422 un-serialisable -> 500).
+        reject_non_finite(data)
+        return data
 
     @model_validator(mode="after")
     def _ranges(self) -> BacktestLaunchRequest:

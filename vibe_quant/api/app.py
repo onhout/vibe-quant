@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import math
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -77,6 +80,35 @@ async def _csrf_guard(
     return await call_next(request)
 
 
+def _json_safe(value: object) -> object:
+    """Replace non-finite floats (NaN/Infinity/-Infinity) with their repr string.
+
+    ``json.loads`` accepts those bare literals but ``json.dumps(allow_nan=False)``
+    (Starlette's ``JSONResponse``) refuses them, so a 422 whose error ``input`` holds
+    one would itself be a 500. Only the response copy is rewritten, never the request.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return repr(value)
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _json_safe_validation_errors(exc: RequestValidationError) -> dict[str, object]:
+    """The normal FastAPI 422 body, with every non-finite float made JSON-safe."""
+    return {"detail": _json_safe(jsonable_encoder(exc.errors()))}
+
+
+async def _request_validation_exception_handler(request: Request, exc: Exception) -> Response:
+    validation = cast("RequestValidationError", exc)
+    return JSONResponse(
+        status_code=422,
+        content=_json_safe_validation_errors(validation),
+    )
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     state_mgr = StateManager()
@@ -132,6 +164,10 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # JSON's bare NaN/Infinity/-Infinity reach pydantic, whose errors carry the raw
+    # input; serialising that input would 500 (Starlette refuses non-finite floats).
+    app.add_exception_handler(RequestValidationError, _request_validation_exception_handler)
 
     app.include_router(backtest_router)
     app.include_router(data_router)
