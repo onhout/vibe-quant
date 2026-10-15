@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from vibe_quant.liquidation.exit_timing import RestingExit
-from vibe_quant.liquidation.overlay import _default_symbol, _enum_name, position_views
+from vibe_quant.liquidation.overlay import default_symbol, enum_name, position_views
 from vibe_quant.metrics import _Book as _LedgerBook
 from vibe_quant.validation.extraction import accrue_position_funding
 from vibe_quant.validation.funding import FundingAccrual
@@ -88,20 +88,18 @@ def resting_exit_inputs(
             unsupported resting type (R27). The message names the position key and the client
             order id; the caller fails the run closed.
     """
-    if isinstance(execution_bar_ns, bool) or not isinstance(execution_bar_ns, int):
-        raise ValueError(f"execution_bar_ns must be an int > 0, got {execution_bar_ns!r}")
-    if execution_bar_ns <= 0:
-        raise ValueError(f"execution_bar_ns must be an int > 0, got {execution_bar_ns!r}")
+    # ``execution_bar_ns`` needs no check here: only mode-on screening with a coarser-than-1m
+    # execution bar (E > 60 s, an int) reaches this call (nt_runner._boundary_exit_scan_ts, R17).
     cache = engine.kernel.cache
     out: list[RestingExit] = []
     for pos in positions:
         key = position_key(pos)
-        symbol = _default_symbol(str(pos.instrument_id))
+        symbol = default_symbol(str(pos.instrument_id))
         for index, fill in enumerate(pos.events):
             ts = int(fill.ts_event)
             if (ts + _ONE_MS) % execution_bar_ns != 0:
                 continue
-            order_type = _enum_name(fill.order_type)
+            order_type = enum_name(fill.order_type)
             if order_type == _MARKET:
                 continue
             order_id = str(fill.client_order_id)
@@ -123,7 +121,7 @@ def resting_exit_inputs(
                     f"at or before the fill ts {ts}"
                 )
             kind: Literal["stop", "limit"] = "stop" if order_type == "STOP_MARKET" else "limit"
-            side = _enum_name(fill.order_side)
+            side = enum_name(fill.order_side)
             if side not in ("BUY", "SELL"):
                 raise ValueError(f"{key} fill {index}: unknown order side {side!r}")
             # True -> the trigger watches the bar LOW (a SELL stop / a BUY limit)

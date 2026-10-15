@@ -86,7 +86,14 @@ if TYPE_CHECKING:
     from vibe_quant.liquidation.scan import MarkLike, Mode
     from vibe_quant.liquidation.tiers import TierTable
 
-__all__ = ["OverlayResult", "RefinedExitConflict", "liquidation_overlay", "position_views"]
+__all__ = [
+    "OverlayResult",
+    "RefinedExitConflict",
+    "default_symbol",
+    "enum_name",
+    "liquidation_overlay",
+    "position_views",
+]
 
 _QTY_TOL = 1e-9
 _RESIDUAL_TOL = 1e-6  # absolute (quote currency); float noise is ~1e-12
@@ -137,12 +144,14 @@ class _PosData:
     cash: list[tuple[int, float]]
 
 
-def _enum_name(value: Any) -> str:
+def enum_name(value: Any) -> str:
+    """The upper-case enum name of ``value`` (its ``.name``, else ``str(value)``)."""
     name = getattr(value, "name", None)
     return str(name if name is not None else value).upper()
 
 
-def _default_symbol(instrument_id: str) -> str:
+def default_symbol(instrument_id: str) -> str:
+    """The symbol of an NT instrument id (``BTCUSDT-PERP.BINANCE`` -> ``BTCUSDT``)."""
     return instrument_id.split("-")[0]
 
 
@@ -157,7 +166,7 @@ def _collect(
     Positions are ordered by open time (as there). A key is ``<position id>@<ts_opened>``:
     NT netting reuses position ids, the open time separates the incarnations.
     """
-    symbol_fn = symbol_of or _default_symbol
+    symbol_fn = symbol_of or default_symbol
     ordered = sorted(
         nt_positions,
         key=lambda p: (int(p.ts_opened), int(p.ts_closed) or 2**63 - 1),
@@ -174,7 +183,7 @@ def _collect(
             raise ValueError(f"position {key} has no fill events")
         fills: list[LedgerEvent] = []
         for fill in raw_fills:
-            side = _enum_name(fill.order_side)
+            side = enum_name(fill.order_side)
             if side not in ("BUY", "SELL"):
                 raise ValueError(f"position {key}: unknown order side {side!r}")
             fills.append(
@@ -183,7 +192,7 @@ def _collect(
                     qty=(1.0 if side == "BUY" else -1.0) * float(fill.last_qty),
                     price=float(fill.last_px),
                     cash=-float(fill.commission),
-                    resting=_enum_name(fill.order_type) != "MARKET",
+                    resting=enum_name(fill.order_type) != "MARKET",
                 )
             )
         instrument_id = str(pos.instrument_id)

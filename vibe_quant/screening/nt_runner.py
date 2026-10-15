@@ -39,8 +39,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# One millisecond in ns. An execution bar's ``ts_init`` is its close, so a boundary resting
-# fill sits 1 ms before it (R18) and its 1m window is ``[ts + 1 ms - E, ts]`` (R19).
+# One millisecond in ns. A catalog execution bar's ``ts_init`` is its close less 1 ms, so a
+# boundary resting fill (``(ts_event + 1 ms) % execution_bar_ns == 0``, R18) sits exactly on
+# it and its 1m window is ``[ts + 1 ms - E, ts]`` (R19).
 _ONE_MS = 1_000_000
 
 
