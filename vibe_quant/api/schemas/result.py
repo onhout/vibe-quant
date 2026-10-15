@@ -82,6 +82,14 @@ class TradeResponse(BaseModel):
     exit_reason: str | None
 
 
+class ExitTimingSummary(BaseModel):
+    """Refined-exit counts of a mode-on screening sweep row (bead vibe-quant-3r9wj)."""
+
+    refined: int
+    kept_bar_close: int
+    by_symbol: dict[str, dict[str, int]]
+
+
 class SweepResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -106,6 +114,9 @@ class SweepResultResponse(BaseModel):
     # run's liquidation mode is on; NULL on mode-off and older rows (D1).
     liquidation_count: int | None = None
     liquidation_forfeited: float | None = None
+    # Refined-exit counts, written by the screening sweep only when the run's
+    # liquidation mode is on; NULL on mode-off and older rows (D1b).
+    exit_timing: ExitTimingSummary | None = None
 
 
 class RunSummaryItem(BaseModel):

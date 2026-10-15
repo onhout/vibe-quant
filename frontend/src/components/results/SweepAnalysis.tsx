@@ -22,7 +22,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { showLiqColumn } from "@/lib/liquidationDisplay";
+import {
+  exitTimingLabel,
+  exitTimingTitle,
+  showExitColumn,
+  showLiqColumn,
+} from "@/lib/liquidationDisplay";
 import { cn } from "@/lib/utils";
 
 interface SweepAnalysisProps {
@@ -47,6 +52,7 @@ function formatParams(params: Record<string, unknown>): string {
 
 function exportSweepCsv(sweeps: SweepResultResponse[], runId: number) {
   const withLiq = showLiqColumn(sweeps);
+  const withExit = showExitColumn(sweeps);
   const headers = [
     "Parameters",
     "Sharpe",
@@ -62,6 +68,7 @@ function exportSweepCsv(sweeps: SweepResultResponse[], runId: number) {
     "WF",
     "KF",
     ...(withLiq ? ["Liq"] : []),
+    ...(withExit ? ["1m exits"] : []),
   ];
   const rows = sweeps.map((s) => [
     `"${formatParams(s.parameters)}"`,
@@ -78,6 +85,7 @@ function exportSweepCsv(sweeps: SweepResultResponse[], runId: number) {
     s.passed_walk_forward ?? "",
     s.passed_purged_kfold ?? "",
     ...(withLiq ? [s.liquidation_count ?? ""] : []),
+    ...(withExit ? [exitTimingLabel(s.exit_timing) ?? ""] : []),
   ]);
 
   const csvContent = [headers, ...rows].map((row) => row.join(",")).join("\n");
@@ -233,6 +241,7 @@ export function SweepAnalysis({ runId }: SweepAnalysisProps) {
 
   const paretoCount = sweeps.filter((s) => s.is_pareto_optimal).length;
   const showLiq = showLiqColumn(filteredSweeps);
+  const showExit = showExitColumn(filteredSweeps);
 
   return (
     <div className="space-y-6">
@@ -332,6 +341,7 @@ export function SweepAnalysis({ runId }: SweepAnalysisProps) {
               <TableHead className="text-right">Win Rate</TableHead>
               <TableHead className="text-right">Trades</TableHead>
               {showLiq && <TableHead className="text-right">Liq</TableHead>}
+              {showExit && <TableHead className="text-right">1m exits</TableHead>}
               <TableHead>Pareto</TableHead>
               <TableHead>Filters</TableHead>
               <TableHead>Actions</TableHead>
@@ -363,6 +373,14 @@ export function SweepAnalysis({ runId }: SweepAnalysisProps) {
                     }
                   >
                     {sweep.liquidation_count ?? "-"}
+                  </TableCell>
+                )}
+                {showExit && (
+                  <TableCell
+                    className="text-right tabular-nums"
+                    title={exitTimingTitle(sweep.exit_timing) ?? undefined}
+                  >
+                    {exitTimingLabel(sweep.exit_timing) ?? "-"}
                   </TableCell>
                 )}
                 <TableCell>

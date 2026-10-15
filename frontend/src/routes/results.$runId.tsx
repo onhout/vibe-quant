@@ -14,6 +14,7 @@ import { ArrowLeft } from "lucide-react";
 import { ChartsPanel } from "@/components/results/ChartsPanel";
 import { CostBreakdown } from "@/components/results/CostBreakdown";
 import { CrossWindowPanel } from "@/components/results/CrossWindowPanel";
+import { ExitTimingNote } from "@/components/results/ExitTimingNote";
 import { ExportPanel } from "@/components/results/ExportPanel";
 import { FuturesAnalytics } from "@/components/results/FuturesAnalytics";
 import { LiquidationChip } from "@/components/results/LiquidationChip";
@@ -134,6 +135,7 @@ export function ResultsDetailPage({ runId }: ResultsDetailPageProps) {
             Run #{runId}
           </h3>
           <LiquidationChip runId={runId} />
+          <ExitTimingNote runId={runId} />
         </div>
         <ExportPanel runId={runId} />
       </div>

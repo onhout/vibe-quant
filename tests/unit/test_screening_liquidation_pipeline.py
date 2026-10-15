@@ -15,10 +15,13 @@ completed run (I7).
 from __future__ import annotations
 
 import argparse
+import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
+from vibe_quant.api.app import create_app
 from vibe_quant.db.state_manager import StateManager
 from vibe_quant.dsl import parse_strategy_string
 from vibe_quant.errors import LiquidationIntegrityError
@@ -83,6 +86,22 @@ class _MarkMissingRunner:
         raise LiquidationIntegrityError.wrap(
             MarkDataMissing("no MARK bars for BTCUSDT-PERP"), "isolated"
         )
+
+
+class _ExitTimingRunner:
+    """A mode-on runner whose metrics carry the exit-timing counts (E8 transport)."""
+
+    NOTES: dict[str, Any] = {
+        "refined": 2,
+        "kept_bar_close": 1,
+        "by_symbol": {"BTCUSDT": {"refined": 2, "kept_bar_close": 1}},
+    }
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+
+    def __call__(self, params: dict[str, float | int]) -> BacktestMetrics:
+        return BacktestMetrics(parameters=params, sharpe_ratio=1.0, exit_timing=dict(self.NOTES))
 
 
 class _PlainBoomRunner:
@@ -434,3 +453,213 @@ def test_factory_passes_liquidation_to_runner_and_pipeline(
     assert off._runner._liquidation_mode == "off"
     assert not off._liquidation.on
     assert off._liquidation.to_params() == {}
+
+
+# ---------------------------------------------------------------------------
+# E1/E3: sweep_results.exit_timing is written only when the mode is on and
+# round-trips from the DB JSON through the API unchanged
+# ---------------------------------------------------------------------------
+
+
+def _capture_batch(monkeypatch: pytest.MonkeyPatch) -> dict[int, list[dict[str, Any]]]:
+    """Record the exact row dicts ``save_results`` hands to the batch writer."""
+    captured: dict[int, list[dict[str, Any]]] = {}
+    real = StateManager.save_sweep_results_batch
+
+    def spy(self: StateManager, run_id: int, results: Any) -> None:
+        captured[run_id] = [dict(r) for r in results]
+        return real(self, run_id, results)
+
+    monkeypatch.setattr(StateManager, "save_sweep_results_batch", spy)
+    return captured
+
+
+async def test_save_results_writes_exit_timing_only_when_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E1: mode on -> the row carries the notes JSON; mode off -> no key, API null.
+
+    Mode off never sets ``metrics.exit_timing`` (None) and never adds the key, so
+    the batch insert leaves ``sweep_results.exit_timing`` NULL and the API returns
+    ``exit_timing: null``.
+    """
+    db = tmp_path / "e1.db"
+    state = StateManager(db)
+    captured = _capture_batch(monkeypatch)
+    notes = {"refined": 0, "kept_bar_close": 0, "by_symbol": {}}
+    try:
+        strategy_id = state.create_strategy(name="liq_probe", dsl_config=_STRATEGY)
+
+        def new_run(parameters: dict[str, object]) -> int:
+            return state.create_backtest_run(
+                strategy_id=strategy_id,
+                run_mode="screening",
+                symbols=["BTCUSDT"],
+                timeframe="4h",
+                start_date="2024-01-01",
+                end_date="2024-03-01",
+                parameters=parameters,
+            )
+
+        on_run = new_run({"liquidation_mode": "isolated", "leverage": 50.0})
+        off_run = new_run({})
+
+        ScreeningPipeline(
+            dsl=_dsl(), liquidation=LiquidationSettings(mode="isolated", leverage=50.0)
+        ).save_results(
+            ScreeningResult(
+                "liq_probe", 1, 1, 0.1,
+                [BacktestMetrics(parameters={"a": 1}, sharpe_ratio=1.0, exit_timing=notes)],
+                [0],
+            ),
+            state,
+            on_run,
+        )
+        ScreeningPipeline(dsl=_dsl()).save_results(
+            ScreeningResult(
+                "liq_probe", 1, 1, 0.1,
+                [BacktestMetrics(parameters={"a": 1}, sharpe_ratio=1.0)],
+                [0],
+            ),
+            state,
+            off_run,
+        )
+
+        off_column = state.conn.execute(
+            "SELECT exit_timing FROM sweep_results WHERE run_id = ?", (off_run,)
+        ).fetchone()[0]
+
+        app = create_app()
+        app.state.state_manager = state
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            api_off = (await client.get(f"/api/results/runs/{off_run}/sweeps")).json()
+    finally:
+        state.close()
+
+    # mode on: key present, JSON text, single deterministic key set
+    assert captured[on_run][0]["exit_timing"] == json.dumps(notes, sort_keys=True)
+    # mode off: the key is absent, so the batch column stays NULL
+    assert "exit_timing" not in captured[off_run][0]
+    assert off_column is None
+    assert api_off[0]["exit_timing"] is None
+
+
+async def test_exit_timing_round_trips_db_and_api(tmp_path: Path) -> None:
+    """E3: the DB JSON decodes to the notes dict and the API returns the same object."""
+    db = tmp_path / "e3.db"
+    state = StateManager(db)
+    notes = {
+        "refined": 18,
+        "kept_bar_close": 2,
+        "by_symbol": {
+            "BTCUSDT": {"refined": 12, "kept_bar_close": 1},
+            "ETHUSDT": {"refined": 6, "kept_bar_close": 1},
+        },
+    }
+    try:
+        strategy_id = state.create_strategy(name="liq_probe", dsl_config=_STRATEGY)
+        run_id = state.create_backtest_run(
+            strategy_id=strategy_id,
+            run_mode="screening",
+            symbols=["BTCUSDT"],
+            timeframe="4h",
+            start_date="2024-01-01",
+            end_date="2024-03-01",
+            parameters={"liquidation_mode": "isolated", "leverage": 50.0},
+        )
+        ScreeningPipeline(
+            dsl=_dsl(), liquidation=LiquidationSettings(mode="isolated", leverage=50.0)
+        ).save_results(
+            ScreeningResult(
+                "liq_probe", 1, 1, 0.1,
+                [BacktestMetrics(parameters={"a": 1}, sharpe_ratio=1.0, exit_timing=notes)],
+                [0],
+            ),
+            state,
+            run_id,
+        )
+
+        rows = state.get_sweep_results(run_id)
+
+        app = create_app()
+        app.state.state_manager = state
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            api = (await client.get(f"/api/results/runs/{run_id}/sweeps")).json()
+    finally:
+        state.close()
+
+    assert rows[0]["exit_timing"] == notes
+    assert api[0]["exit_timing"] == notes
+
+
+def test_save_results_leaves_exit_timing_null_for_sentinel_row(tmp_path: Path) -> None:
+    """E4: a -999 sentinel row stores NULL exit_timing (it never ran the engine), while
+    the real row stores its JSON -- both rows set the key, so one batch has one key set."""
+    db = tmp_path / "e4.db"
+    state = StateManager(db)
+    notes = {
+        "refined": 1,
+        "kept_bar_close": 0,
+        "by_symbol": {"BTCUSDT": {"refined": 1, "kept_bar_close": 0}},
+    }
+    try:
+        strategy_id = state.create_strategy(name="liq_probe", dsl_config=_STRATEGY)
+        run_id = state.create_backtest_run(
+            strategy_id=strategy_id,
+            run_mode="screening",
+            symbols=["BTCUSDT"],
+            timeframe="4h",
+            start_date="2024-01-01",
+            end_date="2024-03-01",
+            parameters={"liquidation_mode": "isolated", "leverage": 50.0},
+        )
+        ScreeningPipeline(
+            dsl=_dsl(), liquidation=LiquidationSettings(mode="isolated", leverage=50.0)
+        ).save_results(
+            ScreeningResult(
+                "liq_probe", 2, 1, 0.1,
+                [
+                    BacktestMetrics(
+                        parameters={"a": 1},
+                        sharpe_ratio=FAILED_BACKTEST_SHARPE,
+                        exit_timing=None,
+                    ),
+                    BacktestMetrics(parameters={"a": 2}, sharpe_ratio=1.0, exit_timing=notes),
+                ],
+                [1],
+            ),
+            state,
+            run_id,
+        )
+
+        by_sharpe = {
+            row[0]: row[1]
+            for row in state.conn.execute(
+                "SELECT sharpe_ratio, exit_timing FROM sweep_results WHERE run_id = ?",
+                (run_id,),
+            ).fetchall()
+        }
+    finally:
+        state.close()
+
+    assert by_sharpe[FAILED_BACKTEST_SHARPE] is None
+    assert json.loads(by_sharpe[1.0]) == notes
+
+
+def test_parallel_pipeline_keeps_exit_timing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E8: metrics are pickled back from the worker processes (runner attributes are
+    not), so a mode-on PARALLEL sweep persists the exit-timing counts."""
+    db = tmp_path / "e8.db"
+    run_id = _make_run(db, {"liquidation_mode": "isolated"})
+    _install_fake_runner(monkeypatch, _ExitTimingRunner, workers=2)
+
+    assert _run_cli(db, run_id) == 0
+
+    final = _final_run(db, run_id)
+    assert final["run"]["status"] == "completed"
+    assert len(final["rows"]) == 1
+    assert final["rows"][0]["exit_timing"] == _ExitTimingRunner.NOTES

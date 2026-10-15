@@ -493,6 +493,24 @@ def test_r17_1m_execution_writes_zero_exit_timing_and_reads_no_1m_bars(
     assert runner.last_liquidation_notes["exit_timing"] == ZERO_TIMING
 
 
+def test_r17_1m_execution_puts_zero_exit_timing_on_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E2/R25b: a mode-on 1m-execution run has nothing to re-time, but the zero counts
+    still travel on the METRICS (they are pickled from workers; runner attributes are
+    not), so the pipeline stores 0/0 -- never NULL -- for a mode-on run."""
+    catalog = marks_and_last(tmp_path)
+    engine = engine_with_orders(
+        [sl_long()], CRASH_BARS, {"SL-1": stop_order(accepted_at=at(BAR_OPEN_MIN))}
+    )
+    runner = screening_runner(tmp_path, "isolated", catalog, leverage=50.0)
+    runner._all_timeframes = {"1m"}
+
+    metrics = runner._extract_metrics({}, bt_result(1), engine, time.time(), BALANCE)
+
+    assert metrics.exit_timing == ZERO_TIMING
+
+
 def test_r17_mode_off_writes_no_exit_timing_and_only_the_liquidation_guard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -508,6 +526,7 @@ def test_r17_mode_off_writes_no_exit_timing_and_only_the_liquidation_guard(
     assert metrics.liquidation_count == 0
     assert calls == []
     assert runner.last_liquidation_notes is None
+    assert metrics.exit_timing is None
 
 
 def test_r17b_r19_r25b_only_symbols_with_a_boundary_fill_load_their_1m_last_window(
@@ -590,12 +609,24 @@ def test_r23_stop_inside_liquidation_distance_no_longer_liquidates_after_the_1m_
         "kept_bar_close": 0,
         "by_symbol": {"BTCUSDT": {"refined": 1, "kept_bar_close": 0}},
     }
+    # D1b/R25b: the counts MUST travel on the METRICS (they are pickled from workers;
+    # runner attributes are not): a ``metrics.exit_timing = _no_exit_timing()`` fallback
+    # would store zeros for a run that refined one exit.
+    assert metrics.exit_timing == {
+        "refined": 1,
+        "kept_bar_close": 0,
+        "by_symbol": {"BTCUSDT": {"refined": 1, "kept_bar_close": 0}},
+    }
     off = screening_runner(tmp_path, "off", catalog, leverage=50.0)
     off._all_timeframes = {"4h"}
     off_engine = engine_with_orders(
         [sl_long()], CRASH_BARS, {"SL-1": stop_order(accepted_at=at(BAR_OPEN_MIN))}
     )
-    assert equal_metrics(metrics, off._extract_metrics({}, bt_result(1), off_engine, time.time(), BALANCE))
+    off_metrics = off._extract_metrics({}, bt_result(1), off_engine, time.time(), BALANCE)
+    # R24/D1b: every MEASURED field is still identical (equal_metrics ignores the
+    # mode-on-only exit_timing diagnostic); off it is None.
+    assert off_metrics.exit_timing is None
+    assert equal_metrics(metrics, off_metrics)
 
 
 def test_r23_counterfactual_without_refinement_the_same_run_liquidates_at_1435(

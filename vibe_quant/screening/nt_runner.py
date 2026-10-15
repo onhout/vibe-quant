@@ -1063,6 +1063,8 @@ class NTScreeningRunner:
                 self.last_liquidation_notes = overlay.result.to_notes(metrics.total_trades)
                 # R25b: the refined-exit counts of this scan, on EVERY mode-on run
                 self.last_liquidation_notes["exit_timing"] = self._last_exit_timing_notes
+                # D1b/R25b: metrics travel back from workers; runner attributes do not.
+                metrics.exit_timing = dict(self._last_exit_timing_notes)
         except Exception as exc:
             if liquidation_on:
                 raise LiquidationIntegrityError.wrap(exc, self._liquidation_mode) from exc

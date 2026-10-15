@@ -236,7 +236,12 @@ def extract(
 
 
 def equal_metrics(a: Any, b: Any) -> bool:
-    return bool(replace(a, execution_time_seconds=0.0) == replace(b, execution_time_seconds=0.0))
+    # exit_timing is a mode-on diagnostic (zeros) vs None when the mode is off, not a
+    # measured metric: neutralise it so the identity-overlay equality still holds (T7a-R1).
+    return bool(
+        replace(a, execution_time_seconds=0.0, exit_timing=None)
+        == replace(b, execution_time_seconds=0.0, exit_timing=None)
+    )
 
 
 # --------------------------------------------------------------------------- hits

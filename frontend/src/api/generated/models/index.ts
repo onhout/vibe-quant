@@ -47,6 +47,8 @@ export * from './downloadHistoryApiDataHistoryGet200Item';
 export * from './downloadHistoryApiDataHistoryGetParams';
 export * from './drawdownPoint';
 export * from './equityCurvePoint';
+export * from './exitTimingSummary';
+export * from './exitTimingSummaryBySymbol';
 export * from './exportDiscoveredStrategyApiDiscoveryResultsRunIdExportStrategyIndexPost201';
 export * from './extractEnqueueResponse';
 export * from './extractionJobResponse';

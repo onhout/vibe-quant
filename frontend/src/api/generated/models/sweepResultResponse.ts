@@ -4,6 +4,7 @@
  * vibe-quant API
  * OpenAPI spec version: 0.1.0
  */
+import type { ExitTimingSummary } from './exitTimingSummary';
 import type { SweepResultResponseParameters } from './sweepResultResponseParameters';
 
 export interface SweepResultResponse {
@@ -26,4 +27,5 @@ export interface SweepResultResponse {
   passed_purged_kfold: boolean | null;
   liquidation_count?: number | null;
   liquidation_forfeited?: number | null;
+  exit_timing?: ExitTimingSummary | null;
 }

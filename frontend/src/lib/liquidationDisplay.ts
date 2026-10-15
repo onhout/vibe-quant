@@ -87,3 +87,79 @@ export function liqBadge(entry: { liquidation_count?: unknown } | null | undefin
   const count = positiveNumber(entry?.liquidation_count);
   return count == null ? null : `${count} liq`;
 }
+
+/**
+ * D1b (job 20261015-small-beads, rows E1-E7): the exit-timing counts of one
+ * mode-on screening sweep row. ``exit_timing`` is null on mode-off rows and on
+ * the sentinel rows (E1/E4), and ``by_symbol`` is keyed by symbol.
+ */
+interface ExitTimingCounts {
+  refined: number;
+  kept_bar_close: number;
+  by_symbol: Record<string, { refined: number; kept_bar_close: number }>;
+}
+
+/** A finite whole count ≥ 0, otherwise null (never coerce a string/float/NaN). */
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+/** The stored counts, or null for every absent/malformed shape (rows E1/E7). */
+function readExitTiming(value: unknown): ExitTimingCounts | null {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const refined = nonNegativeInteger(raw.refined);
+  const kept = nonNegativeInteger(raw.kept_bar_close);
+  if (refined == null || kept == null) return null;
+
+  const bySymbol = raw.by_symbol;
+  if (bySymbol == null || typeof bySymbol !== "object" || Array.isArray(bySymbol)) return null;
+  const symbols: ExitTimingCounts["by_symbol"] = {};
+  for (const [symbol, entry] of Object.entries(bySymbol as Record<string, unknown>)) {
+    if (entry == null || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const row = entry as Record<string, unknown>;
+    const symbolRefined = nonNegativeInteger(row.refined);
+    const symbolKept = nonNegativeInteger(row.kept_bar_close);
+    if (symbolRefined == null || symbolKept == null) return null;
+    symbols[symbol] = { refined: symbolRefined, kept_bar_close: symbolKept };
+  }
+  return { refined, kept_bar_close: kept, by_symbol: symbols };
+}
+
+/** D1b: the sweep "1m exits" cell — "refined / kept_bar_close" (rows E2/E3). */
+export function exitTimingLabel(value: unknown): string | null {
+  const counts = readExitTiming(value);
+  return counts == null ? null : `${counts.refined} / ${counts.kept_bar_close}`;
+}
+
+/** D1b: the sweep cell tooltip — totals, then each symbol sorted (row E3). */
+export function exitTimingTitle(value: unknown): string | null {
+  const counts = readExitTiming(value);
+  if (counts == null) return null;
+  const parts = [
+    `exits re-timed to 1m: ${counts.refined}`,
+    `kept at bar close: ${counts.kept_bar_close}`,
+  ];
+  const entries = Object.entries(counts.by_symbol).sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0,
+  );
+  for (const [symbol, row] of entries) {
+    parts.push(`${symbol} ${row.refined}/${row.kept_bar_close}`);
+  }
+  return parts.join(" · ");
+}
+
+/** D1b: the "1m exits" column appears when any row's counts are valid (E6). */
+export function showExitColumn(rows: readonly { exit_timing?: unknown }[]): boolean {
+  return rows.some((row) => readExitTiming(row.exit_timing) != null);
+}
+
+/** D1b (E5): the chip note needs exactly one sweep row with valid counts. */
+export function runExitTimingNote(rows: readonly { exit_timing?: unknown }[]): string | null {
+  if (rows.length !== 1) return null;
+  const [only] = rows;
+  const counts = readExitTiming(only?.exit_timing);
+  return counts == null
+    ? null
+    : `exits re-timed to 1m: ${counts.refined} · kept at bar close: ${counts.kept_bar_close}`;
+}

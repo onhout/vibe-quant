@@ -108,6 +108,7 @@ _SWEEP_RESULTS_COLUMNS: frozenset[str] = frozenset(
         "passed_purged_kfold",
         "liquidation_count",
         "liquidation_forfeited",
+        "exit_timing",
     }
 )
 
@@ -1052,6 +1053,9 @@ class StateManager:
         for row in rows:
             result = dict(row)
             result["parameters"] = json.loads(result["parameters"])
+            # .get: hand-rolled sweep_results fixtures (7 test files) lack the column.
+            if result.get("exit_timing") is not None:
+                result["exit_timing"] = json.loads(result["exit_timing"])
             results.append(result)
         return results
 

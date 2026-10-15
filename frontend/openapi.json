@@ -6194,6 +6194,36 @@
         ],
         "title": "EquityCurvePoint"
       },
+      "ExitTimingSummary": {
+        "properties": {
+          "refined": {
+            "type": "integer",
+            "title": "Refined"
+          },
+          "kept_bar_close": {
+            "type": "integer",
+            "title": "Kept Bar Close"
+          },
+          "by_symbol": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": "object",
+            "title": "By Symbol"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refined",
+          "kept_bar_close",
+          "by_symbol"
+        ],
+        "title": "ExitTimingSummary",
+        "description": "Refined-exit counts of a mode-on screening sweep row (bead vibe-quant-3r9wj)."
+      },
       "ExtractEnqueueResponse": {
         "properties": {
           "job_id": {
@@ -9385,6 +9415,16 @@
               }
             ],
             "title": "Liquidation Forfeited"
+          },
+          "exit_timing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExitTimingSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

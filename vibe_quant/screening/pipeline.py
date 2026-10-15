@@ -495,9 +495,17 @@ class ScreeningPipeline:
                 if metrics.sharpe_ratio == FAILED_BACKTEST_SHARPE:
                     row["liquidation_count"] = None
                     row["liquidation_forfeited"] = None
+                    row["exit_timing"] = None
                 else:
                     row["liquidation_count"] = int(metrics.liquidation_count)
                     row["liquidation_forfeited"] = float(metrics.liquidation_forfeited)
+                    # D1b: the refined-exit counts as JSON text (a sentinel never
+                    # ran the engine, so it stores NULL above, not a fake zero).
+                    row["exit_timing"] = (
+                        json.dumps(metrics.exit_timing, sort_keys=True)
+                        if metrics.exit_timing is not None
+                        else None
+                    )
             result_dicts.append(row)
 
         # Batch save

@@ -5,7 +5,7 @@ from __future__ import annotations
 from vibe_quant.api.app import create_app
 
 EXPECTED_PATH_COUNT = 92
-EXPECTED_SCHEMA_COUNT = 86  # -DatabaseSwitchRequest (runtime DB switch removed)
+EXPECTED_SCHEMA_COUNT = 87  # -DatabaseSwitchRequest (runtime DB switch removed); +ExitTimingSummary (vibe-quant-3r9wj)
 
 REQUIRED_PATHS = [
     "/health",

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from vibe_quant.metrics import PerformanceMetrics
 
@@ -54,6 +55,10 @@ class BacktestMetrics(PerformanceMetrics):
     # remaining margin it took. 0 / 0.0 = none (and the default of every run with the mode off).
     liquidation_count: int = 0
     liquidation_forfeited: float = 0.0
+    # Screening exit-timing counts (bead vibe-quant-3r9wj, D1b): the refined-exit
+    # notes of this run's boundary scan, set by NTScreeningRunner._extract_metrics
+    # on EVERY mode-on run (all zeros when nothing was refined). None = mode off.
+    exit_timing: dict[str, Any] | None = None
 
 
 @dataclass
