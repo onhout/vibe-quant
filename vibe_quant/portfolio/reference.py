@@ -40,16 +40,30 @@ from vibe_quant.portfolio.spec import CarryExecutionError
 from vibe_quant.portfolio.ticks import release_tick, sizing_price
 
 if TYPE_CHECKING:
+    from vibe_quant.portfolio.research import Ranker
     from vibe_quant.portfolio.sizing import Decision
     from vibe_quant.portfolio.ticks import CarryInputs
 
 
-def _fill(inputs: CarryInputs, symbol: str, steps: int, price: float, ts: int, reduce_only: bool) -> CarryFill:
+def _fee_multiplier(fee_multiplier: float) -> Decimal:
+    """``Decimal(1)`` exactly for the default, so the fee hook is a no-op (R35)."""
+    return Decimal(1) if fee_multiplier == 1.0 else Decimal(str(fee_multiplier))
+
+
+def _fill(
+    inputs: CarryInputs,
+    symbol: str,
+    steps: int,
+    price: float,
+    ts: int,
+    reduce_only: bool,
+    multiplier: Decimal,
+) -> CarryFill:
     """One execution: price = the release tick, fee = the NT taker formula (§5)."""
     instrument = inputs.instruments[symbol]
     step = inputs.specs[symbol].step
     quantity = instrument.make_qty(Decimal(abs(steps)) * step)
-    fee = nt_commission(instrument, quantity, instrument.make_price(price))
+    fee = nt_commission(instrument, quantity, instrument.make_price(price), multiplier)
     return CarryFill(
         symbol=symbol,
         ts=ts,
@@ -61,9 +75,24 @@ def _fill(inputs: CarryInputs, symbol: str, steps: int, price: float, ts: int, r
     )
 
 
-def simulate_reference(inputs: CarryInputs) -> CarryRun:
-    """Simulate a carry run from the shared rules alone (``engine="reference"``)."""
+def simulate_reference(
+    inputs: CarryInputs,
+    *,
+    ranker: Ranker | None = None,
+    fee_multiplier: float = 1.0,
+) -> CarryRun:
+    """Simulate a carry run from the shared rules alone (``engine="reference"``).
+
+    Args:
+        inputs: The preflighted run inputs.
+        ranker: Optional signal replacement (T8 research null/placebo); ``None``
+            uses the archived trailing funding as the signal (byte-identical to
+            the no-hook run, R35).
+        fee_multiplier: Multiplier on the NT taker commission (T8 fee stress);
+            ``1.0`` is the shipped fee (byte-identical).
+    """
     spec = inputs.spec
+    multiplier = _fee_multiplier(fee_multiplier)
     funding = FundingAccumulator(inputs.calc, inputs.marks, inputs.specs, spec.start_ns)
     fills: list[CarryFill] = []
     decisions: list[Decision] = []
@@ -87,6 +116,8 @@ def simulate_reference(inputs: CarryInputs) -> CarryRun:
                 excluded[symbol] = "no_price"
             else:
                 signals[symbol] = value
+        if ranker is not None:
+            signals = ranker(decision_ns, signals)
         current = {symbol: steps_held(fills, symbol, decision_ns) for symbol in spec.symbols}
         decision = decide(
             decision_ns, equity, signals, excluded, prices, current, inputs.specs, spec
@@ -100,7 +131,15 @@ def simulate_reference(inputs: CarryInputs) -> CarryRun:
                     "no own tick after the decision before the run ends"
                 )
             fills.append(
-                _fill(inputs, order.symbol, order.steps, tick.price, tick.ts, order.reduce_only)
+                _fill(
+                    inputs,
+                    order.symbol,
+                    order.steps,
+                    tick.price,
+                    tick.ts,
+                    order.reduce_only,
+                    multiplier,
+                )
             )
     funding.advance(fills, spec.end_ns)
     # Stable sort on (ts, symbol): ties keep release order (a flip's close before its open).

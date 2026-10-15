@@ -72,6 +72,7 @@ DEFAULT_OUT_ROOT = "data/portfolio"
 TRIALS_FILE = "trials.jsonl"
 
 SUMMARY_FILE = "summary.json"
+RESEARCH_FILE = "research.json"
 PARQUET_FILES = (
     "daily.parquet",
     "weekly.parquet",
@@ -137,6 +138,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--trials",
         default=None,
         help=f"DSR trial ledger to append to (default: {DEFAULT_OUT_ROOT}/{TRIALS_FILE})",
+    )
+    evaluate = commands.add_parser(
+        "evaluate", help="research robustness report over the reference (no NT, T8)"
+    )
+    evaluate.add_argument("--symbols", nargs="+", required=True, help="Futures symbols to trade")
+    evaluate.add_argument("--start", required=True, help="First day, YYYY-MM-DD UTC 00:00")
+    evaluate.add_argument("--end", required=True, help="Last day, YYYY-MM-DD UTC 00:00")
+    evaluate.add_argument("--initial-balance", type=float, default=10_000.0)
+    evaluate.add_argument("--legs-divisor", type=int, default=3)
+    evaluate.add_argument("--gross", type=float, default=1.0)
+    evaluate.add_argument("--band", type=float, default=0.10)
+    evaluate.add_argument("--draws", type=int, default=200, help="Random-rank null draws")
+    evaluate.add_argument("--seed", type=int, default=0, help="Null seed (draw i uses seed + i)")
+    evaluate.add_argument("--out", default=None, help=f"Output dir (default: {DEFAULT_OUT_ROOT}/...)")
+    evaluate.add_argument("--force", action="store_true", help="Overwrite an existing research.json")
+    evaluate.add_argument("--catalog", default=DEFAULT_CATALOG)
+    evaluate.add_argument("--archive", default=DEFAULT_ARCHIVE)
+    evaluate.add_argument(
+        "--trials",
+        default=None,
+        help=f"DSR trial ledger to read (default: {DEFAULT_OUT_ROOT}/{TRIALS_FILE})",
     )
     return parser
 
@@ -418,13 +440,65 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _research_line(result: Mapping[str, Any], out_dir: Path, elapsed: float) -> str:
+    """The one stdout line of ``evaluate`` (§8-T8); includes the total wall time (R55)."""
+    return (
+        f"research[reference]: draws={result['draws']!r} "
+        f"ruined={result['ruined_draws']!r} "
+        f"p={result['p_value']!r} "
+        f"p_pre_cost={result['p_value_pre_cost']!r} "
+        f"dsr={result['dsr']!r} "
+        f"out={out_dir} wall={elapsed:.3f}s"
+    )
+
+
+def _cmd_evaluate(args: argparse.Namespace) -> int:
+    """The T8 research evaluator: reference-only, never appends to the ledger (R38)."""
+    if args.draws < 1:
+        raise ValueError(f"--draws must be >= 1, got {args.draws}")
+    spec = CarrySpec.from_dates(
+        args.symbols,
+        args.start,
+        args.end,
+        initial_balance=args.initial_balance,
+        legs_divisor=args.legs_divisor,
+        gross=args.gross,
+        band=args.band,
+    )
+    out_dir = _resolve(args.out) if args.out is not None else _default_out_dir("research", spec)
+    research_file = out_dir / RESEARCH_FILE
+    if research_file.exists() and not args.force:
+        raise ValueError(f"{research_file} exists; pass --force")
+    inputs = load_carry_inputs(spec, _resolve(args.catalog), _resolve(args.archive))
+    trials = (
+        _resolve(args.trials)
+        if args.trials is not None
+        else _resolve(DEFAULT_OUT_ROOT) / TRIALS_FILE
+    )
+    from vibe_quant.portfolio import research
+
+    started = time.perf_counter()
+    result = research.evaluate(inputs, draws=args.draws, seed=args.seed, trials_path=trials)
+    elapsed = time.perf_counter() - started
+    payload = {"spec": inputs.spec.to_json(), "spec_hash": inputs.spec.spec_hash(), **result}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    research_file.write_text(
+        _dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(_research_line(result, out_dir, elapsed))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """The CLI entry point: 0 on success, 2 on a known failure (§1.4)."""
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "evaluate":
+            return _cmd_evaluate(args)
         return _cmd_run(args)
     except (DataUnavailableError, CarryEquityTooSmall, CarryExecutionError, ValueError) as error:
-        print(f"carry[{args.engine}]: {type(error).__name__}: {error}", file=sys.stderr)
+        engine = getattr(args, "engine", args.command)
+        print(f"carry[{engine}]: {type(error).__name__}: {error}", file=sys.stderr)
         return 2
 
 
