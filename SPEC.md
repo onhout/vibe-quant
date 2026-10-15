@@ -782,7 +782,7 @@ screening_venue_config = BacktestVenueConfig(
     oms_type="NETTING",
     account_type="MARGIN",
     base_currency=None,
-    starting_balances=["100_000 USDT"],
+    starting_balances=[f"{parameters.initial_balance} USDT"],  # parameters.initial_balance, default 1000
     default_leverage=Decimal("10"),
     leverages={"BTCUSDT-PERP.BINANCE": Decimal("20")},
     fill_model=ImportableFillModelConfig(
@@ -837,7 +837,7 @@ venue_config = BacktestVenueConfig(
     oms_type="NETTING",
     account_type="MARGIN",
     base_currency=None,
-    starting_balances=["100_000 USDT"],
+    starting_balances=[f"{parameters.initial_balance} USDT"],  # parameters.initial_balance, default 1000
     default_leverage=Decimal("10"),
     leverages={"BTCUSDT-PERP.BINANCE": Decimal("20")},
     fill_model=custom_fill_model,          # Custom volume-based slippage
@@ -927,10 +927,15 @@ python -m vibe_quant.data download-mark --start 2024-01-01 --end 2026-03-17 --ca
 
 - **Screening** -- API/UI: set the top-level `liquidation_mode` (`off|isolated|cross`) on the launch request. The launch form has a **Liquidation** select (Off/Isolated/Cross) and reuses the existing **Leverage** input as the venue leverage; `Off` sends no `liquidation_mode` key, but `parameters.leverage` is always sent and the screening venue runs at it in every mode (default 10; a whole number in [1,125]). There is no screening CLI flag.
 - **Validation** -- API/UI: the same top-level `liquidation_mode` field; the launch form has the same **Liquidation** select (Off/Isolated/Cross) reusing the existing **Leverage** input. Turning the mode on does not change validation's venue leverage (it is `parameters.leverage` in both modes).
-- **Discovery** -- CLI: `--liquidation-mode isolated --leverage 20` (report-only: no score term, no gate; the deprecated `--liquidation-leverage` spelling is an alias). API/UI: `liquidation_mode` + `leverage` (deprecated `liquidation_leverage` alias; a conflict is a 422); the launch form has the same **Liquidation** select plus an always-visible **Leverage (1-125)** input.
+- **Discovery** -- CLI: `--liquidation-mode isolated --leverage 20` (no penalty term, no gate; fitness reads the liquidation-adjusted metrics; the deprecated `--liquidation-leverage` spelling is an alias). API/UI: `liquidation_mode` + `leverage` (deprecated `liquidation_leverage` alias; a conflict is a 422); the launch form has the same **Liquidation** select plus an always-visible **Leverage (1-125)** input.
 - **Promote / replay** inherit the parent discovery run's `notes.liquidation` into the child validation run.
 - **Results:** a mode-on run's results show a liquidation chip and counts.
-- **Paper/live trading:** not supported yet.
+- **Paper trading:** the paper node reads the validated run's leverage and validates it through the shared rule, derives its margin type from the validated run, and runs a Binance `forceOrders` detector. It is **report only** — no orders, no halt (user decision 2026-10-15). Live trading is not supported.
+  - **Leverage:** a whole number in [1,125]; a stored `0.5`/`2.5` or garbage stops the paper start with a clear error, and a config-file override is validated the same way.
+  - **Margin type:** derived from the validated run (isolated → `ISOLATED`; cross/off → `CROSSED`; an explicit config value wins and shows a `config_diff` entry). A validated run with liquidation off adds a `config_diff` `liquidation` entry ('paper liquidation parity is unverified').
+  - **On position open:** one RISK_CHECK `liquidation_estimate` (isolated: the estimated LP; cross: `null` with a reason).
+  - **Startup:** if the venue is not connected 120 s after start, one RISK_CHECK plus a critical Telegram, and strategies are never started.
+  - **Liquidation detector:** polls every 60 s per symbol (30 s request timeout, per-symbol backoff 60/120/240/480/600 s, a degraded warning after 3 failures, 7-day lookback cap) and writes one LIQUIDATION event plus a critical Telegram per exchange liquidation/ADL; delivery is at most once per process and at least once across restarts.
 
 ### Strategy Code Generation
 
