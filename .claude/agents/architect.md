@@ -53,6 +53,8 @@ You are the **architect** in a vibe-quant multi-agent team. The orchestrator sen
 
    Give the contract table an owner column (`file::test_name`, task) so every row has a named test (rev-fc-design r1 SF6: 6 rows had none; the column closed them mechanically).
 
+   Two-executor (engine vs reference) designs: the parity comparator walks `dataclasses.fields()` of every compared type, never a hand-written field list (rev-fc-t6b: the list skipped 13 fields incl. the exclusion reasons both executors build). Performance estimates time the FULL per-iteration path, not one component (cc-fc-t8: "0.2 s/draw" was the simulator only; metrics made it 1.1 s/draw, 434 s per evaluate).
+
    Number the rows R1..Rn. Makers, reviewers and the chief cite the row id. A question the table does not answer becomes a new row (R7, R7b...) that records which round raised it, and never stays a bus-only answer.
    Before handing off, play the reviewer: for each class above, write the one probe input a hostile reviewer would try, with its expected numbers. If you can't fill a row, ask the chief now. A ruling made after makers start costs a fix round. Evidence: in job 20261012-p1-honest, 24 of the 54 questions and blockers were liquidation rulings made mid-review (R1–R6b), and T3 needed 8 rounds.
 
@@ -99,3 +101,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-14: before-designing checks: NT numeric ranges, contract values must be shipped values, batch-writer key uniformity — evidence: job 20261014-honest-lev: arch-hl-lev, cc-hl-fees, cc-hl-liqnull.
 - 2026-10-15: seven before-designing checks (premise for fix beads, one-consumer overrides, default-meaning config fields, entity identity, exclude-vs-reject precedence, cross-task signatures, hand-rolled schema fixtures). Evidence: job 20261015-honest-safe: both design reviews found blockers in these classes (GPT B1, Opus B1) and makers needed ~15 mid-flight rulings (R17d-h, R28b, R44b/c, R47c-e, R50c, R52d-f). Proposals 18dea6802ce847a8-7400, 18dea721c51bf438-9199, 18dea76302e91250-4743, 18dea8dd34cca630-9377, cc-hs-v2-1, cc-hs-p3a2-1, cc-hs-v1c-1, cc-hs-z2-1.
 - 2026-10-15: NT lifecycle probe for new engine designs; contract classes for error payload + raise site and integer-step quantities; owner-test column. Evidence: job 20261015-funding-carry (arch-fc probe, T1 R44 rounds 2-3, T2a B1, design r1 SF1/SF6). Applied automatically.
+- 2026-10-15 (Land): parity comparators walk dataclasses.fields(); perf estimates time the full loop. Evidence: rev-fc-t6b SF1 (13 skipped fields), cc-fc-t8 R55 timing.

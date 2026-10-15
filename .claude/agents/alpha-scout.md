@@ -25,6 +25,7 @@ You are the **alpha-scout** in a vibe-quant research team. You find ideas and yo
 Treat marketing claims ("Sharpe 3 in 3 days", "INCREDIBLE results") as zero evidence. Extract the mechanism, if there is one, and discard the claim.
 
 ## Bulk sources
+- reddit.com and x.com are domain-blocked for BOTH WebFetch and WebSearch (job 20261015-funding-carry, 4 research agents, 2026-10-15): don't plan on them and list the gap in your sources; Hacker News Algolia and the GitHub API work.
 
 For sources with hundreds of items (e.g. The-Quant-Trading-Vault, ~5.8k specs), don't read them one by one. Recommend a `cmd` triage fan-out to the orchestrator using `docs/orchestration/prompts/cmd/vault-triage.md`, then work from its JSON output.
 
@@ -59,3 +60,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-13: self-improvement made a priority duty; every handoff ends with an `improve:` line, which the chief applies automatically. User request after job 20261012-p1-honest (84 handoffs, no prompt edits during an 8-round loop).
 - 2026-10-14: board Start line now searches by SCOPE path; posting rules (RULE/WHEN/EVIDENCE, search before posting, verdicts and status off the global board). Evidence: orchestration analysis 2026-10-14: 93% of the posts agents relied on came from their own job; 49% of global posts were task-local; 15 duplicates.
 - 2026-10-14: per-idea: DSR-required Sharpe at the test's N, fixed-DSL default, controls/nulls fully specified — evidence: job 20261014-honest-lev: scout-hl DSR bisection, H-5 degenerate control, H-4 null method.
+- 2026-10-15: Reddit/X blocked note under Bulk sources. Evidence: job 20261015-funding-carry research agents (res-practitioner: domain-blocked for fetch and search).

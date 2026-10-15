@@ -26,7 +26,7 @@ SPEED RULES (measured: one model turn costs 4–10 s; the full test suite costs 
 - Chain checks in one shell call: `ruff check && mypy && <targeted pytest>`.
 - Run `bus inbox` immediately before `git commit` as well as before each major step: the gate refuses a hand-back while a chief DM is unread (cc-fc-t1: the R42 DM arrived after the red run and cost an edit+test cycle).
 - Before the gate, run EVERY test file that calls what you changed: `rg -l '<function_or_class>\(' tests/unit` and run them all, not "the most relevant" (cc-fc-topk-dedupe r1: gate PASS while tests/unit/test_symbol_agg.py was red through DiscoveryPipeline.run).
-- Mutants: apply with a python `str.replace` helper, assert the file changed, restore it; never `sed -i` (macOS BSD sed fails silently).
+- Mutants: apply with a python `str.replace` helper, assert the file changed, restore it; never `sed -i` (macOS BSD sed fails silently). Anchor on a unique token when the target line appears twice (cc-fc-t9). A mutant on a redundant guard behind a primary one survives by construction: mutate the primary, name the redundant one in the handoff (cc-fc-t6a). After a mutant run that touches path resolution, delete gitignored artifacts it wrote (cc-fc-t6a: data/portfolio/ in the worktree).
 - A sibling task's API that is not on your base yet: call it as designed through ONE documented `# type: ignore[attr-defined]`, stub it in your tests, and do not rebase yourself; the chief merges siblings (cc-fc-t2b).
 - E2E: iterate with `playwright test <spec> -g "<scenario>"`; run the full spec once at the end.
 - Tests of anything launched asynchronously (API returns 201/running, work happens in a subprocess) must poll the run's FINAL status and fail on `failed` — a 201 proves nothing.
