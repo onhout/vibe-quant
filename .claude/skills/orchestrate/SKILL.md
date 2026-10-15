@@ -22,7 +22,9 @@ You are the **orchestrator**. You decompose, dispatch, check and integrate the w
    - A stacked task's gate command carries `--base <parent branch>` (e.g. `--base swarm/liq-a1`); without it the scope check diffs against main and fails on the parent's files. (2026-10-13: B1/B2/B3 all hit it.)
    - A stacked child may start while its parent is in review when it touches disjoint files; it rebases once after the parent's fix lands. (2026-10-14: T2 ran during T1 review; the rebase was clean and saved a review cycle.)
    - A fix-round brief's gate `--scope` is the WHOLE task scope (round 1 plus this round). The gate diffs against the base branch, not the previous round. (2026-10-13: A1 r2 and T4 r2 both hit a false scope FAIL.)
-   - Every brief, in every round and for every runtime (maker, fixer, reviewer, verifier, Codex), carries the bus block and a `TELEMETRY: task=<task> round=<n>` line. Before dispatch, `rg -L 'scripts/agents/bus.py' prompts/<id>.md` must print nothing.
+   - Every brief, in every round and for every runtime (maker, fixer, reviewer, verifier, Codex), carries the bus block and a `TELEMETRY: task=<task> round=<n>` line. Before dispatch, `rg --files-without-match 'scripts/agents/bus.py' prompts/<id>.md` must print nothing (`rg -L` means `--follow` in ripgrep and prints the matches instead; job 20261015-honest-safe).
+   - Fix-round briefs quote the finding's bullet or function name, not only a line number: line numbers drift between rounds (cc-hs-doc-2: ':26' was at ':28'). When the default reviewer model is unavailable (user 2026-10-15: no GPT-6.1-Sol), route reviews to the Claude `reviewer` (Sonnet) and test-only deltas to `reviewer-lite`; record the routing change in brief.md.
+   - Stacked tasks that need two or more parents (V2 = Z2 + V1a/b/c, P3b = P2b + P3a2): build the base by merging the parents into the new worktree, then give the gate `--base <merge sha>`.
    - Write every brief to `prompts/<clientRequestId>.md` BEFORE you dispatch it. If the delegate_task prompt only points at a file, that file must already exist, because the child starts reading at once. (2026-10-13: cc-liq-a1 was dispatched pointing at a brief that was written seconds later.)
    - Save each handoff verbatim to `handoffs/` and update the ledger row.
    - Return any implementer handoff whose `evidence` lacks the red test run; red-before-green is the proof the test has teeth.
@@ -113,8 +115,9 @@ You own the swarm's prompts: this skill, every `.claude/agents/*.md`, `docs/orch
   - The start-up `board search` by SCOPE replaces `--recent 30`. 93% of the posts agents relied on came from their own job, and a post left the window after a median 5.5 h.
   - Board hygiene rules.
   - Rulings become numbered contract rows that record their round. 24 of 54 questions and blockers were mid-flight liquidation rulings.
-  - Every brief gets the bus block and a TELEMETRY line, checked with `rg -L`.
+  - Every brief gets the bus block and a TELEMETRY line, checked with `rg --files-without-match` (originally written as `rg -L`, which is `--follow` in ripgrep; fixed 2026-10-15).
   - `telemetry.py ingest-runs` replaces hand-recording.
 
   The check is cheap insurance. The analysis's first claim that Codex re-reviews lacked the bus block was a parsing artifact: 77 of 80 Codex reviewers used the bus, median 9 calls. User request.
 - 2026-10-14: dispatch-loop bullets: stacked child may start during parent review, rg invalidated strings when splitting tasks, hold shared-data writes while readers run, reviewers use --kind info — evidence: job 20261014-honest-lev (T2 during T1 review; cc-hl-lev-t1 help text; SOL backfill vs ver-hl-lev; rev-hl-wfa-err bus kind rejection).
+- 2026-10-15: `rg -L` -> `rg --files-without-match` (ripgrep -L is --follow); fix-round briefs quote bullet text; reviewer fallback when Sol is unavailable; multi-parent stacked bases via merge + `--base <merge sha>` — evidence: job 20261015-honest-safe (brief check printed matches; cc-hs-doc-2 line drift; user stopped Sol mid-job; V2 and P3b bases).
