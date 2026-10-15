@@ -38,6 +38,16 @@ def _seed_db(tmp_path: Path, *, timeframe: str = "4h") -> Path:
             timeframe TEXT,
             parameters JSON NOT NULL
         );
+        CREATE TABLE sweep_results (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER,
+            starting_balance REAL
+        );
+        CREATE TABLE backtest_results (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER,
+            starting_balance REAL
+        );
         """
     )
     dsl = {"name": "stub", "timeframe": timeframe, "indicators": {}}
@@ -49,6 +59,9 @@ def _seed_db(tmp_path: Path, *, timeframe: str = "4h") -> Path:
         "INSERT INTO backtest_runs (id, strategy_id, symbols, timeframe, parameters) "
         "VALUES (?,?,?,?,?)",
         (42, 1, json.dumps(["BTCUSDT"]), timeframe, "{}"),
+    )
+    conn.execute(
+        "INSERT INTO backtest_results (run_id, starting_balance) VALUES (?,?)", (42, 1000.0)
     )
     conn.commit()
     conn.close()
@@ -225,6 +238,16 @@ def _seed_fee_db(tmp_path: Path, *, parameters: dict[str, object]) -> Path:
             timeframe TEXT,
             parameters JSON NOT NULL
         );
+        CREATE TABLE sweep_results (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER,
+            starting_balance REAL
+        );
+        CREATE TABLE backtest_results (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER,
+            starting_balance REAL
+        );
         """
     )
     dsl = {"name": "stub", "timeframe": "4h", "indicators": {}}
@@ -236,6 +259,9 @@ def _seed_fee_db(tmp_path: Path, *, parameters: dict[str, object]) -> Path:
         "INSERT INTO backtest_runs (id, strategy_id, symbols, timeframe, parameters) "
         "VALUES (?,?,?,?,?)",
         (42, 1, json.dumps(["BTCUSDT"]), "4h", json.dumps(parameters)),
+    )
+    conn.execute(
+        "INSERT INTO backtest_results (run_id, starting_balance) VALUES (?,?)", (42, 1000.0)
     )
     conn.commit()
     conn.close()

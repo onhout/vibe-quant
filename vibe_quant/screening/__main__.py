@@ -132,6 +132,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"Screening liquidation: {liquidation.to_notes()}")
         print(f"Screening venue leverage: {liquidation.leverage:g}x")
 
+        # The account size (bead vibe-quant-zpbmo). Logged like the fee schedule and
+        # the liquidation settings; create_screening_pipeline parses the same value
+        # for the venue, so an invalid stored one fails here or there, either way
+        # through the except below (never silently defaulted).
+        from vibe_quant.balance_settings import parse_initial_balance
+
+        print(f"Screening starting balance: {parse_initial_balance(parameters)} USDT")
+
         pipeline = create_screening_pipeline(
             dsl,
             symbols=symbols,

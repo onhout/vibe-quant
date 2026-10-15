@@ -27,6 +27,7 @@ from vibe_quant.api.schemas.result import (
     SweepResultResponse,
     TradeResponse,
 )
+from vibe_quant.balance_settings import recorded_balance
 from vibe_quant.db.state_manager import StateManager
 from vibe_quant.validation.venue import DEFAULT_STARTING_BALANCE_USDT
 
@@ -231,17 +232,13 @@ async def get_run_summary(run_id: int, mgr: StateMgr) -> BacktestResultResponse:
         return BacktestResultResponse(**_enrich_result_with_notes(row))
 
     # Screening runs don't populate backtest_results — synthesize from best sweep
-    sweeps = mgr.get_sweep_results(run_id, pareto_only=True)
-    if not sweeps:
-        sweeps = mgr.get_sweep_results(run_id)
-    if not sweeps:
+    best = _best_sweep_row(mgr, run_id)
+    if best is None:
         # Ensure run exists at all
         run = mgr.get_backtest_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         raise HTTPException(status_code=404, detail="No results available for this run yet")
-
-    best = sweeps[0]  # already ordered by sharpe DESC
     return BacktestResultResponse(
         id=best["id"],
         run_id=run_id,
@@ -272,9 +269,12 @@ async def get_run_summary(run_id: int, mgr: StateMgr) -> BacktestResultResponse:
         walk_forward_efficiency=None,
         purged_kfold_mean_sharpe=None,
         execution_time_seconds=best.get("execution_time_seconds"),
-        # Screening ran on the screening venue's balance (the venue default), never a
-        # requested initial_balance; the UI derives net PnL and fee ratios from it.
-        starting_balance=float(DEFAULT_STARTING_BALANCE_USDT),
+        # The balance the screening run actually used, recorded on every sweep row
+        # (R12). A row written before the column existed is NULL and reads as the
+        # default through the ONE shared rule (R13b) — never the requested
+        # initial_balance, and never a hard-coded fallback. The UI derives net PnL
+        # and fee ratios from it.
+        starting_balance=recorded_balance(best.get("starting_balance")),
         notes=None,
         created_at=None,
     )
@@ -430,16 +430,33 @@ def _ensure_run_exists(mgr: StateManager, run_id: int) -> None:
         raise HTTPException(status_code=404, detail="Run not found")
 
 
+def _best_sweep_row(mgr: StateManager, run_id: int) -> dict[str, Any] | None:
+    """The row of a run's best sweep: Pareto-optimal first, else every sweep.
+
+    Ordered by sharpe DESC in the database. The screening summary and the
+    chart endpoints' balance fallback must agree on which sweep row is "best"
+    (R13c), so the lookup lives here once instead of at each call site.
+    """
+    sweeps = mgr.get_sweep_results(run_id, pareto_only=True) or mgr.get_sweep_results(run_id)
+    return sweeps[0] if sweeps else None
+
+
 def _get_starting_balance(mgr: StateManager, run_id: int) -> float:
-    """Get starting balance from results, else the run config, else the
-    venue default (1_000 — must match VenueConfig, not an arbitrary 10k:
-    a mismatched fallback mis-scales every equity/drawdown/monthly %)."""
+    """The balance the equity/drawdown/monthly endpoints scale by (R13c).
+
+    ONE rule, the same one the summary reports: a run's own
+    ``backtest_results.starting_balance`` when it has a result row; else the
+    SAME best sweep row the summary synthesizes from; else the venue default
+    (1_000 — must match VenueConfig, not an arbitrary 10k: a mismatched
+    fallback mis-scales every equity/drawdown/monthly %). Every recorded value
+    is read through ``recorded_balance``, where a NULL column (a row written
+    before the column existed) means the default — there is no second NULL
+    rule and the requested ``initial_balance`` is never used.
+    """
     result = mgr.get_backtest_result(run_id)
-    if result and result.get("starting_balance"):
-        return float(result["starting_balance"])
-    run = mgr.get_backtest_run(run_id)
-    if run:
-        balance = run.get("starting_balance")
-        if isinstance(balance, (int, float)) and balance > 0:
-            return float(balance)
+    if result is not None:
+        return float(recorded_balance(result.get("starting_balance")))
+    best = _best_sweep_row(mgr, run_id)
+    if best is not None:
+        return float(recorded_balance(best.get("starting_balance")))
     return float(DEFAULT_STARTING_BALANCE_USDT)

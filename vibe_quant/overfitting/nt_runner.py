@@ -18,6 +18,7 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vibe_quant.balance_settings import recorded_balance
 from vibe_quant.fees import FeeSchedule
 from vibe_quant.liquidation_settings import LiquidationSettings
 
@@ -37,6 +38,41 @@ def _run_params(raw: object) -> dict[str, object]:
         except json.JSONDecodeError:
             return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def parent_effective_balance(conn: sqlite3.Connection, run_id: int) -> int:
+    """The account size a rerun (WFA / CV) of ``run_id`` must run at (R11).
+
+    The parent run's own RECORDED balance, never its ``parameters`` (a legacy run's
+    params may say 10000 while every sweep row is NULL — R11b):
+
+    - the run has sweep rows: their single distinct ``starting_balance`` through
+      :func:`~vibe_quant.balance_settings.recorded_balance`, where a NULL column means
+      the default 1000 (every row written before the column existed).
+    - no sweep rows: ``backtest_results.starting_balance``, the same way.
+    - neither: ``ValueError`` — the run recorded no balance and the rerun fails closed.
+
+    Raises:
+        ValueError: the sweep rows disagree (no single value), or the run has no
+            recorded balance at all.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT starting_balance FROM sweep_results WHERE run_id = ?", (run_id,)
+    ).fetchall()
+    if rows:
+        values = {row[0] for row in rows}
+        if len(values) > 1:
+            raise ValueError(
+                f"run {run_id} has conflicting sweep starting_balance values: "
+                f"{sorted(values, key=str)}"
+            )
+        return recorded_balance(values.pop())
+    row = conn.execute(
+        "SELECT starting_balance FROM backtest_results WHERE run_id = ?", (run_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"run {run_id} has no recorded starting balance")
+    return recorded_balance(row[0])
 
 
 class NTWFARunner:
@@ -60,6 +96,8 @@ class NTWFARunner:
         self._dsl_dict: dict[str, object] = {}
         self._symbols: list[str] = []
         self._liquidation: LiquidationSettings = LiquidationSettings()
+        # The parent run's own recorded account size (R11); never its parameters.
+        self._starting_balance: int = 1000
         # The parent screening run's own fee schedule (VIP tier + BNB discount);
         # default VIP0/no-BNB keeps a params-less run byte-identical (E2).
         self._fee_schedule: FeeSchedule = FeeSchedule()
@@ -78,6 +116,9 @@ class NTWFARunner:
             if run is None:
                 msg = f"backtest_runs.id={self._run_id} not found"
                 raise ValueError(msg)
+            # The parent's RECORDED balance, never its parameters (R11/R11b): a legacy
+            # parent whose params say 10000 but whose sweep rows are NULL reruns at 1000.
+            self._starting_balance = parent_effective_balance(conn, self._run_id)
             self._liquidation = LiquidationSettings.from_params(_run_params(run["parameters"]))
             # Same params row: fail closed on an unknown tier rather than
             # silently backtesting a discounted run at VIP0 (E2).
@@ -138,6 +179,8 @@ class NTWFARunner:
             # the screening run's own liquidation settings (E14); off by default
             liquidation_mode=self._liquidation.mode,
             leverage=self._liquidation.leverage,
+            # the parent's own recorded account size (R11)
+            starting_balance=self._starting_balance,
         )
         numeric_params: dict[str, float | int] = {
             k: v

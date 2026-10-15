@@ -39,6 +39,16 @@ def stub_db(tmp_path: Path) -> Path:
             symbols TEXT NOT NULL,
             parameters JSON NOT NULL
         );
+        CREATE TABLE sweep_results (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER,
+            starting_balance REAL
+        );
+        CREATE TABLE backtest_results (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER,
+            starting_balance REAL
+        );
         """
     )
     dsl = {"name": "stub", "timeframe": "4h", "indicators": {}}
@@ -49,6 +59,9 @@ def stub_db(tmp_path: Path) -> Path:
     conn.execute(
         "INSERT INTO backtest_runs (id, strategy_id, symbols, parameters) VALUES (?,?,?,?)",
         (42, 1, json.dumps(["BTCUSDT", "ETHUSDT"]), "{}"),
+    )
+    conn.execute(
+        "INSERT INTO backtest_results (run_id, starting_balance) VALUES (?,?)", (42, 1000.0)
     )
     conn.commit()
     conn.close()
@@ -75,12 +88,19 @@ def test_missing_strategy_raises(tmp_path: Path) -> None:
         CREATE TABLE strategies (id INTEGER PRIMARY KEY, name TEXT, dsl_config TEXT);
         CREATE TABLE backtest_runs (id INTEGER PRIMARY KEY, strategy_id INTEGER, symbols TEXT,
                                     parameters JSON NOT NULL);
+        CREATE TABLE sweep_results (id INTEGER PRIMARY KEY, run_id INTEGER,
+                                    starting_balance REAL);
+        CREATE TABLE backtest_results (id INTEGER PRIMARY KEY, run_id INTEGER,
+                                       starting_balance REAL);
         """
     )
     # run points at a non-existent strategy_id.
     conn.execute(
         "INSERT INTO backtest_runs VALUES (?,?,?,?)",
         (7, 99, json.dumps(["X"]), "{}"),
+    )
+    conn.execute(
+        "INSERT INTO backtest_results (run_id, starting_balance) VALUES (?,?)", (7, 1000.0)
     )
     conn.commit()
     conn.close()
@@ -144,6 +164,16 @@ def _seed_fee_run(tmp_path: Path, *, parameters: dict[str, object]) -> Path:
             symbols TEXT NOT NULL,
             parameters JSON NOT NULL
         );
+        CREATE TABLE sweep_results (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER,
+            starting_balance REAL
+        );
+        CREATE TABLE backtest_results (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER,
+            starting_balance REAL
+        );
         """
     )
     dsl = {"name": "stub", "timeframe": "4h", "indicators": {}}
@@ -154,6 +184,9 @@ def _seed_fee_run(tmp_path: Path, *, parameters: dict[str, object]) -> Path:
     conn.execute(
         "INSERT INTO backtest_runs (id, strategy_id, symbols, parameters) VALUES (?,?,?,?)",
         (42, 1, json.dumps(["BTCUSDT"]), json.dumps(parameters)),
+    )
+    conn.execute(
+        "INSERT INTO backtest_results (run_id, starting_balance) VALUES (?,?)", (42, 1000.0)
     )
     conn.commit()
     conn.close()

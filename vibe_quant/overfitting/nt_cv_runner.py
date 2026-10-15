@@ -26,8 +26,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vibe_quant.balance_settings import DEFAULT_STARTING_BALANCE_USDT
 from vibe_quant.fees import FeeSchedule
 from vibe_quant.liquidation_settings import LiquidationSettings
+from vibe_quant.overfitting.nt_runner import parent_effective_balance
 
 if TYPE_CHECKING:
     from vibe_quant.overfitting.purged_kfold import FoldResult
@@ -88,6 +90,8 @@ class NTPurgedKFoldRunner:
         # Strategy param overrides of the candidate being CV'd (see bind_params)
         self._params: dict[str, float | int] = {}
         self._liquidation: LiquidationSettings = LiquidationSettings()
+        # The parent run's own recorded account size (R11); never its parameters.
+        self._starting_balance: int = DEFAULT_STARTING_BALANCE_USDT
         # The parent screening run's own fee schedule (VIP tier + BNB discount);
         # default VIP0/no-BNB keeps a params-less run byte-identical (E2).
         self._fee_schedule: FeeSchedule = FeeSchedule()
@@ -135,6 +139,9 @@ class NTPurgedKFoldRunner:
             if run is None:
                 msg = f"backtest_runs.id={self._run_id} not found"
                 raise ValueError(msg)
+            # The parent's RECORDED balance, never its parameters (R11/R11b): a legacy
+            # parent whose params say 10000 but whose sweep rows are NULL reruns at 1000.
+            self._starting_balance = parent_effective_balance(conn, self._run_id)
             self._liquidation = LiquidationSettings.from_params(_run_params(run["parameters"]))
             # Same params row: fail closed on an unknown tier rather than
             # silently cross-validating a discounted run at VIP0 (E2).
@@ -247,6 +254,8 @@ class NTPurgedKFoldRunner:
             # the screening run's own liquidation settings (E14); off by default
             liquidation_mode=self._liquidation.mode,
             leverage=self._liquidation.leverage,
+            # the parent's own recorded account size (R11)
+            starting_balance=self._starting_balance,
         )
         # The bound candidate's sweep params (empty for discovery champions,
         # whose params are baked into the DSL). Running ``{}`` for everyone

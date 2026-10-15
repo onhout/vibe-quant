@@ -101,6 +101,7 @@ _SWEEP_RESULTS_COLUMNS: frozenset[str] = frozenset(
         "mtm_skewness",
         "mtm_kurtosis",
         "mtm_days",
+        "starting_balance",
         "is_pareto_optimal",
         "passed_deflated_sharpe",
         "passed_walk_forward",

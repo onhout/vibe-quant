@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when adding new migrations to _migrate_add_columns. One-time data
 # migrations are additionally gated by ``PRAGMA user_version`` markers.
-SCHEMA_VERSION: int = 19
+SCHEMA_VERSION: int = 20
 
 SCHEMA_SQL = """
 -- Strategy definitions (DSL configs)
@@ -146,6 +146,11 @@ CREATE TABLE IF NOT EXISTS sweep_results (
     total_fees REAL,
     total_funding REAL,
     execution_time_seconds REAL,
+    -- The starting balance this run actually used (bead vibe-quant-zpbmo, task Z1):
+    -- every row of a new screening run carries it (including the -999 sentinel row),
+    -- so a batch has one key set; older rows are NULL, which recorded_balance reads
+    -- as the 1000 default.
+    starting_balance REAL,
     skewness REAL,
     kurtosis REAL,
     mtm_sharpe_daily REAL,
@@ -407,6 +412,9 @@ def _migrate_add_columns(conn: sqlite3.Connection) -> None:
         # NULL on mode-off and older rows, written only when the mode is on (D1).
         ("sweep_results", "liquidation_count", "INTEGER"),
         ("sweep_results", "liquidation_forfeited", "REAL"),
+        # The starting balance a screening run used (bead vibe-quant-zpbmo, task Z1):
+        # NULL on rows written before the column (recorded_balance -> 1000).
+        ("sweep_results", "starting_balance", "REAL"),
     ]
     applied = 0
     for table, column, col_type in migrations:

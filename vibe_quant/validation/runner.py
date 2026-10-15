@@ -831,7 +831,7 @@ class ValidationRunner:
         """
         from decimal import Decimal
 
-        from vibe_quant.validation.venue import DEFAULT_STARTING_BALANCE_USDT
+        from vibe_quant.balance_settings import BalanceConfigError, parse_initial_balance
 
         # UI/API launch values live in the parameters JSON, not as top-level
         # run columns (initial_balance was silently ignored before this).
@@ -840,12 +840,14 @@ class ValidationRunner:
             raw_params if isinstance(raw_params, dict) else {}
         )
 
-        balance = launch_params.get(
-            "initial_balance",
-            run_config.get("starting_balance", DEFAULT_STARTING_BALANCE_USDT),
-        )
-        if isinstance(balance, bool) or not isinstance(balance, (int, float)) or balance <= 0:
-            balance = DEFAULT_STARTING_BALANCE_USDT
+        # One rule with the API and screening (vibe-quant-zpbmo): the balance comes from
+        # parameters.initial_balance ONLY — the dead top-level
+        # run_config["starting_balance"] fallback is gone — and a bad value fails the run
+        # with a clear error instead of silently running at the 1000 default.
+        try:
+            starting_balance = parse_initial_balance(launch_params)
+        except BalanceConfigError as exc:
+            raise ValidationRunnerError(f"invalid initial_balance: {exc}") from exc
 
         # One rule with screening (vibe-quant-6wq6w): the leverage is validated in EVERY mode
         # and never silently falls back to 10x. A bad value fails the run (ValidationRunnerError
@@ -873,7 +875,7 @@ class ValidationRunner:
                 )
             return replace(
                 create_venue_config_for_validation(
-                    starting_balance_usdt=int(balance),
+                    starting_balance_usdt=starting_balance,
                     default_leverage=default_leverage,
                     latency_preset=None,
                 ),
@@ -882,7 +884,7 @@ class ValidationRunner:
 
         venue_config = replace(
             create_venue_config_for_validation(
-                starting_balance_usdt=int(balance),
+                starting_balance_usdt=starting_balance,
                 default_leverage=default_leverage,
                 latency_preset=latency_preset or LatencyPreset.CLOUD,
             ),

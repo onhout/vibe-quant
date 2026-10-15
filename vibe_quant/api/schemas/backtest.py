@@ -7,18 +7,8 @@ from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from vibe_quant.api.schemas._validators import KNOWN_TIMEFRAMES, check_date_range, clean_symbols
+from vibe_quant.balance_settings import BalanceConfigError, parse_initial_balance
 from vibe_quant.liquidation_settings import LiquidationConfigError, LiquidationSettings
-
-
-def _positive_number(params: dict[str, object], key: str, upper: float | None = None) -> None:
-    if key not in params or params[key] is None:
-        return
-    value = params[key]
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"parameters.{key} must be a number, got {value!r}")
-    if value <= 0 or (upper is not None and value > upper):
-        bound = f"in (0, {upper:g}]" if upper is not None else "> 0"
-        raise ValueError(f"parameters.{key} must be {bound}, got {value!r}")
 
 
 class BacktestLaunchRequest(BaseModel):
@@ -80,7 +70,13 @@ class BacktestLaunchRequest(BaseModel):
                 LiquidationSettings(leverage=cast("float", self.parameters["leverage"]))
             except LiquidationConfigError as exc:
                 raise ValueError(f"parameters.leverage: {exc}") from exc
-        _positive_number(self.parameters, "initial_balance")
+        # The starting balance goes through its own ONE shared rule (whole number in
+        # [1, 1000000000], vibe-quant-zpbmo): a value the runner would ignore or reject
+        # mid-engine is a 422 here, before any run row exists.
+        try:
+            parse_initial_balance(self.parameters)
+        except BalanceConfigError as exc:
+            raise ValueError(f"parameters.initial_balance: {exc}") from exc
         return self
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -18,6 +19,7 @@ from vibe_quant.validation.runner import (
     ValidationRunnerError,
     list_validation_runs,
 )
+from vibe_quant.validation.venue import DEFAULT_STARTING_BALANCE_USDT
 
 
 @pytest.fixture(autouse=True)
@@ -30,11 +32,16 @@ def _no_catalog_coverage_check(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _make_mock_result(run_id: int = 1, strategy_name: str = "test_strategy") -> ValidationResult:
+def _make_mock_result(
+    run_id: int = 1,
+    strategy_name: str = "test_strategy",
+    starting_balance: float = 1000.0,
+) -> ValidationResult:
     """Create a realistic mock ValidationResult for unit tests."""
     return ValidationResult(
         run_id=run_id,
         strategy_name=strategy_name,
+        starting_balance=starting_balance,
         total_return=0.052,
         sharpe_ratio=1.4,
         sortino_ratio=1.8,
@@ -797,6 +804,195 @@ class TestDetailTimeframe:
         assert config_with_detail.fill_config.prob_best_price_fill == 1.0
         assert isinstance(config_no_detail.fill_config, VolumeSlippageFillModelConfig)
         assert config_no_detail.fill_config.prob_best_price_fill == 0.7
+
+
+class TestInitialBalanceRule:
+    """R1/R2/R7 (bead vibe-quant-zpbmo, task Z1): the venue balance comes from
+    ``parameters.initial_balance`` through the ONE shared rule in
+    ``vibe_quant.balance_settings``. An invalid stored value fails the run instead of
+    silently running at 1000, and the dead top-level
+    ``run_config["starting_balance"]`` fallback is gone."""
+
+    def test_venue_config_uses_the_launch_balance(
+        self, temp_db: Path, temp_logs: Path
+    ) -> None:
+        """R2: 10000.0 reaches the venue as the int 10000 ("10000 USDT" then)."""
+        from vibe_quant.validation.venue import create_backtest_venue_config
+
+        runner = ValidationRunner(db_path=temp_db, logs_path=temp_logs)
+        config = runner._create_venue_config(
+            {"parameters": {"initial_balance": 10000.0}}, None, timeframe="1m"
+        )
+        runner.close()
+
+        assert config.starting_balance_usdt == 10000
+        assert create_backtest_venue_config(config).starting_balances == ["10000 USDT"]
+
+    def test_venue_config_normal_branch_uses_the_launch_balance(
+        self, temp_db: Path, temp_logs: Path
+    ) -> None:
+        """R2: the normal branch (``timeframe`` above sub-bar) keeps the launch 10000.
+
+        The other direct assertions use ``timeframe="1m"``, which takes the sub-bar
+        early return; this pins the ``_create_venue_config`` branch a runner.py:887
+        ``starting_balance_usdt=1000`` mutant would otherwise hide in.
+        """
+        from vibe_quant.validation.venue import create_backtest_venue_config
+
+        runner = ValidationRunner(db_path=temp_db, logs_path=temp_logs)
+        config = runner._create_venue_config(
+            {"parameters": {"initial_balance": 10000.0}}, None, timeframe="15m"
+        )
+        runner.close()
+
+        assert config.starting_balance_usdt == 10000
+        assert create_backtest_venue_config(config).starting_balances == ["10000 USDT"]
+
+    def test_venue_config_detail_branch_uses_the_launch_balance(
+        self, temp_db: Path, temp_logs: Path
+    ) -> None:
+        """R2: detail data also takes the normal branch and keeps the launch 10000."""
+        from vibe_quant.validation.venue import create_backtest_venue_config
+
+        runner = ValidationRunner(db_path=temp_db, logs_path=temp_logs)
+        config = runner._create_venue_config(
+            {"parameters": {"initial_balance": 10000.0}},
+            None,
+            timeframe="1m",
+            has_detail_data=True,
+        )
+        runner.close()
+
+        assert config.starting_balance_usdt == 10000
+        assert create_backtest_venue_config(config).starting_balances == ["10000 USDT"]
+
+    def test_venue_config_ignores_a_top_level_starting_balance_column(
+        self, temp_db: Path, temp_logs: Path
+    ) -> None:
+        """R1: the dead ``run_config["starting_balance"]`` fallback is gone."""
+        runner = ValidationRunner(db_path=temp_db, logs_path=temp_logs)
+        config = runner._create_venue_config(
+            {"starting_balance": 50_000, "parameters": {}}, None, timeframe="1m"
+        )
+        runner.close()
+
+        assert config.starting_balance_usdt == DEFAULT_STARTING_BALANCE_USDT == 1000
+
+    def test_invalid_initial_balance_is_a_validation_runner_error(
+        self, temp_db: Path, temp_logs: Path
+    ) -> None:
+        """R7: the shared BalanceConfigError becomes a ValidationRunnerError."""
+        runner = ValidationRunner(db_path=temp_db, logs_path=temp_logs)
+        with pytest.raises(ValidationRunnerError) as excinfo:
+            runner._create_venue_config(
+                {"parameters": {"initial_balance": 1000.5}}, None, timeframe="1m"
+            )
+        runner.close()
+
+        assert str(excinfo.value) == (
+            "invalid initial_balance: initial_balance must be a whole number in "
+            "[1, 1000000000], got 1000.5"
+        )
+
+    @pytest.mark.parametrize("bad", [0, -5, 1_000_000_001, "10000", True, None, math.nan, math.inf])
+    def test_invalid_stored_initial_balance_fails_the_run(
+        self,
+        temp_db: Path,
+        temp_logs: Path,
+        sample_dsl_config: dict[str, object],
+        bad: object,
+    ) -> None:
+        """R7: a bad stored value fails the run (status failed, no engine, no silent 1000)."""
+        state = StateManager(temp_db)
+        strategy_id = state.create_strategy(name="bad_balance", dsl_config=sample_dsl_config)
+        run_id = state.create_backtest_run(
+            strategy_id=strategy_id,
+            run_mode="validation",
+            symbols=["BTCUSDT-PERP"],
+            timeframe="5m",
+            start_date="2025-01-01",
+            end_date="2025-01-31",
+            parameters={"initial_balance": bad},
+        )
+        state.close()
+
+        runner = ValidationRunner(db_path=temp_db, logs_path=temp_logs)
+        with pytest.raises(ValidationRunnerError, match="invalid initial_balance"):
+            runner.run(run_id=run_id)
+        runner.close()
+
+        state = StateManager(temp_db)
+        run = state.get_backtest_run(run_id)
+        state.close()
+        assert run is not None
+        assert run["status"] == "failed"
+        assert str(run.get("error_message", "")).startswith("invalid initial_balance")
+
+    def test_valid_initial_balance_reaches_the_stored_result(
+        self,
+        temp_db: Path,
+        temp_logs: Path,
+        sample_dsl_config: dict[str, object],
+    ) -> None:
+        """R14: validation is unchanged for a valid value — the run completes and stores.
+
+        The fake derives the result's ``starting_balance`` from the venue config the
+        runner built (as ``extract_results`` does), so the persisted
+        ``backtest_results.starting_balance`` proves the venue carried ``10000.0`` and
+        not the 1000 default. The DSL timeframe is non-sub-bar, so the venue is built on
+        the ``_create_venue_config`` branch a 1000 mutant would hide in.
+        """
+        state = StateManager(temp_db)
+        strategy_id = state.create_strategy(
+            name="good_balance",
+            dsl_config={**sample_dsl_config, "timeframe": "15m"},
+        )
+        run_id = state.create_backtest_run(
+            strategy_id=strategy_id,
+            run_mode="validation",
+            symbols=["BTCUSDT-PERP"],
+            timeframe="15m",
+            start_date="2025-01-01",
+            end_date="2025-01-31",
+            parameters={"initial_balance": 10000.0},
+        )
+        state.close()
+
+        runner = ValidationRunner(db_path=temp_db, logs_path=temp_logs)
+        runner._run_backtest = lambda **kwargs: _make_mock_result(  # type: ignore[assignment]
+            run_id=kwargs["run_id"],
+            strategy_name=kwargs["strategy_name"],
+            starting_balance=float(kwargs["venue_config"].starting_balance_usdt),
+        )
+        result = runner.run(run_id=run_id)
+        runner.close()
+
+        state = StateManager(temp_db)
+        stored = state.get_backtest_result(run_id)
+        run = state.get_backtest_run(run_id)
+        state.close()
+        assert stored is not None
+        assert stored["sharpe_ratio"] == result.sharpe_ratio
+        assert stored["starting_balance"] == 10000.0
+        assert run is not None
+        assert run["status"] == "completed"
+
+    def test_stored_balance_is_the_venue_config_balance(
+        self, temp_db: Path, temp_logs: Path
+    ) -> None:
+        """R14: ``backtest_results.starting_balance`` is the venue the run built (10000.0)."""
+        from vibe_quant.validation.extraction import extract_results
+
+        runner = ValidationRunner(db_path=temp_db, logs_path=temp_logs)
+        venue_config = runner._create_venue_config(
+            {"parameters": {"initial_balance": 10000.0}}, None, timeframe="1m"
+        )
+        runner.close()
+
+        # bt_result=None: the venue stamp happens before any engine work.
+        result = extract_results(1, "test_strategy", None, None, venue_config)  # type: ignore[arg-type]
+
+        assert result.starting_balance == 10000.0
 
         runner.close()
 

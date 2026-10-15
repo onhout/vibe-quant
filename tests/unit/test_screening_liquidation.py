@@ -200,7 +200,12 @@ def bt_result(n_positions: int = 9) -> SimpleNamespace:
 
 
 def make_runner(
-    tmp_path: Path, mode: str, *, catalog: Path | None = None, funding: bool = True
+    tmp_path: Path,
+    mode: str,
+    *,
+    catalog: Path | None = None,
+    funding: bool = True,
+    starting_balance: int = 1000,
 ) -> NTScreeningRunner:
     archive = _archive(tmp_path / f"funding_{mode}.db", list(range(12)))
     runner = NTScreeningRunner(
@@ -211,6 +216,7 @@ def make_runner(
         catalog_path=str(catalog) if catalog else None,
         funding_archive_path=str(archive if funding else tmp_path / "none.db"),
         liquidation_mode=mode,  # type: ignore[arg-type]
+        starting_balance=starting_balance,
     )
     runner._all_timeframes = {"1m"}
     runner._resolved_catalog_path = catalog  # type: ignore[assignment]
@@ -1073,13 +1079,14 @@ def wire_runner(
     runner: NTScreeningRunner,
     engine: SimpleNamespace,
     n_positions: int,
+    balance: float = BALANCE,
 ) -> None:
     """Route ``runner({})`` through ``_extract_metrics`` (the I4 test's seam)."""
     monkeypatch.setattr(
         runner,
         "_run_backtest",
         lambda params, t: runner._extract_metrics(
-            params, bt_result(n_positions), engine, t, BALANCE
+            params, bt_result(n_positions), engine, t, balance
         ),
     )
 
@@ -1159,3 +1166,64 @@ def test_liquidation_integrity_error_pickles() -> None:
     again = pickle.loads(pickle.dumps(err))
     assert type(again) is LiquidationIntegrityError
     assert str(again) == str(err)
+
+
+# ------------------------------------------------------- R16: the parsed wallet
+
+#: notional 50000 * 39900 = 1.995e9, above BTCUSDT's last tier cap (1.8e9)
+TIER_BREAK_QTY = 50_000.0
+
+
+def test_r16_cross_wallet_is_the_parsed_balance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R16: the cross scan's wallet is the run's parsed ``initial_balance``.
+
+    ``_run_backtest`` hands ``_extract_metrics`` exactly
+    ``float(self._venue_config().starting_balance_usdt)``, and that value must reach
+    ``apply_liquidation`` as the wallet — never a hard-coded 1000 or 40000.
+    """
+    import vibe_quant.liquidation.apply as apply_module
+
+    catalog = write_marks(tmp_path, CALM)
+    captured: list[float] = []
+    real = apply_module.apply_liquidation
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        captured.append(float(kwargs["starting_balance"]))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(apply_module, "apply_liquidation", spy)
+    runner = make_runner(tmp_path, "cross", catalog=catalog, starting_balance=10000)
+    assert runner._venue_config().starting_balance_usdt == 10000
+    extract(
+        runner,
+        [],
+        CALM,
+        balance=float(runner._venue_config().starting_balance_usdt),
+        n_positions=0,
+    )
+    assert captured == [10000.0]
+
+
+def test_r16b_notional_beyond_the_last_tier_cap_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R16b: with liquidation on, a position whose notional exceeds BTCUSDT's last tier
+    cap makes the scan raise ``TierTableExceeded``; the run fails closed as
+    ``LiquidationIntegrityError`` instead of scoring -inf."""
+    catalog = write_marks(tmp_path, CALM)
+    big = long_trade("BIG", 420, 540, 40000.0, 0.0)
+    big.peak_qty = TIER_BREAK_QTY
+    for fill in big.events:
+        fill.last_qty = TIER_BREAK_QTY
+    runner = make_runner(tmp_path, "cross", catalog=catalog, starting_balance=1_000_000_000)
+    wire_runner(
+        monkeypatch, runner, engine_for([big], CALM), 1, balance=1_000_000_000.0
+    )
+    with pytest.raises(
+        LiquidationIntegrityError,
+        match=r"liquidation_mode='cross': TierTableExceeded: BTCUSDT: notional "
+        r"1995000000\.0 >= last cap 1800000000\.0",
+    ):
+        runner({})

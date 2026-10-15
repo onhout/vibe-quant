@@ -365,11 +365,18 @@ def _db(tmp_path: Path, dsl: dict[str, Any]) -> Path:
         CREATE TABLE strategies (id INTEGER PRIMARY KEY, name TEXT, dsl_config TEXT);
         CREATE TABLE backtest_runs (id INTEGER PRIMARY KEY, strategy_id INTEGER, symbols TEXT,
                                     timeframe TEXT, parameters JSON NOT NULL);
+        CREATE TABLE sweep_results (id INTEGER PRIMARY KEY, run_id INTEGER,
+                                    starting_balance REAL);
+        CREATE TABLE backtest_results (id INTEGER PRIMARY KEY, run_id INTEGER,
+                                       starting_balance REAL);
         """
     )
     conn.execute("INSERT INTO strategies VALUES (1,'s',?)", (json.dumps(dsl),))
     conn.execute(
         "INSERT INTO backtest_runs VALUES (42,1,?,?,?)", (json.dumps(["BTCUSDT"]), "4h", "{}")
+    )
+    conn.execute(
+        "INSERT INTO backtest_results (run_id, starting_balance) VALUES (?,?)", (42, 1000.0)
     )
     conn.commit()
     conn.close()

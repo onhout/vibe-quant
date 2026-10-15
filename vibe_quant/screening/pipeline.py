@@ -22,6 +22,11 @@ from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import cpu_count
 from typing import TYPE_CHECKING, Any
 
+from vibe_quant.balance_settings import (
+    DEFAULT_STARTING_BALANCE_USDT,
+    parse_initial_balance,
+    validate_starting_balance,
+)
 from vibe_quant.errors import DataUnavailableError
 from vibe_quant.fees import FeeSchedule
 from vibe_quant.liquidation_settings import LiquidationSettings
@@ -167,6 +172,7 @@ class ScreeningPipeline:
         end_date: str | None = None,
         stall_timeout_s: float | None = None,
         liquidation: LiquidationSettings | None = None,
+        starting_balance: int = DEFAULT_STARTING_BALANCE_USDT,
     ) -> None:
         """Initialize screening pipeline.
 
@@ -181,6 +187,12 @@ class ScreeningPipeline:
             liquidation: Validated run-level liquidation settings (bead
                 vibe-quant-2gyk1.1.8). Off by default; when on, ``save_results``
                 records the per-row liquidation summary (D1).
+            starting_balance: The run's account size, parsed once from
+                ``parameters.initial_balance`` by :func:`create_screening_pipeline`
+                (bead vibe-quant-zpbmo). ``save_results`` records it on EVERY sweep
+                row of the run, the ``-999`` sentinel rows included (R12), so a
+                later overfitting rerun reads the same balance. The default 1000
+                keeps every pre-existing row and number byte-identical (R9).
         """
         self.dsl = dsl
         self._runner = backtest_runner or _run_mock_backtest
@@ -189,9 +201,15 @@ class ScreeningPipeline:
         self._end_date = end_date
         self._stall_timeout_s = stall_timeout_s or self.DEFAULT_STALL_TIMEOUT_S
         self._liquidation = liquidation or LiquidationSettings()
+        self._starting_balance = validate_starting_balance(starting_balance)
 
         # Build parameter grid
         self._param_grid = build_parameter_grid(dsl.sweep)
+
+    @property
+    def starting_balance(self) -> int:
+        """The account size every row of this run records (USDT)."""
+        return self._starting_balance
 
     @property
     def strategy_name(self) -> str:
@@ -426,6 +444,9 @@ class ScreeningPipeline:
     ) -> None:
         """Save screening results to database.
 
+        Every row carries this run's ``starting_balance`` (R12), the ``-999``
+        sentinel rows included, so all rows in the batch share one key set.
+
         Args:
             result: ScreeningResult to save
             state_manager: StateManager instance
@@ -456,6 +477,10 @@ class ScreeningPipeline:
                 "mtm_skewness": metrics.mtm_skewness,
                 "mtm_kurtosis": metrics.mtm_kurtosis,
                 "mtm_days": metrics.mtm_days,
+                # R12: EVERY row of the run records the balance it was measured at,
+                # the -999 sentinel rows included, so the batch has one key set and a
+                # later overfitting rerun reads the same account size (R11).
+                "starting_balance": float(self._starting_balance),
                 "is_pareto_optimal": is_pareto,
             }
             # D1: the liquidation summary is written ONLY when the mode is on, so
@@ -516,17 +541,26 @@ def create_screening_pipeline(
             bead vibe-quant-7eek0), before any engine exists. The run-level
             liquidation settings are derived from the same parameters with
             :meth:`LiquidationSettings.from_params` (the single source; there
-            is no screening CLI flag) and reach the runner and the pipeline.
+            is no screening CLI flag) and reach the runner and the pipeline. The
+            account size is ``parameters.initial_balance``, parsed ONCE here with
+            :func:`~vibe_quant.balance_settings.parse_initial_balance` (bead
+            vibe-quant-zpbmo) before the mock/real split, so an invalid stored
+            value fails the run even when no engine would be built.
 
     Returns:
         Configured ScreeningPipeline
 
     Raises:
         ValueError: ``parameters["entry_order"]`` is not ``"market"``.
+        BalanceConfigError: the stored ``initial_balance`` is not a whole number
+            in [1, 1000000000] (never silently defaulted).
         LiquidationConfigError: the stored ``liquidation_mode`` / ``leverage``
             is invalid (E10: the run fails before any engine exists).
     """
     run_params: Mapping[str, Any] = parameters or {}
+    # The run's account size, parsed ONCE and threaded to the runner and the
+    # pipeline: neither reads parameters["initial_balance"] on its own.
+    starting_balance = parse_initial_balance(run_params)
     # Parse ONCE, before the mock/real split, so an invalid stored mode fails
     # the run even when no engine would be built.
     liquidation = LiquidationSettings.from_params(run_params)
@@ -559,6 +593,7 @@ def create_screening_pipeline(
             entry_order=entry_order,
             liquidation_mode=liquidation.mode,
             leverage=liquidation.leverage,
+            starting_balance=starting_balance,
         )
     return ScreeningPipeline(
         dsl=dsl,
@@ -567,6 +602,7 @@ def create_screening_pipeline(
         start_date=start_date,
         end_date=end_date,
         liquidation=liquidation,
+        starting_balance=starting_balance,
     )
 
 

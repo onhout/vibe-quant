@@ -511,11 +511,12 @@ def test_screening_save_results_round_trips_mtm_stats_into_recheck(tmp_path: Pat
         execution_time_seconds=0.0, results=[m], pareto_optimal_indices=[0],
     )  # fmt: skip
     pipeline = ScreeningPipeline.__new__(ScreeningPipeline)
-    # save_results reads the run's liquidation settings from the instance; this
-    # test bypasses __init__, so set the mode-off default explicitly.
+    # save_results reads the run's liquidation settings AND its starting balance from
+    # the instance; this test bypasses __init__, so set both defaults explicitly.
     from vibe_quant.liquidation_settings import LiquidationSettings
 
     pipeline._liquidation = LiquidationSettings()
+    pipeline._starting_balance = 1000
     pipeline.save_results(result, sm, rid)
     (row,) = sm.get_sweep_results(rid)
     sm.close()

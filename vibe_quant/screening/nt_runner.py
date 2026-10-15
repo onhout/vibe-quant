@@ -12,6 +12,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from vibe_quant.balance_settings import (
+    DEFAULT_STARTING_BALANCE_USDT,
+    validate_starting_balance,
+)
 from vibe_quant.errors import DataUnavailableError, LiquidationIntegrityError
 from vibe_quant.fees import FeeSchedule
 from vibe_quant.liquidation_settings import (
@@ -260,6 +264,7 @@ class NTScreeningRunner:
         entry_order: str = "market",
         liquidation_mode: LiquidationMode = "off",
         leverage: float = DEFAULT_LEVERAGE,
+        starting_balance: int = DEFAULT_STARTING_BALANCE_USDT,
     ) -> None:
         """Initialize NTScreeningRunner.
 
@@ -299,13 +304,22 @@ class NTScreeningRunner:
                 venue runs at this leverage and, when the mode is on, the liquidation prices
                 assume it (recorded in ``last_liquidation_notes``). The default 10 keeps every
                 pre-existing number byte-identical.
+            starting_balance: The run's account size (USDT), already parsed from
+                ``parameters.initial_balance`` (bead vibe-quant-zpbmo). It sets the venue's
+                ``starting_balance_usdt`` and, when the mode is on, the liquidation wallet
+                (R16). The default 1000 keeps every pre-existing number byte-identical (R9).
 
         Raises:
             ValueError: ``entry_order`` is not ``"market"``, or the liquidation settings
                 are invalid (:class:`~vibe_quant.liquidation_settings.LiquidationConfigError`:
                 an unknown mode, or a leverage that is not a whole number in [1, 125]).
+            BalanceConfigError: ``starting_balance`` is not a whole number in
+                [1, 1000000000] (checked HERE, before any engine exists).
         """
         refuse_non_market_entry(entry_order)
+        # The venue's account size and the liquidation wallet: validated in __init__ so a
+        # bad value fails before any bar is read (never silently defaulted).
+        self._starting_balance = validate_starting_balance(starting_balance)
         settings = LiquidationSettings(mode=liquidation_mode, leverage=leverage)
         self._liquidation_mode: LiquidationMode = settings.mode
         self._leverage = settings.leverage
@@ -664,7 +678,8 @@ class NTScreeningRunner:
         from vibe_quant.validation.venue import create_venue_config_for_screening
 
         config = replace(
-            create_venue_config_for_screening(), fee_schedule=self._fee_schedule
+            create_venue_config_for_screening(starting_balance_usdt=self._starting_balance),
+            fee_schedule=self._fee_schedule,
         )
         # The venue runs at the run's leverage in EVERY mode (vibe-quant-6wq6w): today it is
         # only moved when liquidation is on. The default 10 is the venue's own default, so a

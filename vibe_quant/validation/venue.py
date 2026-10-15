@@ -15,6 +15,7 @@ from nautilus_trader.config import (
     LatencyModelConfig,
 )
 
+from vibe_quant.balance_settings import DEFAULT_STARTING_BALANCE_USDT
 from vibe_quant.fees import BINANCE_USDTM_TIERS, FeeSchedule
 from vibe_quant.validation.fill_model import (
     ScreeningFillModelConfig,
@@ -36,10 +37,11 @@ BINANCE_TAKER_FEE = BINANCE_USDTM_TIERS["VIP0"][1]  # 0.05%
 SCHEDULE_FEE_MODEL_PATH = "vibe_quant.validation.fee_model:ScheduleFeeModel"
 SCHEDULE_FEE_MODEL_CONFIG_PATH = "vibe_quant.validation.fee_model:ScheduleFeeModelConfig"
 
-# Single source of truth for the default account size. The results API
-# fallback MUST match this — a mismatched fallback (e.g. 10k vs 1k) scales
-# every equity-curve/drawdown/monthly-return percentage by 10x.
-DEFAULT_STARTING_BALANCE_USDT: int = 1_000
+# Single source of truth for the default account size lives in
+# vibe_quant.balance_settings (imported above and re-exported here for the existing
+# importers; the API schema must not pull the validation stack just to read the
+# default). The results API fallback MUST match it — a mismatched fallback (e.g. 10k
+# vs 1k) scales every equity-curve/drawdown/monthly-return percentage by 10x.
 
 
 @dataclass

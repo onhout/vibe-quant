@@ -35,7 +35,13 @@ if TYPE_CHECKING:
 
 
 def _seed_run(tmp_path: Path, *, parameters: dict[str, object]) -> Path:
-    """Minimal state DB with a strategy + run + its stored ``parameters``."""
+    """Minimal state DB with a strategy + run + its stored ``parameters``.
+
+    Also carries the recorded-balance tables the WFA/CV runners read through
+    ``parent_effective_balance`` (R11): run 42 has no sweep rows and one recorded
+    ``backtest_results.starting_balance`` of 1000.0, so these reruns run at 1000 —
+    exactly the default these tests were written against.
+    """
     db = tmp_path / "state.db"
     conn = sqlite3.connect(str(db))
     conn.executescript(
@@ -52,6 +58,16 @@ def _seed_run(tmp_path: Path, *, parameters: dict[str, object]) -> Path:
             timeframe TEXT,
             parameters JSON NOT NULL
         );
+        CREATE TABLE sweep_results (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER,
+            starting_balance REAL
+        );
+        CREATE TABLE backtest_results (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER,
+            starting_balance REAL
+        );
         """
     )
     dsl = {"name": "stub", "timeframe": "4h", "indicators": {}}
@@ -63,6 +79,9 @@ def _seed_run(tmp_path: Path, *, parameters: dict[str, object]) -> Path:
         "INSERT INTO backtest_runs (id, strategy_id, symbols, timeframe, parameters) "
         "VALUES (?,?,?,?,?)",
         (42, 1, json.dumps(["BTCUSDT"]), "4h", json.dumps(parameters)),
+    )
+    conn.execute(
+        "INSERT INTO backtest_results (run_id, starting_balance) VALUES (?,?)", (42, 1000.0)
     )
     conn.commit()
     conn.close()
