@@ -768,3 +768,297 @@ async def test_run_propagates_cancellation() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert len(fetch.requests) == 1
+
+
+_LOGGER_NAME = "vibe_quant.paper.liquidation_watch"
+_SECRET_EXCEPTION_TEXT = (
+    "GET https://testnet.binancefuture.com/fapi/v1/forceOrders"
+    "?symbol=BTCUSDT&timestamp=1&signature=deadbeefcafe failed: 401 apiKey=SECRETKEY123"
+)
+
+
+def _logged_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """The module's WARNING records, rendered, in log order (R1)."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == _LOGGER_NAME and record.levelname == "WARNING"
+    ]
+
+
+async def test_failed_fetch_logs_one_warning_with_symbol_class_and_redacted_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R1: a failed fetch logs one WARNING with the symbol, the exception class and
+    the exception text — with the signed query string gone and no api key left.
+
+    The exception text is the shape a Binance HTTP failure actually has: request URL
+    with its ``?symbol=..&timestamp=..&signature=..`` query, then the key the client
+    echoes. Neither the query string (so no ``signature=``) nor the key value may
+    reach the log.
+    """
+    recorder = _Recorder()
+    fetch = _FakeFetch()
+    fetch.errors["BTCUSDT"] = RuntimeError(_SECRET_EXCEPTION_TEXT)
+    watcher = _make_watcher(fetch, recorder)
+
+    with caplog.at_level("WARNING", logger=_LOGGER_NAME):
+        await watcher.poll_once()
+
+    warnings = _logged_warnings(caplog)
+    assert len(warnings) == 1  # one failure: below the R52 degraded threshold
+    assert "BTCUSDT" in warnings[0]
+    assert "RuntimeError" in warnings[0]
+    assert "?<redacted>" in warnings[0]
+    assert "deadbeefcafe" not in warnings[0]
+    assert "SECRETKEY123" not in warnings[0]
+    assert "signature=" not in warnings[0]
+
+
+async def test_credential_mask_covers_equals_and_colon_forms_and_the_header_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R1b (chief ruling): the mask covers ``name=value`` and ``name: value``, and the
+    Binance request-header name ``X-MBX-APIKEY`` — no credential value reaches the log.
+    """
+    recorder = _Recorder()
+    fetch = _FakeFetch()
+    fetch.errors["BTCUSDT"] = RuntimeError(
+        "auth failed: apiKey: COLONSECRET1, X-MBX-APIKEY=HEADERSECRET2, secret: COLONSECRET3",
+    )
+    watcher = _make_watcher(fetch, recorder)
+
+    with caplog.at_level("WARNING", logger=_LOGGER_NAME):
+        await watcher.poll_once()
+
+    warnings = _logged_warnings(caplog)
+    assert len(warnings) == 1
+    assert "auth failed" in warnings[0]
+    assert "COLONSECRET1" not in warnings[0]
+    assert "HEADERSECRET2" not in warnings[0]
+    assert "COLONSECRET3" not in warnings[0]
+
+
+async def test_credential_mask_covers_a_quoted_mapping_repr(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R1c (chief ruling): the quoted mapping form masks too -- ``{'apiKey': 'S'}``.
+
+    This is the shape an httpx/requests failure dump has: name and value both quoted,
+    so a mask that requires ``=``/``:`` directly after the name leaves the key in the
+    log. Both the Binance header name and a bare ``apiKey`` are pinned.
+    """
+    recorder = _Recorder()
+    fetch = _FakeFetch()
+    fetch.errors["BTCUSDT"] = RuntimeError(
+        "auth failed: {'X-MBX-APIKEY': 'DICTREPRSECRET', 'apiKey': 'DICTSECRET2'}",
+    )
+    watcher = _make_watcher(fetch, recorder)
+
+    with caplog.at_level("WARNING", logger=_LOGGER_NAME):
+        await watcher.poll_once()
+
+    warnings = _logged_warnings(caplog)
+    assert len(warnings) == 1
+    assert "auth failed" in warnings[0]
+    assert "DICTREPRSECRET" not in warnings[0]
+    assert "DICTSECRET2" not in warnings[0]
+
+
+async def test_failure_log_truncates_the_exception_text_to_300_chars(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R1: the redacted exception text is cut to 300 characters."""
+    recorder = _Recorder()
+    fetch = _FakeFetch()
+    fetch.errors["BTCUSDT"] = RuntimeError("x" * 1_000)
+    watcher = _make_watcher(fetch, recorder)
+
+    with caplog.at_level("WARNING", logger=_LOGGER_NAME):
+        await watcher.poll_once()
+
+    warnings = _logged_warnings(caplog)
+    assert len(warnings) == 1
+    assert "x" * 300 in warnings[0]
+    assert "x" * 301 not in warnings[0]
+
+
+async def test_every_failure_is_logged_and_the_degraded_alert_text_is_unchanged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R1/R52: one WARNING per failure — not only at the degraded threshold — and the
+    R52 degraded alert text is untouched by the new per-failure log."""
+    recorder = _Recorder()
+    fetch = _FakeFetch()
+    fetch.errors["BTCUSDT"] = TimeoutError("binance timeout")
+    clock = _Clock()
+    watcher = _make_watcher(fetch, recorder, clock=clock)
+
+    with caplog.at_level("WARNING", logger=_LOGGER_NAME):
+        for _ in range(3):
+            clock.advance(600)
+            await watcher.poll_once()
+
+    assert len(_logged_warnings(caplog)) == 3
+    assert recorder.warnings == ["liquidation detector degraded: BTCUSDT TimeoutError"]
+
+
+async def test_cancelled_fetch_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """R1: cancellation is not a failure to report — poll_once re-raises it, no WARNING."""
+    recorder = _Recorder()
+    fetch = _FakeFetch()
+    fetch.errors["BTCUSDT"] = asyncio.CancelledError()
+    watcher = _make_watcher(fetch, recorder)
+
+    with caplog.at_level("WARNING", logger=_LOGGER_NAME), pytest.raises(asyncio.CancelledError):
+        await watcher.poll_once()
+
+    assert _logged_warnings(caplog) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'headers={"token": "Bearer TOKENSECRET123"}',
+        'request failed: {"apiKey": " SECRETKEY123 with spaces"}',
+        "auth failed: Authorization: Bearer ZZLEAK9 more",
+        "boom signature=SIGSECRET123",
+    ],
+    ids=["quoted-bearer-token", "quoted-leading-space-key", "authorization-header", "signature"],
+)
+async def test_no_secret_substring_reaches_the_formatted_log(
+    caplog: pytest.LogCaptureFixture, text: str
+) -> None:
+    """R1e: from the first credential name on, the text is cut -- quoted or
+    space-containing values cannot leak. Asserted on ``caplog.text`` (formatted)."""
+    recorder = _Recorder()
+    fetch = _FakeFetch()
+    fetch.errors["BTCUSDT"] = RuntimeError(text)
+    watcher = _make_watcher(fetch, recorder)
+
+    with caplog.at_level("DEBUG", logger=_LOGGER_NAME):
+        await watcher.poll_once()
+
+    assert "BTCUSDT" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "SECRET" not in caplog.text
+    assert "ZZLEAK9" not in caplog.text
+    assert "<redacted>" in caplog.text
+
+
+async def test_failing_degraded_alert_never_logs_the_fetch_exception_chain(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R1f: the 3rd failure's on_warning raises OSError; the handler-failure log must
+    carry no traceback, so the active fetch exception (signed URL, apiKey) stays out."""
+    recorder = _Recorder()
+    fetch = _FakeFetch()
+    fetch.errors["BTCUSDT"] = RuntimeError(_SECRET_EXCEPTION_TEXT)
+    clock = _Clock()
+
+    async def disk_full(message: str) -> None:
+        raise OSError("disk full")
+
+    watcher = _make_watcher(fetch, recorder, clock=clock, on_warning=disk_full)
+
+    with caplog.at_level("DEBUG", logger=_LOGGER_NAME):
+        for _ in range(3):
+            clock.advance(600)
+            await watcher.poll_once()
+
+    assert "alert handler failed" in caplog.text
+    assert "OSError" in caplog.text
+    assert "Traceback" not in caplog.text
+    for secret in ("SECRETKEY123", "deadbeefcafe", "signature="):
+        assert secret not in caplog.text
+
+
+#: R1f leak markers: contain no credential name, so redaction cannot strip them
+#: (a marker like ``BEARERSECRET`` would be cut at ``bearer`` and hide a leak).
+_LEAK_EXCEPTION_TEXT = (
+    "GET https://testnet.binancefuture.com/fapi/v1/forceOrders"
+    "?symbol=BTCUSDT&signature=ZZLEAK9 failed: 401 apiKey=QQLEAK7"
+)
+
+
+class _ArmedClock(_Clock):
+    """A clock that raises :data:`_LEAK_EXCEPTION_TEXT` on its next call once armed.
+
+    Arming it from the fetch makes the failure bookkeeping raise *after* the fetch
+    error is handled, so the exception escaping to :meth:`LiquidationWatcher.run`
+    carries the secret-bearing fetch error as its ``__context__`` (the R1f chain).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.armed = False
+
+    def __call__(self) -> int:
+        if self.armed:
+            self.armed = False
+            raise RuntimeError(_LEAK_EXCEPTION_TEXT)
+        return self.ms
+
+
+async def test_run_cycle_failure_log_is_redacted_and_has_no_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R1f: run()'s cycle-failure log never carries ``exc_info``.
+
+    A failing fetch is handled per symbol inside poll_once, but an error in the
+    failure bookkeeping that runs while that fetch error is still active escapes
+    with the secret-bearing fetch error as its ``__context__``. run() must log only
+    the redacted text of the escaping error: with ``logger.exception`` the traceback
+    would print the raw message (signed query, key) and 'Traceback'.
+    """
+    recorder = _Recorder()
+    clock = _ArmedClock()
+
+    async def arming_fetch(symbol: str, start_ms: int, end_ms: int) -> list[ForceOrder]:
+        clock.armed = True  # the next now_ms() call, in _note_failure, raises
+        raise RuntimeError(_LEAK_EXCEPTION_TEXT)
+
+    watcher = _make_watcher(arming_fetch, recorder, clock=clock)
+    stop = asyncio.Event()
+    asyncio.get_running_loop().call_soon(stop.set)
+
+    with caplog.at_level("DEBUG", logger=_LOGGER_NAME):
+        await asyncio.wait_for(watcher.run(stop), timeout=1)
+
+    assert "liquidation watch cycle failed" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "Traceback" not in caplog.text
+    assert "ZZLEAK9" not in caplog.text
+    assert "QQLEAK7" not in caplog.text
+    assert "signature=" not in caplog.text
+
+
+async def test_failed_alert_handler_log_text_is_redacted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R1f: a raising alert handler is logged with its error text redacted.
+
+    The handler's own error text has the same signed-URL/key shape the fetch error
+    does, so it must go through the redactor. The existing 'disk full' test cannot
+    catch a regression to raw ``str(exc)``: its message carries no secret.
+    """
+    recorder = _Recorder()
+    fetch = _FakeFetch()
+    fetch.errors["BTCUSDT"] = TimeoutError("binance timeout")
+    clock = _Clock()
+
+    async def leaky_warning(message: str) -> None:
+        raise RuntimeError(_LEAK_EXCEPTION_TEXT)
+
+    watcher = _make_watcher(fetch, recorder, clock=clock, on_warning=leaky_warning)
+
+    with caplog.at_level("DEBUG", logger=_LOGGER_NAME):
+        for _ in range(3):
+            clock.advance(600)
+            await watcher.poll_once()
+
+    assert "alert handler failed" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "ZZLEAK9" not in caplog.text
+    assert "QQLEAK7" not in caplog.text
+    assert "signature=" not in caplog.text

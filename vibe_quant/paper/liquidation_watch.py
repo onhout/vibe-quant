@@ -13,6 +13,11 @@ consecutive-failure count and one backoff per symbol (R50, R52).
 
 Contract rows implemented here:
 
+* **R1** — every failed fetch logs one WARNING through the module logger: the symbol,
+  the exception class, and the exception text with each URL query string replaced by
+  ``?<redacted>``, everything from the first credential name on cut, and the text cut
+  to 300 characters (R52g: never a key, secret or signature). Cancellation is not a failure and is
+  not logged.
 * **R46** — each cycle, every symbol due by its own backoff gets exactly one request
   with ``startTime = max(cursor[s] - overlap_ms, end - lookback_cap_ms + 60_000)``,
   ``endTime = end``, and one ``on_warning`` per symbol per 7-day clamp episode.
@@ -47,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -59,6 +65,33 @@ logger = logging.getLogger(__name__)
 #: R46: the clamped window is the lookback cap minus one minute.
 _CLAMP_SLACK_MS = 60_000
 _MS_PER_DAY = 86_400_000
+
+#: R1: the marker a redacted URL query string becomes, and the cap on logged text.
+_REDACTED_QUERY = "?<redacted>"
+_FAILURE_TEXT_MAX_CHARS = 300
+
+_QUERY_STRING_RE = re.compile(r"\?\S*")
+_CREDENTIAL_NAME_RE = re.compile(
+    r"(?i)api[_-]?key|api[_-]?secret|secret|signature|token|authorization|bearer"
+    r"|x[_-]?mbx[_-]?apikey",
+)
+
+
+def _redact_failure_text(text: str) -> str:
+    """R1/R1e: log-safe exception text -- no query string, no credential, 300 chars max.
+
+    The query string goes first (``?<redacted>``). Masking credential values one by
+    one cannot be exhaustive (a quoted value with spaces, a ``Bearer`` token), so from
+    the first credential NAME on (key, secret, signature, token, authorization,
+    bearer, ``X-MBX-APIKEY``) everything is cut and replaced by ``<redacted>``: the
+    text before it still tells the failure apart, and no value can follow a cut.
+    """
+    redacted = _QUERY_STRING_RE.sub(_REDACTED_QUERY, text)
+    match = _CREDENTIAL_NAME_RE.search(redacted)
+    if match is not None:
+        redacted = redacted[: match.start()] + "<redacted>"
+    return redacted[:_FAILURE_TEXT_MAX_CHARS]
+
 
 type LiquidationHandler = Callable[[ForceOrder], Awaitable[None]]
 type WarningHandler = Callable[[str], Awaitable[None]]
@@ -189,8 +222,13 @@ class LiquidationWatcher:
                 await self.poll_once()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("liquidation watch cycle failed")
+            except Exception as exc:
+                # R1f: no exc_info -- the chain may hold a fetch exception's text.
+                logger.error(
+                    "liquidation watch cycle failed: %s: %s",
+                    type(exc).__name__,
+                    _redact_failure_text(str(exc)),
+                )
             timeout_s = self._time_to_next_attempt_s()
             if timeout_s <= 0:
                 await asyncio.sleep(0)
@@ -242,7 +280,14 @@ class LiquidationWatcher:
         )
 
     async def _note_failure(self, symbol: str, exc: Exception) -> None:
-        """R52: per-symbol backoff and the single degraded warning."""
+        """R1/R52: the per-failure WARNING, then backoff and the degraded warning."""
+        # R1: never logger.exception here -- a traceback would carry the raw text.
+        logger.warning(
+            "liquidation detector fetch failed: %s %s: %s",
+            symbol,
+            type(exc).__name__,
+            _redact_failure_text(str(exc)),
+        )
         failures = self._failures[symbol] + 1
         self._failures[symbol] = failures
         backoff_s = min(self._interval_s * 2 ** (failures - 1), self._max_backoff_s)
@@ -272,8 +317,13 @@ class LiquidationWatcher:
             await handler(*args)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("liquidation detector alert handler failed")
+        except Exception as exc:
+            # R1f: no exc_info -- __context__ is the active fetch exception (raw URL, key).
+            logger.error(
+                "liquidation detector alert handler failed: %s: %s",
+                type(exc).__name__,
+                _redact_failure_text(str(exc)),
+            )
 
     def _prune_seen(self) -> None:
         """R50: keep only keys the next request window can return again."""
