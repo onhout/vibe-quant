@@ -2,8 +2,9 @@
 
 Bead vibe-quant-2gyk1.1.11. Contract rows (design r2, job 20261015-honest-safe):
 
-* R42  the exchange refuses the margin change -> NT raises while connecting, so
-       ``trader.start()`` is never reached: no strategy starts and no order exists.
+* R42  a refused margin change never starts a strategy. Pinned on a
+       real NT ``TradingNode`` in ``test_paper_margin_refusal_real_node.py``, not here:
+       real NT LOGS the failed connect and idles, it never raises.
 * R42b more than 120 s with ``_connected is None``: ONCE a RISK_CHECK
        ``{action: startup_connect_timeout, timeout_s: 120, margin_type, passed: False}``,
        exactly one critical Telegram (bypassing the rate limit), and
@@ -127,10 +128,6 @@ class _Kernel:
         self.data_engine = _Engine()
         self.exec_engine = _Engine()
 
-    def connect(self) -> None:
-        """NT's kernel start: the clients connect BEFORE ``trader.start()``."""
-        raise ConnectionError("margin type change refused: open orders or position")
-
 
 class _Trader:
     def __init__(self) -> None:
@@ -151,13 +148,12 @@ class _Trader:
 class _FakeTradingNode:
     """Stand-in for ``nautilus_trader.live.node.TradingNode``.
 
-    ``refuse_connect`` models the exchange refusing the margin-type change: NT raises
-    while connecting, so ``trader.start()`` (the next step in ``run_async``) is never
-    reached. Connecting is not the paper node's job - this only pins the ordering.
+    Connecting is not the paper node's job - this only pins the ordering. R42 (a refused
+    margin change never starts a strategy) is pinned on the real NT ``TradingNode`` in
+    ``test_paper_margin_refusal_real_node.py``.
     """
 
     instances: list[_FakeTradingNode] = []
-    refuse_connect = False
 
     def __init__(self, config: Any) -> None:
         self.config = config
@@ -176,8 +172,6 @@ class _FakeTradingNode:
         self.built = True
 
     async def run_async(self) -> None:
-        if _FakeTradingNode.refuse_connect:
-            self.kernel.connect()
         self.trader.start()
 
     async def stop_async(self) -> None:
@@ -189,7 +183,6 @@ def fake_tradingnode(monkeypatch: pytest.MonkeyPatch) -> type[_FakeTradingNode]:
     import nautilus_trader.live.node as live_node
 
     _FakeTradingNode.instances = []
-    _FakeTradingNode.refuse_connect = False
     monkeypatch.setattr(live_node, "TradingNode", _FakeTradingNode)
     return _FakeTradingNode
 
@@ -293,29 +286,6 @@ def _estimate_payload(node: PaperTradingNode, seeded: dict[str, Any]) -> dict[st
     payloads = _actions(node, seeded, "liquidation_estimate")
     assert len(payloads) == 1, f"expected exactly one estimate, got {payloads}"
     return payloads[0]
-
-
-# ------------------------------------------------------------------------- R42
-
-
-async def test_refused_margin_change_never_reaches_trader_start(
-    seeded: dict[str, Any], fake_tradingnode: type[_FakeTradingNode]
-) -> None:
-    """R42: NT raises in connect, so ``trader.start()`` (and every strategy) is skipped."""
-    rid = _validation_run(seeded, _ISOLATED_10X)
-    fake_tradingnode.refuse_connect = True
-    node = PaperTradingNode(_config(seeded, validation_run_id=rid))
-    await node._initialize()
-    try:
-        with pytest.raises(ConnectionError):
-            await node._run_loop()
-        tn = fake_tradingnode.instances[0]
-        assert tn.trader.strategies, "the compiled strategy is registered before connect"
-        assert tn.trader.start_calls == 0, "a refused connect must not reach trader.start()"
-        assert _orders(node, seeded) == []
-    finally:
-        fake_tradingnode.refuse_connect = False
-        await node._shutdown()
 
 
 # ------------------------------------------------------------------------ R42b

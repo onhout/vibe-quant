@@ -1,10 +1,11 @@
 """R42 on the REAL NautilusTrader ``TradingNode`` (bead vibe-quant-q7hcn).
 
-``test_paper_startup_and_estimate.py`` pins R42 with a fake node, so it only proves
-our ASSUMPTION about NT. Here a real ``TradingNode`` (no network) runs a stub exec
-client whose ``_connect`` fails the way ``BinanceFuturesExecutionClient._connect``
-does when the venue refuses the margin-type change (``set_margin_type`` raises a
-``BinanceClientError`` out of its TaskGroup).
+This file is R42's ONLY test: the fake-node version in
+``test_paper_startup_and_estimate.py`` modelled a ``ConnectionError`` real NT never
+raises and was removed (bead vibe-quant-qf58o). Here a real ``TradingNode`` (no
+network) runs a stub exec client whose ``_connect`` fails the way
+``BinanceFuturesExecutionClient._connect`` does when the venue refuses the margin-type
+change (``set_margin_type`` raises a ``BinanceClientError`` out of its TaskGroup).
 
 What real NT does (probed): ``LiveExecutionClient.connect`` runs ``_connect`` in a task
 and only LOGS its exception; ``start_async`` waits ``timeout_connection`` for the engines
