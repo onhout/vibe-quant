@@ -65,12 +65,13 @@ def _mock_filter(chrom: StrategyChromosome, bt: dict[str, Any]) -> dict[str, boo
 
 def _fit(
     sharpe: float = 2.0, trades: int = 150, ret: float = 0.4, score: float = 0.6,
+    dd: float = 0.1, pf: float = 1.8,
 ) -> Any:
     """Minimal passing FitnessResult for gate tests."""
     from vibe_quant.discovery.fitness import FitnessResult
 
     return FitnessResult(
-        sharpe_ratio=sharpe, max_drawdown=0.1, profit_factor=1.8, total_trades=trades,
+        sharpe_ratio=sharpe, max_drawdown=dd, profit_factor=pf, total_trades=trades,
         total_return=ret, complexity_penalty=0.0, overtrade_penalty=0.0, sl_tp_penalty=0.0,
         raw_score=score, adjusted_score=score, passed_filters=True, filter_results={},
     )
@@ -447,6 +448,149 @@ class TestStructuralDedup:
             candidates.append((c, 0.9 - i * 0.01))
         result = _select_diverse_top_k(candidates, top_k=5, min_distance=0.15)
         assert len(result) == 5  # All different indicators
+
+
+class TestBehaviouralDedup:
+    """Top-K slots must not go to behaviourally identical genomes.
+
+    Two structurally distant chromosomes can still produce the exact same
+    trade list, hence bit-identical backtest metrics. Such a duplicate must be
+    skipped even though the structural distance rule would have kept it.
+    """
+
+    @staticmethod
+    def _chrom(indicator: str) -> StrategyChromosome:
+        from vibe_quant.discovery.operators import ConditionType, Direction, StrategyGene
+
+        params: dict[str, float] = {"period": 14.0}
+        if indicator == "STOCH":
+            params = {"k_period": 14.0, "d_period": 3.0}
+        gene = StrategyGene(
+            indicator_type=indicator, parameters=params,
+            condition=ConditionType.GT,
+            threshold=50.0 if indicator in ("RSI", "CCI") else 0.01,
+        )
+        return StrategyChromosome(
+            entry_genes=[gene], exit_genes=[gene.clone()],
+            stop_loss_pct=2.0, take_profit_pct=5.0, direction=Direction.LONG,
+        )
+
+    def test_identical_metrics_deduped_next_distinct_fills_slot(self) -> None:
+        """P1: identical metrics + distant genotype -> second skipped, next fills."""
+        from vibe_quant.discovery.pipeline import _select_diverse_top_k
+
+        rsi = self._chrom("RSI")
+        cci = self._chrom("CCI")
+        atr = self._chrom("ATR")
+        candidates = [
+            (rsi, _fit(ret=0.4)),
+            (cci, _fit(ret=0.4)),  # identical fingerprint, distant genotype
+            (atr, _fit(ret=0.3)),
+        ]
+        result = _select_diverse_top_k(candidates, top_k=2, min_distance=0.15)
+        assert [c.uid for c, _ in result] == [rsi.uid, atr.uid]
+
+    def test_one_field_differs_by_epsilon_both_kept(self) -> None:
+        """P2: exact float equality — a 1e-12 change is a different behaviour."""
+        from vibe_quant.discovery.pipeline import _select_diverse_top_k
+
+        rsi = self._chrom("RSI")
+        cci = self._chrom("CCI")
+        atr = self._chrom("ATR")
+        candidates = [
+            (rsi, _fit(ret=0.4)),
+            (cci, _fit(ret=0.4 + 1e-12)),
+            (atr, _fit(ret=0.3)),
+        ]
+        result = _select_diverse_top_k(candidates, top_k=2, min_distance=0.15)
+        assert [c.uid for c, _ in result] == [rsi.uid, cci.uid]
+
+    def test_zero_trade_duplicates_deduped(self) -> None:
+        """P4: two identical zero-trade results are behaviourally identical."""
+        from vibe_quant.discovery.pipeline import _select_diverse_top_k
+
+        rsi = self._chrom("RSI")
+        cci = self._chrom("CCI")
+        candidates = [
+            (rsi, _fit(sharpe=0.0, trades=0, ret=0.0)),
+            (cci, _fit(sharpe=0.0, trades=0, ret=0.0)),
+        ]
+        result = _select_diverse_top_k(candidates, top_k=2, min_distance=0.15)
+        assert [c.uid for c, _ in result] == [rsi.uid]
+
+    def test_nan_metrics_never_deduped(self) -> None:
+        """P5: NaN != NaN, so NaN fingerprints are never treated as duplicates."""
+        from vibe_quant.discovery.pipeline import _select_diverse_top_k
+
+        rsi = self._chrom("RSI")
+        cci = self._chrom("CCI")
+        candidates = [
+            (rsi, _fit(sharpe=float("nan"))),
+            (cci, _fit(sharpe=float("nan"))),
+        ]
+        result = _select_diverse_top_k(candidates, top_k=2, min_distance=0.15)
+        assert [c.uid for c, _ in result] == [rsi.uid, cci.uid]
+
+    def test_float_fitness_entries_unchanged(self) -> None:
+        """P3: legacy float fitness entries get no fingerprint dedupe."""
+        from vibe_quant.discovery.pipeline import _select_diverse_top_k
+
+        rsi = self._chrom("RSI")
+        cci = self._chrom("CCI")
+        candidates = [(rsi, 0.9), (cci, 0.9)]
+        result = _select_diverse_top_k(candidates, top_k=2, min_distance=0.15)
+        assert [c.uid for c, _ in result] == [rsi.uid, cci.uid]
+
+    def test_total_trades_differs_by_one_both_kept(self) -> None:
+        """P2 per-field: the fingerprint includes total_trades (differ by 1)."""
+        from vibe_quant.discovery.pipeline import _select_diverse_top_k
+
+        rsi = self._chrom("RSI")
+        cci = self._chrom("CCI")
+        candidates = [(rsi, _fit(trades=150)), (cci, _fit(trades=151))]
+        result = _select_diverse_top_k(candidates, top_k=2, min_distance=0.15)
+        assert [c.uid for c, _ in result] == [rsi.uid, cci.uid]
+
+    def test_max_drawdown_differs_by_epsilon_both_kept(self) -> None:
+        """P2 per-field: the fingerprint includes max_drawdown (differ by 1e-12)."""
+        from vibe_quant.discovery.pipeline import _select_diverse_top_k
+
+        rsi = self._chrom("RSI")
+        cci = self._chrom("CCI")
+        candidates = [(rsi, _fit(dd=0.1)), (cci, _fit(dd=0.1 + 1e-12))]
+        result = _select_diverse_top_k(candidates, top_k=2, min_distance=0.15)
+        assert [c.uid for c, _ in result] == [rsi.uid, cci.uid]
+
+    def test_profit_factor_differs_by_epsilon_both_kept(self) -> None:
+        """P2 per-field: the fingerprint includes profit_factor (differ by 1e-12)."""
+        from vibe_quant.discovery.pipeline import _select_diverse_top_k
+
+        rsi = self._chrom("RSI")
+        cci = self._chrom("CCI")
+        candidates = [(rsi, _fit(pf=1.8)), (cci, _fit(pf=1.8 + 1e-12))]
+        result = _select_diverse_top_k(candidates, top_k=2, min_distance=0.15)
+        assert [c.uid for c, _ in result] == [rsi.uid, cci.uid]
+
+    def test_distance_rejected_candidate_does_not_record_fingerprint(self) -> None:
+        """P6: a distance-rejected candidate must not poison the fingerprint set.
+
+        Scan order A, B, C: B is structurally near A (distance-rejected, its
+        fingerprint F is never selected) and C is distant from A but shares F.
+        Recording B's fingerprint anyway would wrongly drop C, so the result
+        must be [A, C].
+        """
+        from vibe_quant.discovery.pipeline import _select_diverse_top_k
+
+        a = self._chrom("RSI")  # kept (first selected)
+        b = self._chrom("RSI")  # structurally identical to A -> distance 0 < 0.15
+        c = self._chrom("ATR")  # distant from A
+        candidates = [
+            (a, _fit(ret=0.4)),
+            (b, _fit(ret=0.55)),  # distance-rejected; fingerprint F (not recorded)
+            (c, _fit(ret=0.55)),  # shares F with B, differs from A -> fills slot 2
+        ]
+        result = _select_diverse_top_k(candidates, top_k=2, min_distance=0.15)
+        assert [c.uid for c, _ in result] == [a.uid, c.uid]
 
 
 # ---------------------------------------------------------------------------

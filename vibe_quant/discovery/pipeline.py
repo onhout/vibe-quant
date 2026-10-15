@@ -362,16 +362,43 @@ class DiscoveryResult:
     buy_hold_gate: dict[str, object] | None = None
 
 
+def _behaviour_fingerprint(
+    fitness: FitnessResult | float,
+) -> tuple[int, float, float, float, float] | None:
+    """Behavioural fingerprint of a fitness result, or ``None`` for floats.
+
+    Two genomes whose trade lists are identical produce bit-identical
+    ``(total_trades, total_return, sharpe_ratio, max_drawdown, profit_factor)``,
+    so equal fingerprints identify behaviourally identical strategies even when
+    their genotypes are structurally distant. Any NaN field makes the tuple
+    comparison False (``NaN != NaN``), so NaN-metric results are never treated
+    as duplicates. Legacy ``float`` fitness entries have no fingerprint
+    (``None``) and are never deduped.
+    """
+    if isinstance(fitness, FitnessResult):
+        return (
+            fitness.total_trades,
+            fitness.total_return,
+            fitness.sharpe_ratio,
+            fitness.max_drawdown,
+            fitness.profit_factor,
+        )
+    return None
+
+
 def _select_diverse_top_k(
     scored: Sequence[tuple[StrategyChromosome, FitnessResult | float]],
     top_k: int = 5,
     min_distance: float = 0.15,
 ) -> list[tuple[StrategyChromosome, FitnessResult | float]]:
-    """Select top-K strategies with diversity enforcement.
+    """Select top-K strategies with structural and behavioural diversity.
 
-    Iterates through candidates sorted by fitness (descending). A candidate
-    is added only if its distance to ALL already-selected strategies exceeds
-    min_distance.
+    Iterates through candidates sorted by fitness (descending). A candidate is
+    added only if its distance to ALL already-selected strategies exceeds
+    min_distance AND, for ``FitnessResult`` entries, its behavioural fingerprint
+    (see ``_behaviour_fingerprint``) differs from every selected one. The
+    fingerprint skip is an extra condition on top of the distance rule: scan
+    order and the distance test are unchanged.
 
     Args:
         scored: List of (chromosome, fitness) tuples, sorted by fitness desc.
@@ -384,10 +411,15 @@ def _select_diverse_top_k(
     from vibe_quant.discovery.distance import chromosome_distance
 
     selected: list[tuple[StrategyChromosome, FitnessResult | float]] = []
+    selected_fingerprints: list[tuple[int, float, float, float, float] | None] = []
 
     for chrom, fitness in scored:
         if len(selected) >= top_k:
             break
+
+        fingerprint = _behaviour_fingerprint(fitness)
+        if fingerprint is not None and fingerprint in selected_fingerprints:
+            continue
 
         is_diverse = all(
             chromosome_distance(chrom, sel_chrom) >= min_distance
@@ -396,6 +428,7 @@ def _select_diverse_top_k(
 
         if is_diverse:
             selected.append((chrom, fitness))
+            selected_fingerprints.append(fingerprint)
 
     return selected
 

@@ -26,6 +26,22 @@ def _m(sharpe: float, ret: float, trades: int, dd: float = 0.1, pf: float = 1.5)
     }  # fmt: skip
 
 
+def _failer_bt(total_return: float = -0.1) -> dict[str, Any]:
+    """Worst-symbol FAILER backtest: symbol C's train return <= 0 fails the gate.
+
+    ``total_return`` is the pooled worst-of headline; varying it changes only the
+    behavioural fingerprint, never the per-symbol gate outcome.
+    """
+    return {
+        **_m(-0.5, total_return, 120),  # worst-of headline: C drags every field down
+        "symbol_results": {
+            "A": _m(4.0, 0.6, 120, dd=0.05, pf=4.0),
+            "B": _m(4.0, 0.6, 120, dd=0.05, pf=4.0),
+            "C": _m(-0.5, -0.1, 120),  # train return <= 0 -> worst-symbol gate FAIL
+        },
+    }
+
+
 class FakeFn(NTBacktestFn):
     """NTBacktestFn whose per-run backtest is a table lookup (no NT)."""
 
@@ -549,14 +565,47 @@ def test_topk_ranks_gate_passers_first(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # 5 high-soft-score gate-FAILERS (two stellar symbols carry the one loser)
     # + 1 lower-soft-score gate-PASSER (every symbol merely OK).
-    loser_bt: dict[str, Any] = {
-        **_m(-0.5, -0.1, 120),  # worst-of headline: C drags every field down
-        "symbol_results": {
-            "A": _m(4.0, 0.6, 120, dd=0.05, pf=4.0),
-            "B": _m(4.0, 0.6, 120, dd=0.05, pf=4.0),
-            "C": _m(-0.5, -0.1, 120),  # train return <= 0 -> worst-symbol gate FAIL
-        },
+    ok_sym = _m(0.1, 0.01, 120, dd=0.4, pf=0.8)
+    passer_bt: dict[str, Any] = {
+        **ok_sym,
+        "symbol_results": {"A": dict(ok_sym), "B": dict(ok_sym), "C": dict(ok_sym)},
     }
+    failers = [_chrom(stop_loss_pct=sl) for sl in (1.0, 1.4, 1.8, 2.2, 2.6)]
+    passer = _chrom(stop_loss_pct=3.0)
+    # Distinct headline total_return per failer so the behavioural fingerprint
+    # dedupe keeps all five (they are NOT behaviourally identical).
+    table = {c.uid: _failer_bt(-0.1 - i * 1e-6) for i, c in enumerate(failers)}
+    table[passer.uid] = passer_bt
+    pipe = DiscoveryPipeline(
+        _cfg(max_generations=1, min_diversity_distance=0.0),
+        backtest_fn=lambda c: table[c.uid],
+    )
+    monkeypatch.setattr(
+        "vibe_quant.discovery.pipeline.initialize_population",
+        lambda n, **kw: [*failers, passer],
+    )
+    monkeypatch.setattr(DiscoveryPipeline, "_apply_indicator_pool_filter", lambda self: None)
+    monkeypatch.setattr(DiscoveryPipeline, "_preflight_aux_data", lambda self: None)
+    result = pipe.run()
+    top_k_ids = [c.uid for c, _ in pipe._all_scored[:5]]
+    assert passer.uid in top_k_ids  # top-K keeps a slot for the gate-passer
+    assert [c.uid for c, _ in result.top_strategies] == [passer.uid]
+    rejected = [r for r in result.guardrail_rejections if r["stage"] == "worst_symbol_train"]
+    assert len(rejected) == 4  # the other 4 top-K slots went to gate-failers
+
+
+def test_topk_dedupes_identical_gate_failers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Identical-metric gate-failers share ONE top-K slot (behavioural dedupe).
+
+    Round-1 (vibe-quant-pqon2) added the fingerprint skip to
+    ``_select_diverse_top_k``: five failers built from ONE identical backtest
+    dict are behaviourally identical, so only the first is selected and just one
+    ``worst_symbol_train`` rejection is recorded (the structural distance rule
+    alone, with min_diversity_distance=0.0, would have kept all five).
+    """
+    from vibe_quant.discovery.pipeline import DiscoveryPipeline
+
+    loser_bt = _failer_bt()  # ONE shared dict -> identical fingerprints
     ok_sym = _m(0.1, 0.01, 120, dd=0.4, pf=0.8)
     passer_bt: dict[str, Any] = {
         **ok_sym,
@@ -577,11 +626,9 @@ def test_topk_ranks_gate_passers_first(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(DiscoveryPipeline, "_apply_indicator_pool_filter", lambda self: None)
     monkeypatch.setattr(DiscoveryPipeline, "_preflight_aux_data", lambda self: None)
     result = pipe.run()
-    top_k_ids = [c.uid for c, _ in pipe._all_scored[:5]]
-    assert passer.uid in top_k_ids  # top-K keeps a slot for the gate-passer
     assert [c.uid for c, _ in result.top_strategies] == [passer.uid]
     rejected = [r for r in result.guardrail_rejections if r["stage"] == "worst_symbol_train"]
-    assert len(rejected) == 4  # the other 4 top-K slots went to gate-failers
+    assert len(rejected) == 1  # the other 4 identical failers are deduped away
 
 
 def test_worst_mode_notes_soft_score_and_symbol_scores(
