@@ -859,11 +859,11 @@ def test_zero_hit_run_with_a_funded_open_survivor_equals_mode_off_in_every_field
 
 def ledger_net(ledgers: dict[str, list[Any]]) -> float:
     """Cash the truncated ledgers realize (fills, fees, funding, clearance, exit fees)."""
-    from vibe_quant.metrics import _Book
+    from vibe_quant.metrics import LedgerBook
 
     total = 0.0
     for events in ledgers.values():
-        book = _Book()
+        book = LedgerBook()
         for event in events:
             book.apply(event)
         total += book.realized

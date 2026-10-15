@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from vibe_quant.liquidation.exit_timing import RestingExit
 from vibe_quant.liquidation.overlay import default_symbol, enum_name, position_views
-from vibe_quant.metrics import _Book as _LedgerBook
+from vibe_quant.metrics import LedgerBook
 from vibe_quant.validation.extraction import accrue_position_funding
 from vibe_quant.validation.funding import FundingAccrual
 
@@ -199,7 +199,7 @@ def liquidation_trades(
             kept = [
                 cast("LedgerEvent", e) for e in position_views([pos])[0].events if e.ts <= hit.ts
             ]
-            book = _LedgerBook()
+            book = LedgerBook()
             for event in kept:
                 book.apply(event)
             fees = sum(abs(e.cash) for e in kept) + hit.clearance_fee

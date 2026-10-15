@@ -761,11 +761,11 @@ def no_last_bars(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def ledger_equity_delta(ledgers: dict[str, list[Any]]) -> float:
     """Terminal realized equity change of the overlay ledgers (replayed like pnl_path)."""
-    from vibe_quant.metrics import _Book
+    from vibe_quant.metrics import LedgerBook
 
     total = 0.0
     for events in ledgers.values():
-        book = _Book()
+        book = LedgerBook()
         for e in events:
             book.apply(e)
         total += book.realized

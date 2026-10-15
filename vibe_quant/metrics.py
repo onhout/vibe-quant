@@ -314,7 +314,7 @@ class BarSeries:
 _QTY_EPS = 1e-12
 
 
-class _Book:
+class LedgerBook:
     """Average-cost netting position + realized cash for one instrument."""
 
     __slots__ = ("avg", "qty", "realized")
@@ -367,7 +367,7 @@ def _locate_on_path(points: list[float], start_seg: int, price: float) -> int:
 
 
 def _liquidation_walk(
-    book: _Book, evs: Sequence[LedgerEvent], bar_ts: int, points: list[float]
+    book: LedgerBook, evs: Sequence[LedgerEvent], bar_ts: int, points: list[float]
 ) -> float:
     """:func:`pnl_path`'s walk of the execution bar that holds a liquidation close.
 
@@ -498,7 +498,7 @@ def pnl_path(
     ev_ts = np.fromiter((e.ts for e in events), dtype=np.int64, count=len(events))
     ev_bar = np.minimum(np.searchsorted(ts, ev_ts, side="left"), n - 1)
 
-    book = _Book()
+    book = LedgerBook()
     event_bars: list[int] = []
     post_r: list[float] = []
     post_q: list[float] = []

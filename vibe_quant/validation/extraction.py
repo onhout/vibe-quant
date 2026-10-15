@@ -19,6 +19,7 @@ import numpy as np
 from vibe_quant.liquidation_settings import LIQUIDATION_MODES  # one definition, shared
 from vibe_quant.metrics import (
     BarSeries,
+    LedgerBook,  # average-cost replay (as liquidation.overlay)
     LedgerEvent,
     daily_balance_returns,
     gross_pnl,
@@ -26,7 +27,6 @@ from vibe_quant.metrics import (
     pnl_path,
     profit_factor,
 )
-from vibe_quant.metrics import _Book as _LedgerBook  # average-cost replay (as liquidation.overlay)
 from vibe_quant.validation.fill_model import SlippageEstimator
 from vibe_quant.validation.results import TradeRecord, ValidationResult
 
@@ -1101,7 +1101,7 @@ def _liquidated_costs(
     the entry leg's stays.
     """
     ts, price = exit_override
-    realized = _LedgerBook()
+    realized = LedgerBook()
     kept_fees = 0.0
     for fill in costs.pos.events:
         if int(fill.ts_event) > hit.ts:

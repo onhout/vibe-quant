@@ -19,7 +19,7 @@ from vibe_quant.liquidation import OverlayResult, liquidation_overlay, position_
 from vibe_quant.liquidation.overlay import RefinedExitConflict
 from vibe_quant.liquidation.scan import MissingMarkSeries
 from vibe_quant.liquidation.tiers import load_tier_tables
-from vibe_quant.metrics import BarSeries, LedgerEvent, _Book, mark_to_market_equity, pnl_path
+from vibe_quant.metrics import BarSeries, LedgerBook, LedgerEvent, mark_to_market_equity, pnl_path
 from vibe_quant.validation.extraction import (
     mark_to_market_drawdown,
     mark_to_market_paths,
@@ -132,7 +132,7 @@ def strip(event: LedgerEvent) -> LedgerEvent:
 
 
 def ledger_realized(events: list[LedgerEvent]) -> float:
-    book = _Book()
+    book = LedgerBook()
     for e in events:
         book.apply(e)
     return book.realized

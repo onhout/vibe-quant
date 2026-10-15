@@ -77,8 +77,10 @@ from vibe_quant.liquidation.scan import (
     PositionView,
     scan_liquidations,
 )
-from vibe_quant.metrics import LedgerEvent
-from vibe_quant.metrics import _Book as _LedgerBook  # the book pnl_path replays with
+from vibe_quant.metrics import (
+    LedgerBook,  # the book pnl_path replays with
+    LedgerEvent,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -294,6 +296,9 @@ def liquidation_overlay(
     at a liquidation instant, and ``ValueError`` for a refined timestamp naming an unknown
     position key or fill index.
     """
+    # This is the public overlay entry's own input check: callers beyond screening reach it
+    # and tests/unit/test_liquidation_overlay.py pins it. liquidation_metrics relies on its
+    # single caller instead (see the comment in resting_exit_inputs).
     if isinstance(execution_bar_ns, bool) or not isinstance(execution_bar_ns, int):
         raise ValueError(f"execution_bar_ns must be an int > 0, got {execution_bar_ns!r}")
     if execution_bar_ns <= 0:
@@ -450,7 +455,7 @@ def _check_instant(
 ) -> None:
     """Raise unless the fills at ``hit.ts`` only reduce (or open) the position and the
     synthetic close flattens it: the valuation of the instant assumes exactly that."""
-    book = _LedgerBook()
+    book = LedgerBook()
     for _k, e in own:
         if e.ts == hit.ts and book.qty != 0.0 and e.qty != 0.0 and not e.liquidation:
             if (e.qty > 0.0) == (book.qty > 0.0):
@@ -490,7 +495,7 @@ def _check_bar_alone(
 
 def _closing_event(key: str, fills: Sequence[LedgerEvent], hit: LiquidationHit) -> LedgerEvent:
     """The synthetic event that closes a liquidated position (see the module docstring)."""
-    book = _LedgerBook()
+    book = LedgerBook()
     for e in fills:
         book.apply(e)
     if not math.isclose(book.qty, hit.side * hit.qty, rel_tol=_QTY_TOL, abs_tol=_QTY_TOL):
@@ -523,7 +528,7 @@ def _book_bust_residual(
         return  # a fee rate can leave positive equity at the bust
     total = 0.0
     for events in ledgers.values():
-        book = _LedgerBook()
+        book = LedgerBook()
         for e in events:
             book.apply(e)
         total += book.realized
