@@ -33,6 +33,8 @@ SPEED RULES (measured: one model turn costs 4–10 s; the full test suite costs 
 - Mutation self-check: at most 3 mutants, only on the lines you changed, each run against the targeted test file only.
 - Every comparison you add in money code (`<`, `<=`, `a <= x < b`, strict ordering) gets a test AT each equality edge, so flipping `<`↔`<=` fails a test. Job 20261015-honest-safe: V1a and V1b each needed an extra review round only because a `<`↔`<=` mutant survived.
 - New test files must satisfy ruff flake8-type-checking (TCH001/2/3): type-only imports get `# noqa: TCH00x`, as `tests/unit/api/test_liquidation_launch.py` does (cc-hl-lev-t2: 3 TC errors).
+- Tests that patch a collaborator teardown also uses (event writer, client): restore it before calling shutdown/teardown, or the teardown fails for an unrelated reason (cc-sb-alertwrite: 3 of 4 new tests went red at `_shutdown`).
+- Secret-leak tests: use leak markers that contain none of the redacted names (`ZZLEAK9`, not `BEARERSECRET9`), or a mutant that drops a name survives (impl-sb-watchlog-2).
 - Frontend edits: the gate fails only on NEW lint diagnostics (worktree errors > main errors; main baseline 77 errors on 2026-10-14, bead vibe-quant-mi71m). Target no new diagnostics (cc-hl-lev-t3).
 
 FACTS YOU NEED (exact code excerpts / line ranges, so you don't have to search):

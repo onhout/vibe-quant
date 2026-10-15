@@ -47,10 +47,11 @@ Each Command Code call carries ~17–20k input tokens of system-prompt overhead 
 
 Model slugs as listed by `orchestrator_capabilities` for `commandcode_command` on 2026-10-10 (case matters; re-check the catalog when a slug fails).
 
-**Allowed model (user 2026-10-11 17:16, hard rule):** only `deepseek/deepseek-v4.1-flash` at effort `high` (not `deepseek/deepseek-v4-flash`, not `-fast`, no MiMo). Never MiMo, Kimi, GLM, Qwen, MiniMax or any other Command Code model. Work too hard for DeepSeek goes to a Claude Sonnet 5.5 / Haiku 5.5 `implementer`.
+**Allowed models (user 2026-10-15, supersedes the 2026-10-11 DeepSeek-only rule):** `deepseek/deepseek-v4.1-flash` at effort `high` for small and medium tasks, and `xiaomi/mimo-v2.6-pro` for difficult tasks (NT lifecycle, money-path asyncio, semantics fixes). Never Kimi, GLM, Qwen, MiniMax or any other Command Code model. Fix rounds with `fix-route: sonnet` still go to a Claude Sonnet 5.5 `implementer`.
 
 | Tier | Model slug | Use for |
 |---|---|---|
+| `hard` | `xiaomi/mimo-v2.6-pro` (no options) | difficult tasks: NT lifecycle, money-path asyncio, semantics fixes (user 2026-10-15) |
 | `code` (default) | `deepseek/deepseek-v4.1-flash` (`options: {"effort": "high"}`; user 2026-10-10: "cheaper and better than MiMo", high not max — max may cause the read-loop stall) | every well-specified task: code, tests, mechanical edits, bulk extraction, read-heavy audits |
 
 ## Routing
@@ -110,3 +111,4 @@ The `verifier` (or the orchestrator for tiny tasks) must:
 - 2026-10-11: allowed Command Code models reduced to `deepseek/deepseek-v4.1-flash` + `xiaomi/mimo-v2.6-pro`; `fast`/`long` tiers and all other alternates removed — user: "DONT run Kimi K3" (job 20261011-testspeed).
 - 2026-10-11 17:16: Command Code restricted to `deepseek/deepseek-v4.1-flash` effort high (MiMo `pro` tier removed); reviews on GPT-6.1-Sol via Codex, Sonnet/Haiku for implementation and fixes, Opus medium for planning — user rule (cost).
 - 2026-10-12: no mid-round scope changes by DM; new round instead — evidence: job 20261012-nextsteps cc-d3-4a-feedrag-3 missed a scope DM (chief).
+- 2026-10-15: MiMo V2.6 Pro allowed again for difficult tasks; DeepSeek V4.1 Flash high stays the default; reviews GPT-6.1-Sol high — user (job 20261015-small-beads).
