@@ -420,6 +420,10 @@ def _run_multi_seed(
         # Pooled trial record: raw = pooled N, gate_n/prior_n = what the pooled
         # gate used (the per-seed results' own dsr_trials are not the pick's N).
         dsr_trials=pooled_checker._dsr_trials,
+        # The pooled checker's own DSR records: their N is the pooled gate N
+        # (per-seed records would understate it), so they are the ones the
+        # champion entry (and the overfitting re-check) must read.
+        dsr_records=dict(pooled_checker._dsr_records),
         # Per-seed buy-and-hold records unioned across seeds (the pooled champion
         # re-check above runs guardrails only, never the buy-hold gate).
         buy_hold_records=buy_hold_records,

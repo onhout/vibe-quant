@@ -423,6 +423,69 @@ def test_multi_seed_result_carries_dsr_trials(monkeypatch: pytest.MonkeyPatch) -
     assert note["prior_run_ids"] == [4, 9] and note["gate_n"] == 1230
 
 
+def _multi_seed_result(
+    monkeypatch: pytest.MonkeyPatch, champ: tuple[Any, Any]
+) -> tuple[Any, Any]:
+    """Run the 3x400 mock multi-seed path with ``champ`` returned by every seed."""
+    from vibe_quant.discovery import __main__ as cli
+    from vibe_quant.discovery.pipeline import DiscoveryPipeline, DiscoveryResult
+
+    def fake_run(self: Any) -> DiscoveryResult:
+        return DiscoveryResult(
+            generations=[], top_strategies=[champ], total_candidates_evaluated=400,
+            converged=False, convergence_generation=None,
+        )  # fmt: skip
+
+    monkeypatch.setattr(DiscoveryPipeline, "run", fake_run)
+    cfg = _mock_cfg(prior_trials_fn=lambda s, e: 30)
+    res = cli._run_multi_seed(3, cfg, lambda c: {}, "/tmp/vq_disc_progress.json")
+    return cli, res
+
+
+def test_multi_seed_result_carries_pooled_dsr_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A surviving multi-seed champion gets the POOLED record (trials = pooled gate N)."""
+    champ = (_chrom(), _fit(mtm_daily_returns=_series(5.0)))
+    _, res = _multi_seed_result(monkeypatch, champ)
+    uid = champ[0].uid
+    assert uid in {c.uid for c, _ in res.top_strategies}
+    # C1: 1230 = 3x400 pooled evaluated + 30 prior; a per-seed record (400/430) is wrong.
+    assert res.dsr_records[uid]["trials"] == 1230
+
+
+def test_multi_seed_rejected_champion_carries_pooled_dsr_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pooled-rejected multi-seed champion is dropped but keeps its pooled record."""
+    champ = (_chrom(), _fit(mtm_daily_returns=_series(0.3)))
+    _, res = _multi_seed_result(monkeypatch, champ)
+    uid = champ[0].uid
+    # C2: not a champion, yet its DSR record (and the rejection row's dsr) survive.
+    assert uid not in {c.uid for c, _ in res.top_strategies}
+    assert res.dsr_records[uid]["trials"] == 1230
+    rows = [
+        r for r in res.guardrail_rejections
+        if r.get("uid") == uid and r.get("stage") == "pooled_guardrails"
+    ]  # fmt: skip
+    assert len(rows) == 1
+    row_dsr = rows[0]["dsr"]
+    assert isinstance(row_dsr, dict) and row_dsr["trials"] == 1230
+
+
+def test_multi_seed_champion_entry_carries_dsr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """C4: _champion_entry for a multi-seed champion has key "dsr" with pooled trials."""
+    champ = (_chrom(), _fit(mtm_daily_returns=_series(5.0)))
+    cli, res = _multi_seed_result(monkeypatch, champ)
+    chrom, fitness = res.top_strategies[0]
+    entry = cli._champion_entry(
+        chrom, fitness, timeframe="4h",
+        dsr=res.dsr_records.get(chrom.uid),
+        buy_hold=res.buy_hold_records.get(chrom.uid),
+    )  # fmt: skip
+    assert entry["dsr"]["trials"] == 1230
+
+
 def _main_notes(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch, num_seeds: int
 ) -> tuple[dict[str, Any], list[tuple[Any, ...]]]:
