@@ -52,6 +52,7 @@ def apply_liquidation(
     execution_bar_ns: int,
     funding_by_position: Mapping[str, Sequence[tuple[int, float]]] | None,
     cash_by_position: Mapping[str, Sequence[tuple[int, float]]] | None,
+    scan_fill_ts: Mapping[str, Mapping[int, int]] | None = None,
     tables: Mapping[str, TierTable] | None = None,
 ) -> OverlayResult:
     """Scan a run's positions on real MARK bars and build the truncated ledgers.
@@ -74,16 +75,22 @@ def apply_liquidation(
         funding_by_position / cash_by_position: Per position key (``<id>@<ts_opened>``)
             funding and every other modeled cash flow, in LEDGER sign (negative = paid),
             untruncated: the overlay truncates them at a liquidation. Every ts < ``end_ns``.
+        scan_fill_ts: Per position key, ``{fill index: refined ts}``: the timestamp the SCANNER
+            sees for that fill (``None`` = every real timestamp, byte-identical to before).
+            The ledgers, funding and MTM always keep the NT timestamps
+            (``overlay.liquidation_overlay``).
         tables: Tier tables; ``None`` loads the shipped snapshot.
 
     Raises:
         ValueError: ``mode`` is not isolated/cross, the window is empty/not integral, or a
             position fill or a funding/cash flow lies at or after ``end_ns`` (a caller bug: it
             would liquidate on trades or money outside the run, and the caller's own
-            accounting would disagree).
+            accounting would disagree). Also a refined scan timestamp naming an unknown
+            position or fill index.
         vibe_quant.data.mark_bars.MarkDataMissing: a traded symbol has no MARK bars, or
             they leave a hole in the window (the run fails closed).
-        Whatever :func:`liquidation_overlay` raises (unknown symbol, non-replayable ledger).
+        Whatever :func:`liquidation_overlay` raises (unknown symbol, non-replayable ledger,
+        ``RefinedExitConflict``).
     """
     if mode not in _MODES:
         raise ValueError(f"liquidation mode must be one of {_MODES}, got {mode!r}")
@@ -124,6 +131,7 @@ def apply_liquidation(
         funding_by_position=funding_by_position,
         cash_by_position=cash_by_position,
         execution_bar_ns=execution_bar_ns,
+        scan_fill_ts=scan_fill_ts,
     )
 
 

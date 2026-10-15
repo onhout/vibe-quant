@@ -55,6 +55,14 @@ which the scanner only books to the cross wallet. Both are in LEDGER sign (negat
 paid) and are truncated at the liquidation. Callers pass ALL such cash here and must
 not combine ``ledgers=`` with ``extra_cash=`` in ``mark_to_market_paths`` (it raises):
 that would book cash twice or after a bust.
+
+Refined exits (2026-10-15, vjno2). ``scan_fill_ts`` moves the timestamp the SCANNER sees
+for named fills (``{position key: {fill index: refined ts}}``) without touching the real
+events: the ledgers, funding and MTM keep NT timestamps, so a run with ``None`` is
+byte-identical to before. It exists because a resting exit is triggered inside a bar the
+strategy bar only closes later: the scan must end the exposure at the refined instant.
+The two timestamp sets must not disagree about which fills exist at a liquidation instant;
+``_check_refined_consistency`` fails closed with ``RefinedExitConflict`` when they would.
 """
 
 from __future__ import annotations
@@ -78,7 +86,7 @@ if TYPE_CHECKING:
     from vibe_quant.liquidation.scan import MarkLike, Mode
     from vibe_quant.liquidation.tiers import TierTable
 
-__all__ = ["OverlayResult", "liquidation_overlay", "position_views"]
+__all__ = ["OverlayResult", "RefinedExitConflict", "liquidation_overlay", "position_views"]
 
 _QTY_TOL = 1e-9
 _RESIDUAL_TOL = 1e-6  # absolute (quote currency); float noise is ~1e-12
@@ -106,6 +114,17 @@ class OverlayResult:
     @property
     def is_identity(self) -> bool:
         return not self.hits_by_key and not self.dropped_keys
+
+
+class RefinedExitConflict(ValueError):
+    """A refined scan timestamp straddles a liquidation instant (R24b, vjno2).
+
+    A fill's refined scan timestamp ``r`` is at or before the instant ``X`` the ledgers truncate
+    at (a hit's ts, or a cross bust's ts) while its NT timestamp ``n`` is after it. The scan
+    (which applies the fill at ``r``) and the truncated ledgers (whose ``ts <= X`` filter drops
+    it at ``n``) then disagree about the fills that exist at ``X``: a partial exit changes the
+    liquidated quantity, a full exit gives the position no hit at all. Callers fail closed.
+    """
 
 
 @dataclass(frozen=True)
@@ -184,11 +203,39 @@ def _collect(
     return out
 
 
-def _view(data: _PosData) -> PositionView:
+def _view(data: _PosData, scan_fill_ts: Mapping[int, int] | None = None) -> PositionView:
     # other modeled cash is a cash-only event: the scanner books it to the cross wallet
     # and leaves an isolated margin alone
-    events = [*data.fills, *(LedgerEvent(ts=ts, cash=a) for ts, a in data.cash)]
+    fills: Sequence[LedgerEvent] = data.fills
+    if scan_fill_ts:
+        # the scanner sees the refined instant; the real events (and so the ledgers) keep NT ts
+        fills = [
+            e if i not in scan_fill_ts else replace(e, ts=scan_fill_ts[i])
+            for i, e in enumerate(data.fills)
+        ]
+    events = [*fills, *(LedgerEvent(ts=ts, cash=a) for ts, a in data.cash)]
     return PositionView(data.key, data.symbol, data.instrument_id, events, data.funding)
+
+
+def _scan_overrides(
+    data: Sequence[_PosData], scan_fill_ts: Mapping[str, Mapping[int, int]] | None
+) -> dict[str, Mapping[int, int]]:
+    """The per-position refined scan timestamps, checked against the positions of this run."""
+    if not scan_fill_ts:
+        return {}
+    by_key = {d.key: d for d in data}
+    unknown = set(scan_fill_ts) - set(by_key)
+    if unknown:
+        raise ValueError(f"refined scan timestamps for unknown position keys: {sorted(unknown)}")
+    for key, overrides in scan_fill_ts.items():
+        n_fills = len(by_key[key].fills)
+        for index in overrides:
+            if not 0 <= index < n_fills:
+                raise ValueError(
+                    f"{key}: refined scan timestamp for fill index {index}, but the position "
+                    f"has {n_fills} fills"
+                )
+    return dict(scan_fill_ts)
 
 
 def position_views(
@@ -224,19 +271,28 @@ def liquidation_overlay(
     cash_by_position: Mapping[str, Sequence[tuple[int, float]]] | None = None,
     symbol_of: Callable[[str], str] | None = None,
     execution_bar_ns: int,
+    scan_fill_ts: Mapping[str, Mapping[int, int]] | None = None,
 ) -> OverlayResult:
     """Scan ``nt_positions`` on mark bars and build the truncated ledgers.
 
+    ``scan_fill_ts`` overrides the timestamp the scanner sees for named fills
+    (``{position key: {fill index: refined ts}}``); the real events, and so the ledgers,
+    keep their NT timestamps (see the module docstring). ``None`` leaves the scan unchanged.
+
     Raises whatever :func:`scan_liquidations` raises (``MissingMarkSeries``,
     ``UnknownSymbol``, ``ValueError`` for non-finite inputs, ...): callers fail closed.
+    ``RefinedExitConflict`` when a refined fill would make the scan and the ledgers disagree
+    at a liquidation instant, and ``ValueError`` for a refined timestamp naming an unknown
+    position key or fill index.
     """
     if isinstance(execution_bar_ns, bool) or not isinstance(execution_bar_ns, int):
         raise ValueError(f"execution_bar_ns must be an int > 0, got {execution_bar_ns!r}")
     if execution_bar_ns <= 0:
         raise ValueError(f"execution_bar_ns must be an int > 0, got {execution_bar_ns!r}")
     data = _collect(nt_positions, funding_by_position, cash_by_position, symbol_of)
+    refined = _scan_overrides(data, scan_fill_ts)
     result = scan_liquidations(
-        [_view(d) for d in data],
+        [_view(d, refined.get(d.key)) for d in data],
         marks,
         mode=mode,
         starting_balance=starting_balance,
@@ -250,9 +306,47 @@ def liquidation_overlay(
     keys = {d.key for d in data}
     if not (set(hits) | dropped) <= keys:
         raise ValueError("scanner returned keys that are not positions of this run")
+    _check_refined_consistency(data, hits, dropped, result, refined)
     ledgers = _truncated_ledgers(data, hits, dropped, result, starting_balance, execution_bar_ns)
     exit_override = {k: (h.ts, h.price) for k, h in hits.items()}
     return OverlayResult(result, hits, dropped, ledgers, exit_override)
+
+
+def _check_refined_consistency(
+    data: Sequence[_PosData],
+    hits: Mapping[str, LiquidationHit],
+    dropped: frozenset[str],
+    result: LiquidationResult,
+    scan_fill_ts: Mapping[str, Mapping[int, int]],
+) -> None:
+    """Fail closed when a refined scan timestamp straddles the instant the ledgers truncate at.
+
+    R24b: write ``r`` for a fill's refined scan timestamp and ``n`` for its NT timestamp. If
+    ``r <= X < n`` the scan (which applies the fill at ``r``) and the ledger (whose ``ts <= X``
+    filter drops it at ``n``) disagree about the fills that exist at ``X``: a partial exit
+    changes the liquidated qty, a full exit drops the position's hit. Two instants are checked:
+    in isolated mode each hit's own position at ``X = hit.ts``; in cross mode every position
+    that survives the bust at ``X = bust_ts`` (a cross bust is the only instant a cross run
+    truncates at, and a dropped position's fills and ledgers both vanish).
+    """
+    if not scan_fill_ts:
+        return
+    by_key = {d.key: d for d in data}
+    checked: list[tuple[_PosData, int]] = []
+    if result.mode == "cross":
+        if result.bust_ts is None:
+            return
+        checked = [(d, result.bust_ts) for d in data if d.key not in dropped]
+    else:
+        checked = [(by_key[h.key], h.ts) for h in hits.values()]
+    for d, x in checked:
+        for index, r in sorted((scan_fill_ts.get(d.key) or {}).items()):
+            n = d.fills[index].ts
+            if r <= x < n:
+                raise RefinedExitConflict(
+                    f"{d.key}: fill {index} refined to {r} is scanned at or before {x} but its "
+                    f"NT ts {n} is after {x}; the scan and the ledgers disagree on the fills at {x}"
+                )
 
 
 def _truncated_ledgers(

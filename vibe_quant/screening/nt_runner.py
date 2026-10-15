@@ -39,6 +39,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# One millisecond in ns. An execution bar's ``ts_init`` is its close, so a boundary resting
+# fill sits 1 ms before it (R18) and its 1m window is ``[ts + 1 ms - E, ts]`` (R19).
+_ONE_MS = 1_000_000
+
+
+def _no_exit_timing() -> dict[str, Any]:
+    """The R25b ``exit_timing`` notes of a mode-on run with nothing to refine.
+
+    Returned for a 1m execution timeframe (R17) and for a coarser one with no boundary
+    STOP_MARKET/LIMIT fill (R17b), so ``last_liquidation_notes['exit_timing']`` is present on
+    EVERY mode-on screening run.
+    """
+    return {"refined": 0, "kept_bar_close": 0, "by_symbol": {}}
+
 
 def refuse_non_market_entry(entry_order: str) -> None:
     """Fail closed on a post-only entry before any engine is built.
@@ -326,6 +340,9 @@ class NTScreeningRunner:
         # Liquidation summary of the last run (``OverlayResult.result.to_notes``) for the
         # discovery/result notes plumbing; None when the mode is off or the run failed.
         self.last_liquidation_notes: dict[str, Any] | None = None
+        # R25b: the refined-exit counts of the last scan, attached to that summary as
+        # ``exit_timing`` on every mode-on run (all zeros when nothing was refined).
+        self._last_exit_timing_notes: dict[str, Any] = _no_exit_timing()
         self._entry_order = entry_order
         self._fee_schedule = FeeSchedule() if fee_schedule is None else fee_schedule
         self._collect_daily_returns = collect_daily_returns
@@ -1043,6 +1060,8 @@ class NTScreeningRunner:
                         sum(h.clearance_fee for h in overlay.hits_by_key.values())
                     )
                 self.last_liquidation_notes = overlay.result.to_notes(metrics.total_trades)
+                # R25b: the refined-exit counts of this scan, on EVERY mode-on run
+                self.last_liquidation_notes["exit_timing"] = self._last_exit_timing_notes
         except Exception as exc:
             if liquidation_on:
                 raise LiquidationIntegrityError.wrap(exc, self._liquidation_mode) from exc
@@ -1242,6 +1261,65 @@ class NTScreeningRunner:
             logger.warning("Could not compute return moments", exc_info=True)
             return 0.0, 3.0, ()
 
+    def _boundary_exit_scan_ts(
+        self,
+        engine: Any,
+        positions: list[Any],
+        execution_bar_ns: int,
+        catalog_path: Path | str,
+    ) -> tuple[dict[str, dict[int, int]] | None, dict[str, Any]]:
+        """Refined scan timestamps of the run's boundary resting exits, plus their R25b notes.
+
+        R17: only a coarser-than-1m execution with at least one boundary STOP_MARKET/LIMIT fill
+        refines anything; anything else returns ``None`` (byte-identical scan) and all-zero
+        counts. R17b: the 1m LAST series is loaded through
+        :func:`~vibe_quant.validation.extraction.load_bar_windows` per SYMBOL, only for symbols
+        that have such a fill -- never for a symbol without one, never from the engine cache and
+        never the MARK series (R19). A symbol whose 1m LAST bars are absent leaves no series
+        behind, so :func:`~vibe_quant.liquidation.exit_timing.refine_resting_exits` raises
+        ``MissingExitBars`` (R26); the caller fails the run closed.
+        """
+        from vibe_quant.data.catalog import INTERVAL_TO_AGGREGATION
+        from vibe_quant.liquidation.exit_timing import refine_resting_exits
+        from vibe_quant.screening.liquidation_metrics import resting_exit_inputs
+        from vibe_quant.validation.extraction import load_bar_windows
+
+        if execution_bar_ns <= 60_000_000_000:  # 1m (or finer) execution: nothing to refine
+            return None, _no_exit_timing()
+        exits = resting_exit_inputs(engine, positions, execution_bar_ns)
+        if not exits:
+            return None, _no_exit_timing()
+        step, agg = INTERVAL_TO_AGGREGATION["1m"]
+        windows: dict[str, list[tuple[int, int]]] = {}
+        for exit_ in exits:
+            # R19: the exit's own bar window, [ts + 1 ms - E, ts], as an inclusive ns pair
+            windows.setdefault(exit_.symbol, []).append(
+                (exit_.ts + _ONE_MS - execution_bar_ns, exit_.ts)
+            )
+        bars_1m: dict[str, Any] = {}
+        for symbol, spans in windows.items():
+            series = load_bar_windows(
+                catalog_path,
+                f"{symbol}-PERP.BINANCE-{step}-{agg.name}-LAST-EXTERNAL",
+                spans,
+            )
+            if series is not None:
+                bars_1m[symbol] = series
+        timing = refine_resting_exits(exits, bars_1m, execution_bar_ns)
+        if timing.kept_bar_close:
+            logger.warning(
+                "Exit refinement (liquidation_mode=%s): %d of %d boundary resting fill(s) kept "
+                "their NT strategy-bar timestamp (no 1m bar reached the order's level); the "
+                "scan may run past the real exit",
+                self._liquidation_mode,
+                timing.kept_bar_close,
+                timing.refined + timing.kept_bar_close,
+            )
+        scan_fill_ts: dict[str, dict[int, int]] = {}
+        for (key, index), ts in timing.scan_ts.items():
+            scan_fill_ts.setdefault(key, {})[index] = ts
+        return scan_fill_ts, timing.to_notes()
+
     def _scan_with_survivor_marks(
         self,
         engine: Any,
@@ -1324,8 +1402,17 @@ class NTScreeningRunner:
             accruals[position_key(pos)] = accrue_position_funding(
                 funding_calc, pos, exit_ns=end_ns - 1 if horizon is None else horizon
             )
+        # vjno2 (R17-R30): a coarser-than-1m run fills a resting exit at the strategy bar's
+        # close, a whole bar after the 1m bar validation filled it on. Refine those boundary
+        # fills to their real 1m instant so the scan's exposure ends when the position did.
+        # The ledgers, funding and MTM keep the NT timestamps (R24), and the notes go onto the
+        # run's liquidation summary whatever the outcome (R25b).
+        positions = [*closed, *still_open]
+        scan_fill_ts, self._last_exit_timing_notes = self._boundary_exit_scan_ts(
+            engine, positions, bar_ns, catalog_path
+        )
         overlay = apply_liquidation(
-            [*closed, *still_open],
+            positions,
             mode=self._liquidation_mode,  # type: ignore[arg-type]  # "off" excluded by caller
             leverage=self._leverage,
             starting_balance=starting_balance,
@@ -1338,8 +1425,8 @@ class NTScreeningRunner:
                 for key, accrual in accruals.items()
             },
             cash_by_position={},
+            scan_fill_ts=scan_fill_ts,
         )
-
         survivors = [
             p
             for p in still_open

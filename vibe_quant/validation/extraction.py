@@ -361,6 +361,156 @@ def load_catalog_bars(catalog_path: Path | str, bar_type: str) -> BarSeries | No
     return series
 
 
+_INT64_MAX = 2**63 - 1
+
+
+def _checked_window(index: int, window: tuple[int, int]) -> tuple[int, int]:
+    """Validate one ``(start_ns, end_ns)`` window before any pruning or cast (R17g/R17h).
+
+    Bounds are signed int64 ns, so they must be integers (not bool, not float)
+    in ``[0, 2**63-1]`` with ``start <= end``. Nothing is clamped: a window
+    outside the domain would otherwise silently match nothing or overflow the
+    int64 comparison against the row-group statistics.
+    """
+    label = f"window #{index} {window!r}"
+    start, end = window
+    for bound in (start, end):
+        if isinstance(bound, bool | np.bool_) or not isinstance(bound, int | np.integer):
+            raise ValueError(f"{label}: bounds must be integer nanoseconds, got {bound!r}")
+        if not 0 <= int(bound) <= _INT64_MAX:
+            raise ValueError(f"{label}: bounds must be in [0, {_INT64_MAX}] (int64 ns)")
+    if int(start) > int(end):
+        raise ValueError(f"{label}: start > end")
+    return int(start), int(end)
+
+
+def _window_spans(windows: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Materialise and merge the inclusive ``(start_ns, end_ns)`` windows (R17d).
+
+    Merging keeps the row mask and the row-group overlap test linear in the
+    number of distinct ranges, however many windows the caller passes.
+    """
+    spans = sorted(_checked_window(i, window) for i, window in enumerate(windows))
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _in_windows(ts: np.ndarray, spans: list[tuple[int, int]]) -> np.ndarray:
+    """Boolean mask of ``ts`` inside any merged inclusive span (R17f)."""
+    if not spans:
+        return np.zeros(len(ts), dtype=bool)
+    starts = np.array([start for start, _ in spans], dtype=np.int64)
+    ends = np.array([end for _, end in spans], dtype=np.int64)
+    slot = np.searchsorted(starts, ts, side="right") - 1
+    in_window = slot >= 0
+    return np.asarray(in_window & (ts <= ends[np.where(in_window, slot, 0)]), dtype=bool)
+
+
+def _overlapping_row_groups(
+    meta: Any, ts_column: int, spans: list[tuple[int, int]]
+) -> list[int]:
+    """Row groups whose ``ts_init`` statistics overlap some window (R17c).
+
+    A row group without usable statistics cannot be proven disjoint from the
+    windows, so it is read anyway: the pruning must never drop a bar the full
+    read would return.
+    """
+    if not spans:
+        return []
+    total = meta.num_row_groups
+    if ts_column < 0 or ts_column >= meta.num_columns:
+        return list(range(total))
+    groups: list[int] = []
+    for rg in range(total):
+        stats = meta.row_group(rg).column(ts_column).statistics
+        if stats is None or stats.min is None or stats.max is None:
+            groups.append(rg)
+            continue
+        lo, hi = int(stats.min), int(stats.max)
+        if any(lo <= end and hi >= start for start, end in spans):
+            groups.append(rg)
+    return groups
+
+
+def load_bar_windows(
+    catalog_path: Path | str,
+    bar_type: str,
+    windows: Iterable[tuple[int, int]],
+) -> BarSeries | None:
+    """Decode catalog bars for a set of ``ts_init`` windows (R17c/R17d/R17e).
+
+    ``windows`` are inclusive ``(start_ns, end_ns)`` pairs (R17d); a bound that
+    is not an integer in ``[0, 2**63-1]`` or ``start > end`` raises ``ValueError``
+    naming the window, before any file is looked at (R17g/R17h). Only the
+    parquet row groups whose ``ts_init`` min/max statistics overlap some window
+    are read (R17c), rows outside the windows are masked out (R17f) and every
+    ``BarSeries`` column is decoded, so the result is exactly the matching slice
+    of a full :func:`load_catalog_bars` read, bit for bit. Segments are
+    concatenated, sorted by ``ts_init`` and deduplicated the same way (stable
+    sort, first occurrence wins), so overlapping windows are harmless.
+
+    The read is deliberately independent of :func:`load_catalog_bars`:
+    ``_BAR_CACHE`` is neither read nor written (no ``cache_bars`` fallback),
+    because a windowed read must not evict or fill the full-read cache of the
+    worker.
+
+    Returns:
+        ``None`` when the bar directory or the bar files are absent; an empty
+        ``BarSeries`` when files exist but no row group overlaps (R17e).
+    """
+    from pathlib import Path as _Path
+
+    import pyarrow.parquet as pq
+
+    spans = _window_spans(windows)
+    bar_dir = _Path(catalog_path) / "data" / "bar" / bar_type
+    files = sorted(bar_dir.glob("*.parquet")) if bar_dir.is_dir() else []
+    if not files:
+        return None
+
+    parts: list[tuple[np.ndarray, ...]] = []
+    for f in files:
+        parquet = pq.ParquetFile(f)  # type: ignore[no-untyped-call]
+        groups = _overlapping_row_groups(
+            parquet.metadata, parquet.schema_arrow.get_field_index("ts_init"), spans
+        )
+        if not groups:
+            continue
+        table = parquet.read_row_groups(  # type: ignore[no-untyped-call]
+            groups, columns=["open", "high", "low", "close", "ts_init"]
+        )
+        ts = table.column("ts_init").to_numpy().astype(np.int64)
+        cols = [
+            _decode_price_column(table.column(name)) for name in ("open", "high", "low", "close")
+        ]
+        inside = _in_windows(ts, spans)
+        if not inside.any():
+            continue
+        parts.append((ts[inside], *(col[inside] for col in cols)))
+
+    if not parts:
+        empty = np.array([], dtype=np.int64)
+        return BarSeries(ts=empty, open=empty, high=empty, low=empty, close=empty)
+
+    ts_all = np.concatenate([p[0] for p in parts])
+    order = np.argsort(ts_all, kind="stable")
+    ts_sorted = ts_all[order]
+    keep = np.concatenate(([True], ts_sorted[1:] != ts_sorted[:-1]))
+    sel = order[keep]
+    return BarSeries(
+        ts=ts_all[sel],
+        open=np.concatenate([p[1] for p in parts])[sel],
+        high=np.concatenate([p[2] for p in parts])[sel],
+        low=np.concatenate([p[3] for p in parts])[sel],
+        close=np.concatenate([p[4] for p in parts])[sel],
+    )
+
+
 def cache_bars(engine: Any, bar_type: str) -> BarSeries | None:
     """Execution bars from the engine cache (tests / no catalog).
 

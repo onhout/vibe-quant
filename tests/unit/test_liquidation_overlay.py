@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from vibe_quant.liquidation import OverlayResult, liquidation_overlay, position_views
+from vibe_quant.liquidation.overlay import RefinedExitConflict
 from vibe_quant.liquidation.scan import MissingMarkSeries
 from vibe_quant.liquidation.tiers import load_tier_tables
 from vibe_quant.metrics import BarSeries, LedgerEvent, _Book, mark_to_market_equity, pnl_path
@@ -1261,3 +1262,227 @@ def test_pnl_path_rejects_an_event_after_the_liquidation_close_in_its_bar() -> N
         pnl_path(series, events)
     with pytest.raises(ValueError, match="position still open after its liquidation"):
         pnl_path(series, [events[0], replace(events[1], qty=-0.5)])
+
+
+# --------------------------------------------- refined scan timestamps (R24, R24b, R31, vjno2)
+
+
+def test_partial_refined_exit_then_hit_fails_closed_with_refined_exit_conflict() -> None:
+    """R24b isolated probe: a partial SELL stop of 0.5 out of 1.0 is refined to the ``bar(1)``
+    open (``r``) while its NT timestamp stays the ``bar(2)`` close (``n``). The mark crosses the
+    LP at ``bar(2)``, so the scanner (which sees 0.5 open from ``bar(1)``) liquidates the
+    remaining half there, but the ledger keeps NT timestamps and still holds the full lot at
+    ``bar(2)``. The overlay must fail closed with ``RefinedExitConflict`` naming the key, the
+    fill index, ``r``, ``n`` and ``X`` (the hit ts) instead of the unnamed qty mismatch
+    ("leave qty 1.0, scanner closed 0.5")."""
+    entry = Fill(bar(0), BUY, 1.0, 40000.0)
+    stop = Fill(exec_close_ts(2), SELL, 0.5, 36000.0, order_type=STOP)
+    p = make_pos("P-1", BTC, [entry, stop], closed=False)
+    mk = marks([39000, 39000, 36000, 36000, 36000])
+    r, x = bar(1), bar(2)
+    with pytest.raises(RefinedExitConflict) as excinfo:
+        isolated([p], {"BTCUSDT": mk}, scan_fill_ts={key_of(p): {1: r}})
+    msg = str(excinfo.value)
+    assert key_of(p) in msg
+    assert "fill 1" in msg
+    assert str(r) in msg and str(stop.ts_event) in msg and str(x) in msg
+
+
+def test_refined_exit_at_the_hit_instant_fails_closed_with_refined_exit_conflict() -> None:
+    """R24b lower boundary, ``r == X < n``: the partial SELL stop of 0.5 out of 1.0 is refined to
+    ``bar(1)``, so the scanner holds the full lot only through minute 0 and the remaining half
+    crosses the LP in minute 1 - the refined fill's own bar - which makes the hit ts the refined
+    instant itself (``r == X``). The ledger keeps NT timestamps and its ``ts <= X`` filter drops the
+    fill (``n = exec_close_ts(3) > X``), so it still holds the full lot at ``X``. The boundary IS a
+    conflict and must raise the named ``RefinedExitConflict``; a strict ``r < X`` comparison skips it
+    and falls through to the unnamed qty mismatch of ``_closing_event`` ("leave qty 1.0, scanner
+    closed 0.5"). The unrefined control pins the geometry: really stamped at ``r``, the same exit
+    liquidates exactly 0.5 at ``X == r``."""
+    entry = Fill(bar(0), BUY, 1.0, 40000.0)
+    stop = Fill(exec_close_ts(3), SELL, 0.5, 36000.0, order_type=STOP)
+    p = make_pos("P-1", BTC, [entry, stop], closed=False)
+    mk = marks([39000, 36000, 36000, 36000, 36000])
+    r, n = bar(1), exec_close_ts(3)
+    genuine = make_pos(
+        "P-1", BTC, [entry, Fill(r, SELL, 0.5, 36000.0, order_type=STOP)], closed=False
+    )
+    (control,) = isolated([genuine], {"BTCUSDT": mk}).result.hits
+    assert control.ts == r and control.qty == 0.5  # X == r for this exit
+    with pytest.raises(RefinedExitConflict) as excinfo:
+        isolated([p], {"BTCUSDT": mk}, scan_fill_ts={key_of(p): {1: r}})
+    msg = str(excinfo.value)
+    assert key_of(p) in msg
+    assert "fill 1" in msg
+    assert str(r) in msg and str(n) in msg  # X == r, so r and X share one repr
+
+
+def test_refined_exit_with_nt_ts_at_the_hit_instant_liquidates_the_half() -> None:
+    """R24b upper boundary, ``r < n == X``: the partial SELL stop of 0.5 out of 1.0 is NT-stamped
+    exactly at the minute-2 mark bar open and refined to ``bar(1)``. The scanner sees 0.5 open from
+    minute 1 and the remaining half crosses the LP in minute 2, so its hit ts is exactly ``n``. Both
+    consumers then keep the fill (the scan applies it at ``r < X``, the ledger's ``ts <= X`` filter
+    keeps ``n == X``), so the liquidation of quantity 0.5 is valid and must NOT raise; a comparison
+    with ``X <= n`` rejects it. The same exit really stamped at ``n`` is the control: it liquidates
+    the identical half, so the refined run's hits, ledgers and exit override must match it."""
+    entry = Fill(bar(0), BUY, 1.0, 40000.0)
+    stop = Fill(bar(2), SELL, 0.5, 36000.0, order_type=STOP)
+    p = make_pos("P-1", BTC, [entry, stop], closed=False)
+    genuine = make_pos(
+        "P-1", BTC, [entry, Fill(bar(2), SELL, 0.5, 36000.0, order_type=STOP)], closed=False
+    )
+    mk = marks([39000, 39000, 36000, 36000, 36000])
+    base = isolated([genuine], {"BTCUSDT": mk})
+    (hit,) = base.result.hits
+    assert hit.ts == stop.ts_event == bar(2) and hit.qty == 0.5  # X == n, the half liquidates
+    ov = isolated([p], {"BTCUSDT": mk}, scan_fill_ts={key_of(p): {1: bar(1)}})
+    assert ov.result.hits == base.result.hits
+    assert ov.ledgers == base.ledgers
+    assert ov.exit_override[key_of(p)] == (bar(2), hit.price)
+    assert ov.ledgers is not None
+    close = ov.ledgers[BTC][-1]
+    assert (close.qty, close.liquidation) == (-0.5, True)
+
+
+def cross_refined_case() -> tuple[list[Pos], dict[str, Marks], str]:
+    """R24b cross probe: a BTC leg fully exited (refined to ``bar(1)``, NT ``exec_close_ts(6)``,
+    post-bust funding +10) plus an ETH leg that busts the account at ``bar(3)``."""
+    btc = make_pos(
+        "P-1",
+        BTC,
+        [Fill(bar(0), BUY, 0.1, 40000.0), Fill(exec_close_ts(6), SELL, 0.1, 40000.0)],
+        closed=False,
+    )
+    eth = make_pos("P-2", ETH, [Fill(bar(0), BUY, 1.0, 2000.0)], closed=False)
+    series = {
+        "BTCUSDT": marks([40000.0] * 8, highs=[41000.0] * 8),
+        "ETHUSDT": marks([2000.0] * 8, highs=[2000.0] * 8),
+    }
+    return [btc, eth], series, key_of(btc)
+
+
+def test_cross_refined_exit_then_bust_fails_closed_with_refined_exit_conflict() -> None:
+    """R24b cross probe: the BTC leg is flat in the scan from ``bar(1)`` (``r``) but its NT exit
+    is ``exec_close_ts(6)`` (``n``) and it carries post-bust funding +10; the ETH leg busts the
+    account at ``bar(3)`` (``X``). The ledger keeps BTC's exit and its +10, which the scan never
+    had, so the account no longer wipes to 0 (the pre-rule error was "equity 10.0" from the
+    residual check). The overlay must fail closed with ``RefinedExitConflict`` naming the key,
+    the fill index, ``r``, ``n`` and ``X``."""
+    positions, series, btc_key = cross_refined_case()
+    funding = {
+        btc_key: [(exec_close_ts(7), 10.0)],
+        key_of(positions[1]): [(bar(3), -1300.0)],
+    }
+    r, x = bar(1), bar(3)
+    n = exec_close_ts(6)
+    with pytest.raises(RefinedExitConflict) as excinfo:
+        cross(positions, series, funding_by_position=funding, scan_fill_ts={btc_key: {1: r}})
+    msg = str(excinfo.value)
+    assert btc_key in msg
+    assert "fill 1" in msg
+    assert str(r) in msg and str(n) in msg and str(x) in msg
+    # control: without the refinement the same run completes, with the bust at bar(3)
+    ov = cross(positions, series, funding_by_position=funding)
+    assert ov.result.bust_ts == x and {h.key for h in ov.result.hits} == set(funding)
+
+
+def test_refined_scan_timestamp_reaches_only_the_scanner_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R24 view-only override: the PositionView the scanner gets carries the refined instant,
+    while the ledgers keep NT timestamps object for object (the hit is on the other instrument,
+    so the refined position's ledger is exactly the unrefined one)."""
+    import vibe_quant.liquidation.overlay as overlay
+    from vibe_quant.liquidation.scan import scan_liquidations as real
+
+    seen: dict[str, list[int]] = {}
+
+    def spy(views: Any, marks_arg: Any, **kw: Any) -> Any:
+        seen.update({v.key: [int(e.ts) for e in v.events] for v in views})
+        return real(views, marks_arg, **kw)
+
+    monkeypatch.setattr(overlay, "scan_liquidations", spy)
+
+    from nautilus_trader.model.enums import OrderSide, OrderType
+
+    btc = long_btc_position(sell_bar=8)
+    eth = make_pos(
+        "P-2",
+        ETH,
+        [
+            Fill(bar(0), OrderSide.BUY, 10.0, 2000.0, order_type=OrderType.MARKET),
+            Fill(exec_close_ts(6), OrderSide.SELL, 10.0, 2050.0, order_type=OrderType.MARKET),
+        ],
+    )
+    series = {
+        "BTCUSDT": marks([39000, 38000, 36200, 36100, 36000, 36000, 36000, 36000, 36000]),
+        "ETHUSDT": marks([2000.0] * 8, highs=[2100.0] * 8),
+    }
+    r = bar(1)
+    ov = isolated([btc, eth], series, scan_fill_ts={key_of(eth): {1: r}})
+    assert seen[key_of(eth)][-1] == r  # the scanner saw the refined instant
+    assert seen[key_of(btc)][-1] == bar(8)  # untouched positions keep NT timestamps
+    assert ov.ledgers is not None
+    assert ov.ledgers[ETH] == position_ledger_events([eth])[ETH]  # NT ts, untouched
+
+
+def test_non_straddling_refined_scan_timestamps_keep_the_cross_bust_and_residual() -> None:
+    """R24/R31: a refinement whose NT ts is also at or before the bust (``r <= n <= X``) changes
+    no hit and no ledger - the cash lands at ``r`` in the scan and at ``n`` in the ledger, both
+    before ``X`` - and the account still wipes to 0 there (the residual check holds)."""
+    btc = make_pos(
+        "P-1",
+        BTC,
+        [Fill(bar(0), BUY, 0.1, 40000.0), Fill(exec_close_ts(2), SELL, 0.1, 40000.0)],
+        closed=False,
+    )
+    eth = make_pos("P-2", ETH, [Fill(bar(0), BUY, 1.0, 2000.0)], closed=False)
+    btc_mk = marks([40000.0] * 8, highs=[41000.0] * 8)
+    eth_mk = marks([2000.0] * 8, highs=[2000.0] * 8)
+    series = {"BTCUSDT": btc_mk, "ETHUSDT": eth_mk}
+    funding = {key_of(eth): [(bar(3), -1300.0)]}
+    base = cross([btc, eth], series, funding_by_position=funding)
+    refined = cross(
+        [btc, eth],
+        series,
+        funding_by_position=funding,
+        scan_fill_ts={key_of(btc): {1: bar(1)}},
+    )
+    assert base.result.bust_ts == bar(3) == refined.result.bust_ts
+    assert base.result.hits == refined.result.hits
+    assert base.ledgers == refined.ledgers
+    paths = mark_to_market_paths(
+        engine_for([btc, eth], {BTC: btc_mk, ETH: eth_mk}),
+        execution_timeframe="1m",
+        ledgers=refined.ledgers,
+    )
+    assert paths is not None
+    assert 1000.0 + sum(path[1] for path in paths)[-1] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_refined_scan_timestamp_credits_the_cross_wallet_at_r() -> None:
+    """R31: the cross wallet is credited at the refined instant. The long is fully exited at the
+    refined ``bar(1)``, so it is flat through the ``bar(2)`` crash and the account never busts;
+    an unrefined run whose fill is genuinely stamped ``bar(1)`` gives the same scan result, while
+    the NT timestamp (``exec_close_ts(5)``) busts the account there."""
+    entry = Fill(bar(0), BUY, 0.1, 40000.0)
+    late_exit = Fill(exec_close_ts(5), SELL, 0.1, 42000.0)
+    p = make_pos("P-1", BTC, [entry, late_exit], closed=False)
+    mk = marks([39500.0, 39500.0] + [30000.0] * 6, highs=[40500.0, 40500.0] + [30000.0] * 6)
+    series = {"BTCUSDT": mk}
+    control = cross([p], series)
+    assert not control.is_identity
+    assert [h.ts for h in control.result.hits] == [bar(2)]  # open through the crash
+    refined = cross([p], series, scan_fill_ts={key_of(p): {1: bar(1)}})
+    genuine = cross([make_pos("P-1", BTC, [entry, Fill(bar(1), SELL, 0.1, 42000.0)], closed=False)], series)
+    assert refined.is_identity and genuine.is_identity  # flat before the crash: no bust
+    assert refined.result.hits == genuine.result.hits == []
+    assert refined.result.bust_ts is None
+
+
+def test_scan_fill_ts_rejects_unknown_keys_and_indices() -> None:
+    p = long_btc_position(sell_bar=3)
+    mk = {"BTCUSDT": marks([39000, 38000, 38000, 38000])}
+    with pytest.raises(ValueError, match="refined scan timestamps for unknown position keys"):
+        isolated([p], mk, scan_fill_ts={"nope@1": {0: bar(0)}})
+    with pytest.raises(ValueError, match=r"fill index 5"):
+        isolated([p], mk, scan_fill_ts={key_of(p): {5: bar(0)}})

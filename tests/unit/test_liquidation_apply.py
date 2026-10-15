@@ -15,6 +15,7 @@ from vibe_quant.data.archive import RawDataArchive
 from vibe_quant.data.catalog import CatalogManager
 from vibe_quant.data.mark_bars import MarkDataMissing, build_mark_bars
 from vibe_quant.liquidation.apply import apply_liquidation, traded_symbols
+from vibe_quant.liquidation.overlay import RefinedExitConflict
 from vibe_quant.liquidation.tiers import load_tier_tables
 
 if TYPE_CHECKING:
@@ -105,6 +106,25 @@ def test_isolated_long_through_the_lp_is_liquidated_at_the_lp(tmp_path: Path) ->
     assert out.exit_override == {key: (hit.ts, hit.price)}
     assert out.ledgers is not None
     assert out.result.mode == "isolated" and out.result.leverage == 10.0
+
+
+def test_apply_liquidation_plumbs_the_refined_scan_timestamps(tmp_path: Path) -> None:
+    """``apply_liquidation`` passes ``scan_fill_ts`` to the scan (vjno2 R24b): a partial SELL
+    refined before the run's hit, with its NT ts after it, makes the scanner (0.5 open) and the
+    truncated ledger (full lot) disagree, so the run fails closed with ``RefinedExitConflict``.
+    Without the refinement the same run completes and hits at the second mark bar."""
+    write_marks(tmp_path, "BTCUSDT", [39000, 38000, 36000, 37000, 37000] + [37000] * 5)
+    pos = long_btc()
+    nt_ts = START_NS + 3 * MIN
+    pos.events.append(Fill(nt_ts, Name("SELL"), 0.5, 36000.0, order_type=Name("STOP_MARKET")))
+    key = f"P-1@{START_NS}"
+    r = START_NS + MIN
+    with pytest.raises(RefinedExitConflict) as excinfo:
+        run(tmp_path, [pos], scan_fill_ts={key: {1: r}})
+    msg = str(excinfo.value)
+    assert key in msg and str(r) in msg and str(nt_ts) in msg
+    out = run(tmp_path, [pos])
+    assert [h.ts for h in out.result.hits] == [START_NS + 2 * MIN]
 
 
 def test_no_crossing_is_identity(tmp_path: Path) -> None:
