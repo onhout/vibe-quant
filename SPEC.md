@@ -93,6 +93,25 @@
 5. **Defense in depth**: Multi-layer overfitting prevention with toggleable filters. Dual-level risk circuit breakers (strategy + portfolio).
 6. **Data reproducibility**: Raw downloaded historical data is archived in SQLite so backtests can be replicated from the original source data at any time.
 
+### Portfolio strategies: funding carry (backtest only)
+
+A separate, self-contained strategy family (`vibe_quant/portfolio/`) — not a DSL strategy and not part of screening, validation or discovery. One pooled `OmsType.NETTING` account trades a weekly cross-sectional funding-carry book, generic in N symbols; the shipped run uses `BTCUSDT`/`ETHUSDT`/`SOLUSDT`/`BNBUSDT`. Backtest only.
+
+```bash
+python -m vibe_quant.portfolio run --symbols BTCUSDT ETHUSDT SOLUSDT BNBUSDT --start 2022-06-01 --end 2026-09-28 [--engine nt|reference]
+python -m vibe_quant.portfolio evaluate --symbols BTCUSDT ETHUSDT SOLUSDT BNBUSDT --start 2022-06-01 --end 2026-09-28 [--draws 200] [--seed 0]
+```
+
+- **Decision:** every Monday 00:05:00 UTC (`D`); `L = D - 60 s`.
+- **Signal:** the sum of settled funding rates over the trailing 7 calendar days `(L - 7d, L]`. A symbol whose 8h boundary in that window has no archived row within ±60 s is excluded that week (`funding_hole`) — no forward-fill. Rates are summed raw; Binance already scales each settlement by `8/N`, so a 4h symbol's 42 half-size rates and an 8h symbol's 21 rates give comparable 7-day totals. A missing NON-8h row (e.g. a 4h symbol's 04:00) is not detected (the archive has no interval column).
+- **Ranking / weights:** total order by the key `(signal, symbol)`; `k = max(1, n // legs_divisor)` legs per side; long the `k` lowest signals, short the `k` highest; each leg `±gross/(2k)` (equal-dollar). `n < 2` → the book is flat (held legs closed).
+- **Sizing:** the floor and the band compare are exact in `Decimal` — `target_steps = sign(w) * floor(Decimal(abs(w) * E_D) / (Decimal(price) * step))`, never float division (the `abs(w) * E_D` product itself is formed in float). The band never skips an open, a close or a flip; a same-side resize is skipped when `Decimal(abs(target - current)) < Decimal(str(band)) * abs(target)` (default band `0.10`). Binance min-quantity and MIN_NOTIONAL are enforced in code and can skip a non-reduce order — an open, a same-side increase, or a flip's open leg (a flip's close, and every other reduce-only close, is always sent). A book below the minimum tradable size fails closed.
+- **Fills:** an order queued at `D` is released and filled on that symbol's OWN next 1m close (per-instrument outbox, strict `<`; a release more than 60 min stale, or an order still queued at the run end, fails the run). Orders are **never** submitted from the decision timer callback — a fill from the callback lands while the clock is at `D`, at the last datum's price, i.e. a look-ahead fill (MEASURED). Open positions are not closed at the run end (no fee; marked at the final price).
+- **Funding:** signed quantity held strictly before each settlement × the MARK 1m open at the settlement minute × rate, via a windowed, seeded accrual (each window is seeded with the exact held quantity, so there is no float residue across windows). A missing MARK bar fails the run closed. A funding row missing while a position is held charges the flagged fallback rate and is counted.
+- **Metrics:** non-overlapping weekly returns Sharpe ×√52 (headline) with the Lo standard error (`sqrt((1 + SR²/2) / years)`, `years = weeks/52`); daily ×√365 informational; decomposition of price P&L vs funding vs fees per leg, per side and per year (per-year price P&L is mark-to-market at the Jan-1 boundary prices); turnover; rounding drift; funding dispersion vs fees. A Sharpe is `None` — never a huge number — when `n < 3` or the stdev is within `1e-12 * max(1, |mean|)`. Liquidation is **not** modelled (`summary["liquidation"] == "not_modelled"`).
+- **Outputs:** `data/portfolio/<engine>-<start>-<end>-<sha8 of the spec>/` (`summary.json` plus daily/weekly/fills/funding/decisions parquet ledgers; gitignored), and every run appends its `spec_hash` to the `data/portfolio/trials.jsonl` DSR trial ledger. The same rule modules (signal, sizing, ledger, ticks) drive both the NT engine and a no-NT reference simulator; `scripts/agents/exactness_carry.py` proves the two agree **exactly** (`parity.compare_runs` over every dataclass field) and pins the headline numbers.
+- **Out of scope:** paper/live portfolio mode, `TradingGuard` portfolio caps, live funding signal, new symbols / data download, UI, DB schema, liquidation overlay, vol-scaled weights, liquidity filter.
+
 ---
 
 ## 2. Technology Stack

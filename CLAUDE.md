@@ -90,6 +90,8 @@ Coverage axes — check which ones the change crosses and verify each side:
 | Tests (targeted / full ≈ 1 min) | `.venv/bin/python -m pytest tests/unit/test_x.py -q` / `... tests/unit -q -n auto --dist worksteal -m "not timing"` then `... tests/unit -m timing` (serial; 183 s serial without `-n`) |
 | Lint / types | `.venv/bin/ruff check` / `.venv/bin/mypy` |
 | Exactness proof (≈ 6 s) | `.venv/bin/python scripts/agents/exactness_239.py [--validation-multi]` |
+| Carry backtest / research report | `.venv/bin/python -m vibe_quant.portfolio run --symbols BTCUSDT ETHUSDT SOLUSDT BNBUSDT --start 2022-06-01 --end 2026-09-28 [--engine nt\|reference]` / `... evaluate --symbols BTCUSDT ETHUSDT SOLUSDT BNBUSDT --start 2022-06-01 --end 2026-09-28 [--draws 200] [--seed 0] [--trials PATH]` (`evaluate` has no `--engine`; ≈ 7.5 min at `--draws 200`, ≈ 1.1 s/draw, dominated by metrics) |
+| Carry exactness proof (≈ 4.5 s) | `.venv/bin/python scripts/agents/exactness_carry.py` |
 | Pre-review gate (PASS cached per HEAD; runs the unit suite in parallel) | `scripts/agents/swarm-check.sh <worktree> --scope '<glob>,<glob>' [--no-cache]` (one comma-separated arg) |
 | Backend | `.venv/bin/uvicorn "vibe_quant.api.app:create_app" --factory --port 8000` |
 | Frontend dev / build / unit | `cd frontend && pnpm dev` / `pnpm build` / `pnpm vitest run` |
@@ -155,6 +157,7 @@ Key paths: DB schema `vibe_quant/db/schema.py` · DSL types `vibe_quant/dsl/sche
 Valid proofs that a change preserved correctness:
 - **Fixed-strategy eval** (`scripts/agents/exactness_239.py`): strategy 239, BTCUSDT 2024-01-01..2026-03-17, screening must return sharpe `0.7974716442710239`, 67 trades, return `0.159784359286041`, PF `1.6359612484989312`, max DD `0.05716872229767501` (all five asserted).
 - **Validation repeatability:** single-symbol 239 = sharpe `0.780452281957465`, 67 trades. Two-symbol (BTCUSDT+ETHUSDT, `--validation-multi`) = sharpe `0.4956474374166028`, 164 trades, return `0.13753127107369148`, PF `1.1990127778814956`, max DD `0.11707174708945581`, symbol-order-invariant. Any drift is a regression unless the change is a declared comparability break.
+- **Carry exactness** (`scripts/agents/exactness_carry.py`, ≈ 4.5 s): the NT funding-carry engine must equal the no-NT reference **exactly** (`compare_runs` over every dataclass field) on BTCUSDT/ETHUSDT/SOLUSDT/BNBUSDT 2022-06-01..2026-09-28; the pinned headline numbers live in the script. Change the shared rule modules (`vibe_quant/portfolio/` signal/sizing/ledger/ticks), never one executor. swarm-check runs main's copy when `vibe_quant/portfolio/`, `vibe_quant/validation/funding.py`, `exactness_carry.py`, `pyproject.toml` or `uv.lock` change (SKIP while main has no copy).
 - **Within-run replay:** discovery champion → `/replay` matches exactly when the run used `eval_windows=1`.
 - Zero-tolerance unit tests against the reference implementation for ported math.
 
