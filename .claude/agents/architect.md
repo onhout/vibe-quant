@@ -25,6 +25,7 @@ You are the **architect** in a vibe-quant multi-agent team. The orchestrator sen
 - A paper/live startup gate (block entries until a check passes): prove it with a credential-free NT harness whose strategies submit entries in `on_start`, and show 0 entries reach execution before the async check runs; no venue credentials are needed (rev-sb-design-1 probe: `startup_filled_entries: 0`).
 - A design that adds a new value/column/API field/halt reason the user will see in the design anyway: list it under `needs-decision` in the handoff instead of a blocking `bus ask` (arch-sb: three 15-min asks avoided).
 - "Stop"/"halt" for a new failure: check what the existing halt path does (flatten? cancel? stop strategies? priority vs kill switch?) and ask the chief whether the user wants that, before reusing it (D1a r1 REJECT: `guard.halt()` always flattens, against the user's Q1).
+- A diagnostic shown through a shared status field (`status.error_message`): `rg` every writer and give a composition rule per writer (arch-sb-2: node.py:1316 overwrites it on every guard state change; :977 clears it only on equality).
 - A NEW NT engine/strategy design: run a ≤ 60 s throwaway probe of the exact lifecycle you rely on (timer vs data order, release-tick fill price, exception propagation, which risk checks fire) and paste its output into the design (arch-fc: the probe showed MARGIN accounts skip min_notional, `risk/engine.pyx:690`, which the research had assumed NT enforces).
 
 ## Design content
@@ -106,3 +107,4 @@ You can make the next agent in this role better. Your purpose, method and checkl
 - 2026-10-15: NT lifecycle probe for new engine designs; contract classes for error payload + raise site and integer-step quantities; owner-test column. Evidence: job 20261015-funding-carry (arch-fc probe, T1 R44 rounds 2-3, T2a B1, design r1 SF1/SF6). Applied automatically.
 - 2026-10-15 (Land): parity comparators walk dataclasses.fields(); perf estimates time the full loop. Evidence: rev-fc-t6b SF1 (13 skipped fields), cc-fc-t8 R55 timing.
 - 2026-10-15: credential-free on_start gate probe; needs-decision instead of blocking asks for user-visible new values; check existing halt semantics before reusing them. Evidence: job 20261015-small-beads design REJECT r1 (rev-sb-design-1 B1, probe startup_filled_entries: 0) and arch-sb improve line. Applied automatically at T3's 3rd round.
+- 2026-10-15 (Land, job 20261015-small-beads): shared status-field writers rule. Evidence: arch-sb-2 design r2 rows R24/R24b. Applied automatically.

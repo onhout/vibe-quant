@@ -9,6 +9,7 @@ Read before writing or changing code that builds or runs a NautilusTrader engine
 - `BacktestResult.elapsed_time` is the simulated window in seconds; `Iterations` ≈ bars processed (far above the expected bar count = a data-loading bug).
 - An invalid `TraderId` (e.g. `paper_1`, no `-`) aborts the process from Rust; validate with `vibe_quant/paper/config.py`'s regex first.
 - `TradingState.REDUCING` does not stop a flat account from opening; paper uses its own `TradingGuard` (`paper/guard.py`).
+- **A failed live exec-client connect does not raise.** NT logs `Error on '_connect' ...`, `kernel.start_async` gives up after `timeout_connection` WITHOUT calling `trader.start()`, and `run_async` keeps idling. So a refused Binance margin change only shows as a log line plus our R42b startup-timeout alert; tests must assert that real outcome, not `pytest.raises` (`tests/unit/test_paper_margin_refusal_real_node.py`; `system/kernel.py:1024`, `live/node.py:338,410`).
 - `BacktestEngine.run()` stops all strategies when it ends — assert mid-run state from a scheduled actor.
 - Generated strategy modules are content-addressed (`{name}_{hash}`): use `module.__name__`, never rebuild the path from `dsl.name`.
 - ADX stays on the pandas path (NT's `DirectionalMovement.value` is always 0).

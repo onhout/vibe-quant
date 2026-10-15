@@ -35,6 +35,7 @@ SPEED RULES (measured: one model turn costs 4–10 s; the full test suite costs 
 - New test files must satisfy ruff flake8-type-checking (TCH001/2/3): type-only imports get `# noqa: TCH00x`, as `tests/unit/api/test_liquidation_launch.py` does (cc-hl-lev-t2: 3 TC errors).
 - Tests that patch a collaborator teardown also uses (event writer, client): restore it before calling shutdown/teardown, or the teardown fails for an unrelated reason (cc-sb-alertwrite: 3 of 4 new tests went red at `_shutdown`).
 - Secret-leak tests: use leak markers that contain none of the redacted names (`ZZLEAK9`, not `BEARERSECRET9`), or a mutant that drops a name survives (impl-sb-watchlog-2).
+- Frontend edits: format your NEW/edited files before committing (`./node_modules/.bin/biome check --write <your files>`, never on files you did not touch); biome counts format diffs as lint errors (cc-sb-exitui).
 - Frontend edits: the gate fails only on NEW lint diagnostics (worktree errors > main errors; main baseline 77 errors on 2026-10-14, bead vibe-quant-mi71m). Target no new diagnostics (cc-hl-lev-t3).
 
 FACTS YOU NEED (exact code excerpts / line ranges, so you don't have to search):
