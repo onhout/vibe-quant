@@ -432,7 +432,9 @@ class PaperTradingNode:
 
     def _on_error_alert(self, alert_type: str, context: ErrorContext) -> None:
         """ErrorHandler wants the operator to know about an error."""
-        self._write_event(
+        # oledr/k8oei: route through _write_then_alert so the alert goes out even when
+        # the write raises; the write's own error then propagates unchanged.
+        self._write_then_alert(
             EventType.RISK_CHECK,
             {
                 "action": "alert",
@@ -445,8 +447,6 @@ class PaperTradingNode:
                 "retry_count": context.retry_count,
                 "passed": False,
             },
-        )
-        self._send_telegram_alert(
             "error",
             f"{alert_type}: {context.error}\nOp: {context.operation}"
             + (f"\nSymbol: {context.symbol}" if context.symbol else ""),
@@ -1006,11 +1006,11 @@ class PaperTradingNode:
                     # R42d: clear only our own message, never a later halt message.
                     self._status.error_message = None
                     self._status.updated_at = self._now()
-                self._write_event(
+                # oledr/k8oei: the same helper, so a failing write cannot drop the
+                # only signal that the venue came up late.
+                self._write_then_alert(
                     EventType.RISK_CHECK,
                     {"action": "venue_connected_after_startup_timeout", "passed": True},
-                )
-                self._send_telegram_alert(
                     "error",
                     f"paper {self._config.trader_id} venue connected after startup timeout",
                 )
@@ -1026,8 +1026,9 @@ class PaperTradingNode:
         elif not self._connected and connected:
             self._connected = True
             self._error_handler.reset_retry_count("connectivity", "")
-            self._write_event(EventType.SIGNAL, {"action": "reconnected"})
-            self._send_telegram_alert("error", "venue connection restored")
+            self._write_then_alert(
+                EventType.SIGNAL, {"action": "reconnected"}, "error", "venue connection restored"
+            )
 
     def _startup_timeout_message(self) -> str:
         return (
@@ -1125,7 +1126,11 @@ class PaperTradingNode:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception("liquidation watch task failed; paper trading continues")
+            # R4 (k8oei): class only. ``logger.exception`` would print the active
+            # exception's ``__context__`` chain (a fetch error with signature/apiKey text).
+            logger.error(
+                "liquidation watch task failed (%s); paper trading continues", type(exc).__name__
+            )
             # R52g: a dead detector must not be silent. Only the exception class is
             # reported: its text can carry request URLs or credentials.
             message = f"liquidation watch failed: {type(exc).__name__}"
@@ -1357,7 +1362,7 @@ class PaperTradingNode:
         self._status.error_message = message
         self._status.updated_at = datetime.now(UTC)
         if state == GuardState.HALTED and reason is not None:
-            self._write_event(
+            self._write_then_alert(
                 EventType.RISK_CHECK,
                 {
                     "action": "halt",
@@ -1367,24 +1372,29 @@ class PaperTradingNode:
                     "passed": False,
                     **metrics,
                 },
-            )
-            self._send_telegram_alert(
-                "circuit_breaker", f"HALT ({reason.value}): {message}", critical=True
+                "circuit_breaker",
+                f"HALT ({reason.value}): {message}",
+                critical=True,
             )
         else:
-            self._write_event(
-                EventType.SIGNAL,
-                {
-                    "action": "state_change",
-                    "from_state": prev.value,
-                    "to_state": self._status.state.value,
-                    "message": message,
-                },
-            )
+            payload: dict[str, object] = {
+                "action": "state_change",
+                "from_state": prev.value,
+                "to_state": self._status.state.value,
+                "message": message,
+            }
+            # oledr/k8oei: only the RESUMED branch alerts today, so only it goes
+            # through the helper; a plain state change still writes without alerting.
             if prev == NodeState.HALTED and state == GuardState.RUNNING:
-                self._send_telegram_alert(
-                    "circuit_breaker", f"RESUMED: {message}", critical=True
+                self._write_then_alert(
+                    EventType.SIGNAL,
+                    payload,
+                    "circuit_breaker",
+                    f"RESUMED: {message}",
+                    critical=True,
                 )
+            else:
+                self._write_event(EventType.SIGNAL, payload)
         self._save_checkpoint_now()
 
     def _on_order_rejected(self, event: Any) -> None:
@@ -1406,22 +1416,27 @@ class PaperTradingNode:
         )
 
     def _on_order_denied(self, event: Any, *, by_gate: bool) -> None:
-        self._write_event(
-            EventType.ORDER,
-            {
-                "action": "denied",
-                "by_guard": by_gate,
-                "order_id": str(event.client_order_id),
-                "symbol": str(event.instrument_id),
-                "strategy_id": str(event.strategy_id),
-                "reason": str(event.reason),
-            },
-            timestamp=_ns_to_dt(event.ts_init),
-        )
+        payload: dict[str, object] = {
+            "action": "denied",
+            "by_guard": by_gate,
+            "order_id": str(event.client_order_id),
+            "symbol": str(event.instrument_id),
+            "strategy_id": str(event.strategy_id),
+            "reason": str(event.reason),
+        }
+        timestamp = _ns_to_dt(event.ts_init)
+        # oledr/k8oei: only a risk-engine denial alerts today, so only it goes through
+        # the helper; a gate denial still writes without alerting.
         if not by_gate:
-            self._send_telegram_alert(
-                "error", f"Order denied by risk engine: {event.reason}\n{event.instrument_id}"
+            self._write_then_alert(
+                EventType.ORDER,
+                payload,
+                "error",
+                f"Order denied by risk engine: {event.reason}\n{event.instrument_id}",
+                timestamp=timestamp,
             )
+        else:
+            self._write_event(EventType.ORDER, payload, timestamp=timestamp)
 
     def _on_position_opened(self, event: Any) -> None:
         self._write_event(
@@ -1566,8 +1581,14 @@ class PaperTradingNode:
         return "signal"
 
     def _on_guard_warning(self, message: str) -> None:
-        self._write_event(EventType.RISK_CHECK, {"action": "warning", "message": message})
-        self._send_telegram_alert("error", f"WARNING: {message}")
+        # R2 (oledr/k8oei): the warning survives a failing write, and the write's own
+        # error still propagates, like every other write-then-alert pair.
+        self._write_then_alert(
+            EventType.RISK_CHECK,
+            {"action": "warning", "message": message},
+            "error",
+            f"WARNING: {message}",
+        )
 
     # ------------------------------------------------------ checkpoints
 
@@ -1764,14 +1785,19 @@ class PaperTradingNode:
             result = CloseAllResult(errors=["trading node not running"])
         else:
             result = self._guard.close_all()
-        self._write_event(
-            EventType.SIGNAL,
-            {"action": "close_all_positions", **result.to_dict()},
-        )
+        payload: dict[str, object] = {"action": "close_all_positions", **result.to_dict()}
+        # oledr/k8oei: only a close-all with errors alerts today, so only it goes
+        # through the helper; a clean close-all still writes without alerting.
         if result.errors:
-            self._send_telegram_alert(
-                "error", "Close-all problems: " + "; ".join(result.errors), critical=True
+            self._write_then_alert(
+                EventType.SIGNAL,
+                payload,
+                "error",
+                "Close-all problems: " + "; ".join(result.errors),
+                critical=True,
             )
+        else:
+            self._write_event(EventType.SIGNAL, payload)
         return result
 
     async def _initialize(self) -> None:
@@ -1925,15 +1951,24 @@ class PaperTradingNode:
             self._status.state = NodeState.STOPPED
         self._status.updated_at = datetime.now(UTC)
 
-        self._write_event(
-            EventType.SIGNAL,
-            {
-                "action": "stop",
-                "trader_id": self._config.trader_id,
-                "reason": self._status.halt_reason.value if self._status.halt_reason else "normal",
-                "total_pnl": self._status.total_pnl,
-            },
-        )
+        # R5 (k8oei): a failing stop-event write must not abort the whole shutdown;
+        # class only, so no traceback (or chained fetch error) reaches the log.
+        try:
+            self._write_event(
+                EventType.SIGNAL,
+                {
+                    "action": "stop",
+                    "trader_id": self._config.trader_id,
+                    "reason": (
+                        self._status.halt_reason.value if self._status.halt_reason else "normal"
+                    ),
+                    "total_pnl": self._status.total_pnl,
+                },
+            )
+        except Exception as exc:
+            logger.error(
+                "paper stop event write failed (%s); continuing shutdown", type(exc).__name__
+            )
 
         await self._stop_control_loop()
         # R53: before the final checkpoint, so the watch state it captures is still there.
@@ -1963,7 +1998,15 @@ class PaperTradingNode:
         if self._event_writer is not None:
             with contextlib.suppress(Exception):
                 self._event_writer.flush()
-            self._event_writer.close()
+            # R6 (k8oei): a close() failure is logged by class and the writer dropped;
+            # the remaining teardown (telegram, state manager) still runs.
+            try:
+                self._event_writer.close()
+            except Exception as exc:
+                logger.error(
+                    "paper event writer close failed (%s); continuing shutdown",
+                    type(exc).__name__,
+                )
             self._event_writer = None
 
         # Let in-flight alerts (e.g. the halt that caused shutdown) go out.
@@ -1988,10 +2031,17 @@ class PaperTradingNode:
         except Exception as e:
             self._status.state = NodeState.ERROR
             self._status.error_message = str(e)
-            self._write_event(
-                EventType.RISK_CHECK, {"action": "error", "error": str(e), "passed": False}
-            )
-            self._send_telegram_alert("error", f"Paper node failed: {e}", critical=True)
+            # R3 (k8oei): the CRITICAL "failed" alert goes out even if the error-event
+            # write raises, and the ORIGINAL error `e` is what start() re-raises:
+            # suppressing the write's own failure keeps the two from being confused.
+            with contextlib.suppress(Exception):
+                self._write_then_alert(
+                    EventType.RISK_CHECK,
+                    {"action": "error", "error": str(e), "passed": False},
+                    "error",
+                    f"Paper node failed: {e}",
+                    critical=True,
+                )
             raise
         finally:
             await self._shutdown()
@@ -2014,11 +2064,15 @@ class PaperTradingNode:
         self._status.halt_reason = reason
         self._status.error_message = msg
         self._status.updated_at = datetime.now(UTC)
-        self._write_event(
+        # R1 (k8oei): the CRITICAL halt alert cannot be swallowed by a failing event
+        # write; the write's own error then propagates to the caller.
+        self._write_then_alert(
             EventType.RISK_CHECK,
             {"action": "halt", "reason": reason.value, "message": msg, "passed": False},
+            "circuit_breaker",
+            f"HALT ({reason.value}): {msg}",
+            critical=True,
         )
-        self._send_telegram_alert("circuit_breaker", f"HALT ({reason.value}): {msg}", critical=True)
 
     def pause(self) -> None:
         """Block new entries; keep protective SL/TP orders and exit logic running."""
