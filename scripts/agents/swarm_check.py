@@ -22,8 +22,9 @@ PASS-stamp cache: a GATE PASS on a clean worktree writes
 `<git-dir>/swarm-check/pass-<key[:16]>.json` in that worktree's git dir (per-worktree,
 never committed, invisible to `git status`). The key is a sha256 over HEAD, the base
 commit, the sorted scope globs, exactness/frontend modes, this script's own bytes and the
-sha256 of the MAIN checkout's scripts/agents/exactness_239.py, uv.lock and
-frontend/pnpm-lock.yaml (a missing file hashes as a fixed token), so any change to the
+sha256 of the MAIN checkout's scripts/agents/exactness_239.py,
+scripts/agents/exactness_carry.py, uv.lock and frontend/pnpm-lock.yaml (a missing file
+hashes as a fixed token), so any change to the
 diff or to the checks invalidates it. A later run whose tree is clean and whose key
 matches prints the stored check lines as `(cached) ...`, then
 `PASS cache: reused stamp from <ts> for <head[:12]>` and `GATE PASS` (and posts
@@ -52,7 +53,10 @@ working tree and any uncommitted edit in main other than the keyed files; and an
 
 The gate FAILS CLOSED: a bad --base, any git error, a timed-out or missing tool is a
 FAIL, never a PASS. Exactness always runs the MAIN checkout's exactness_239.py (the
-worktree copy must be identical or the check FAILs).
+worktree copy must be identical or the check FAILs). exactness-carry does the same with
+the MAIN checkout's scripts/agents/exactness_carry.py, except that a main without that
+script is a SKIP, not a FAIL (it lands with the carry engine; the trigger set is the
+funding-carry paths listed in EXACTNESS_CARRY_TRIGGERS).
 
 Tool commands can be stubbed via env (full command, shell-quoted):
 SWARM_CHECK_RUFF / SWARM_CHECK_MYPY / SWARM_CHECK_PYTEST (the pytest stub replaces
@@ -108,8 +112,23 @@ EXACTNESS_FILES = (
     "scripts/agents/exactness_239.py",
 )
 EXACTNESS_SCRIPT = "scripts/agents/exactness_239.py"
+# exactness-carry: a SECOND, independent exactness proof for the funding-carry engine
+# (vibe_quant/portfolio/ + the funding settlement code it pins). A trailing "/" in a
+# trigger is a path prefix, anything else is an exact path. Kept separate from the
+# exactness_239 trigger above: the carry engine's own paths are the only ones that move
+# the carry numbers, and the script arrives with that engine (main may not have it yet,
+# which is a SKIP, never a FAIL).
+EXACTNESS_CARRY_SCRIPT = "scripts/agents/exactness_carry.py"
+EXACTNESS_CARRY_TRIGGERS = (
+    "vibe_quant/portfolio/",
+    "vibe_quant/validation/funding.py",
+    EXACTNESS_CARRY_SCRIPT,
+    "pyproject.toml",
+    "uv.lock",
+)
 CHECK_ORDER = (
-    "scope", "clean", "bus-inbox", "ruff", "mypy", "tests", "exactness", "frontend", "stubs", "internal",
+    "scope", "clean", "bus-inbox", "ruff", "mypy", "tests", "exactness", "exactness-carry",
+    "frontend", "stubs", "internal",
 )
 UNTRACKED_OK = ("cmd-report.md",)
 LINT_ERROR_RE = re.compile(r"^Found (\d+) errors?\.", re.MULTILINE)
@@ -131,7 +150,12 @@ CACHE_DIR = "swarm-check"
 CACHE_VERSION = 2
 CHECK_STATUSES = ("PASS", "FAIL", "SKIP", "WARN")
 STAMP_STATUSES = ("PASS", "SKIP")  # the only line statuses a reusable stamp may contain
-MAIN_KEY_FILES = ("scripts/agents/exactness_239.py", "uv.lock", "frontend/pnpm-lock.yaml")
+MAIN_KEY_FILES = (
+    "scripts/agents/exactness_239.py",
+    EXACTNESS_CARRY_SCRIPT,
+    "uv.lock",
+    "frontend/pnpm-lock.yaml",
+)
 MISSING_FILE_TOKEN = "missing"
 
 
@@ -298,6 +322,16 @@ def should_run_exactness(paths: Sequence[str]) -> bool:
         (p.startswith("vibe_quant/") and not p.startswith(EXACTNESS_SAFE_DIRS))
         or p in EXACTNESS_FILES
         for p in paths
+    )
+
+
+def should_run_exactness_carry(paths: Sequence[str]) -> bool:
+    """True if a change can move a funding-carry number: the engine's own paths, its
+    pinning script, or a lockfile. Narrower than the exactness_239 trigger on purpose."""
+    return any(
+        p.startswith(t) if t.endswith("/") else p == t
+        for p in paths
+        for t in EXACTNESS_CARRY_TRIGGERS
     )
 
 
@@ -589,6 +623,27 @@ def _run_exactness(cfg: Config, tools: dict[str, list[str]], run: RunFn) -> Chec
     return Check("exactness", "FAIL", f"drift (rc={rc}): " + tail_line(out))
 
 
+def _run_exactness_carry(cfg: Config, tools: dict[str, list[str]], run: RunFn) -> Check:
+    """The carry proof. Mirrors _run_exactness except that a missing MAIN script is a SKIP:
+    scripts/agents/exactness_carry.py lands with the carry engine and a worktree cannot be
+    expected to gate against a proof main does not have yet."""
+    main_script = cfg.main_root / EXACTNESS_CARRY_SCRIPT
+    wt_script = cfg.worktree / EXACTNESS_CARRY_SCRIPT
+    if not main_script.is_file():
+        return Check("exactness-carry", "SKIP", "main has no exactness_carry.py yet")
+    if wt_script.is_file() and wt_script.read_bytes() != main_script.read_bytes():
+        return Check("exactness-carry", "FAIL", "exactness_carry script modified in worktree")
+    rc, out = run(
+        tools["python"] + [str(main_script)],
+        cfg.worktree,
+        {"PYTHONPATH": str(cfg.worktree)},
+        TEST_TIMEOUT,
+    )
+    if rc == 0 and "IDENTICAL" in out:
+        return Check("exactness-carry", "PASS", "IDENTICAL")
+    return Check("exactness-carry", "FAIL", f"drift (rc={rc}): " + tail_line(out))
+
+
 def _lint_problem(label: str, rc: int, out: str) -> str:
     if rc != 0 and not has_lint_count(out):
         return f"{label} lint failed without an error count: " + tail_line(out)
@@ -687,6 +742,25 @@ def run_checks(cfg: Config, run: RunFn = real_run) -> list[Check]:
                 "auto: nothing changed under vibe_quant/ (except "
                 + ", ".join(d.rstrip("/").removeprefix("vibe_quant/") for d in EXACTNESS_SAFE_DIRS)
                 + ") nor in " + ", ".join(EXACTNESS_FILES),
+            )
+        )
+
+    # 6b. exactness-carry: the same flag governs both proofs, and a main without the
+    # script is a SKIP so this check can land before the carry engine does
+    if cfg.exactness == "never":
+        checks.append(Check("exactness-carry", "SKIP", "disabled"))
+    elif cfg.exactness == "always" or (
+        not state.error and should_run_exactness_carry(state.changed)
+    ):
+        checks.append(_run_exactness_carry(cfg, tools, run))
+    elif state.error:
+        checks.append(Check("exactness-carry", "SKIP", unknown))
+    else:
+        checks.append(
+            Check(
+                "exactness-carry",
+                "SKIP",
+                "auto: nothing changed in " + ", ".join(EXACTNESS_CARRY_TRIGGERS),
             )
         )
 

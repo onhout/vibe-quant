@@ -110,6 +110,7 @@ _PASS_CHECKS = (
     swarm_check.Check("mypy", "PASS", "Success"),
     swarm_check.Check("tests", "PASS", "1 passed in 0.01s | 1 passed in 0.01s"),
     swarm_check.Check("exactness", "SKIP", "disabled"),
+    swarm_check.Check("exactness-carry", "SKIP", "disabled"),
     swarm_check.Check("frontend", "SKIP", "disabled"),
 )
 _PASS_SCOPES = ((), ("vibe_quant/*",))  # the two scopes TestPassCache gates under
@@ -214,6 +215,18 @@ def _main_exactness(tmp_path: Path, repo: Path | None = None, text: str = "# mai
     if repo is not None:
         (repo / "scripts" / "agents").mkdir(parents=True, exist_ok=True)
         (repo / "scripts" / "agents" / "exactness_239.py").write_text(text)
+    return script
+
+
+def _main_carry(tmp_path: Path, repo: Path | None = None, text: str = "# main carry\n") -> Path:
+    """Main checkout's exactness_carry.py (cfg.main_root == tmp_path); optionally mirrored
+    into the worktree, as the carry engine's own commit does."""
+    script = tmp_path / "scripts" / "agents" / "exactness_carry.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(text)
+    if repo is not None:
+        (repo / "scripts" / "agents").mkdir(parents=True, exist_ok=True)
+        (repo / "scripts" / "agents" / "exactness_carry.py").write_text(text)
     return script
 
 
@@ -454,12 +467,14 @@ class TestRunChecks:
         checks = swarm_check.run_checks(cfg, runner)
         by_name = {c.name: c for c in checks}
         assert [c.name for c in checks] == [
-            "scope", "clean", "bus-inbox", "ruff", "mypy", "tests", "exactness", "frontend",
+            "scope", "clean", "bus-inbox", "ruff", "mypy", "tests", "exactness",
+            "exactness-carry", "frontend",
         ]
         assert by_name["scope"].status == "SKIP"
         assert by_name["bus-inbox"].status == "SKIP"
         assert by_name["tests"].status == "SKIP"
         assert by_name["exactness"].status == "SKIP"
+        assert by_name["exactness-carry"].status == "SKIP"
         assert by_name["frontend"].status == "SKIP"
         assert not _called_with(runner, "pytest")
 
@@ -654,6 +669,169 @@ class TestRunChecks:
         checks = swarm_check.run_checks(cfg, runner)
         assert {c.name: c for c in checks}["frontend"].status == "PASS"
         assert _called_with(runner, "tsc")
+
+
+class TestExactnessCarry:
+    """exactness-carry: a SECOND exactness proof, for the funding-carry engine.
+
+    It runs the MAIN checkout's scripts/agents/exactness_carry.py with the worktree's code
+    on PYTHONPATH, exactly like exactness_239. It must SKIP (never FAIL) while the carry
+    script has not landed on main yet, and it must never run a worktree copy.
+    """
+
+    def _check(
+        self,
+        tmp_path: Path,
+        repo: Path,
+        responses: dict[str, object] | None = None,
+        **kwargs: object,
+    ) -> tuple[swarm_check.Check, FakeRunner]:
+        runner = FakeRunner()
+        if responses:
+            runner.responses = responses  # type: ignore[assignment]
+        cfg = _cfg(tmp_path, repo, base="HEAD", frontend="never", **kwargs)
+        checks = swarm_check.run_checks(cfg, runner)
+        return {c.name: c for c in checks}["exactness-carry"], runner
+
+    def test_triggers(self) -> None:
+        for p in [
+            "vibe_quant/portfolio/sizing.py",
+            "vibe_quant/portfolio/deep/nested.py",
+            "vibe_quant/validation/funding.py",
+            "scripts/agents/exactness_carry.py",
+            "pyproject.toml",
+            "uv.lock",
+        ]:
+            assert swarm_check.should_run_exactness_carry([p]), p
+
+    def test_no_trigger_elsewhere(self) -> None:
+        for p in [
+            "vibe_quant/validation/runner.py",
+            "vibe_quant/validation/funding_extra.py",
+            "vibe_quant/portfolios/x.py",
+            "vibe_quant/dsl/parser.py",
+            "vibe_quant/api/app.py",
+            "scripts/agents/exactness_239.py",
+            "scripts/agents/swarm_check.py",
+            "frontend/x.ts",
+            "tests/unit/test_x.py",
+        ]:
+            assert not swarm_check.should_run_exactness_carry([p]), p
+
+    def test_skips_without_trigger_and_names_the_trigger_set(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        (repo / "vibe_quant" / "api").mkdir()
+        (repo / "vibe_quant" / "api" / "app.py").write_text("A = 1\n")
+        _main_carry(tmp_path)  # present on main: only the missing trigger can skip it
+        carry, runner = self._check(tmp_path, repo)
+        assert carry.status == "SKIP"
+        assert "vibe_quant/portfolio/" in carry.detail
+        assert "vibe_quant/validation/funding.py" in carry.detail
+        assert "scripts/agents/exactness_carry.py" in carry.detail
+        assert not _called_with(runner, "exactness_carry.py")
+
+    def test_skips_when_main_lacks_the_script(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        (repo / "vibe_quant" / "portfolio").mkdir()
+        (repo / "vibe_quant" / "portfolio" / "sizing.py").write_text("S = 1\n")
+        carry, runner = self._check(tmp_path, repo)  # no _main_carry: not on main yet
+        assert carry.status == "SKIP"
+        assert "main has no exactness_carry.py yet" in carry.detail
+        assert not _called_with(runner, "exactness_carry.py")
+
+    def test_skips_when_worktree_has_it_but_main_does_not(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        (repo / "vibe_quant" / "portfolio").mkdir()
+        (repo / "vibe_quant" / "portfolio" / "sizing.py").write_text("S = 1\n")
+        (repo / "scripts" / "agents").mkdir(parents=True, exist_ok=True)
+        (repo / "scripts" / "agents" / "exactness_carry.py").write_text("# worktree only\n")
+        carry, runner = self._check(tmp_path, repo)
+        assert carry.status == "SKIP"
+        assert "main has no exactness_carry.py yet" in carry.detail
+        assert not _called_with(runner, "exactness_carry.py")
+
+    def test_modified_worktree_copy_fails_and_is_never_run(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _main_carry(tmp_path)
+        (repo / "scripts" / "agents").mkdir(parents=True, exist_ok=True)
+        (repo / "scripts" / "agents" / "exactness_carry.py").write_text("EXPECTED = 9\n")
+        carry, runner = self._check(tmp_path, repo)
+        assert carry.status == "FAIL"
+        assert "exactness_carry script modified in worktree" in carry.detail
+        assert not _called_with(runner, "exactness_carry.py")
+
+    def test_triggered_run_passes_on_identical_via_main_with_worktree_code(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _init_repo(tmp_path)
+        (repo / "vibe_quant" / "portfolio").mkdir()
+        (repo / "vibe_quant" / "portfolio" / "sizing.py").write_text("S = 1\n")
+        main_script = _main_carry(tmp_path, repo)
+        seen: list[Path] = []
+
+        def capture(cmd: Sequence[str], cwd: Path) -> tuple[int, str]:
+            seen.append(cwd)
+            return 0, "IDENTICAL"
+
+        carry, runner = self._check(tmp_path, repo, responses={"exactness_carry.py": capture})
+        assert carry.status == "PASS" and "IDENTICAL" in carry.detail
+        assert seen == [repo]  # cwd is the worktree, not main
+        called = [c for c in runner.calls if c[-1] == str(main_script)]
+        assert called and called[0][0] == str(tmp_path / ".venv" / "bin" / "python")
+        envs = [e for c, e in zip(runner.calls, runner.envs, strict=True) if c[-1] == str(main_script)]
+        assert envs and envs[0] is not None
+        assert envs[0]["PYTHONPATH"] == str(repo)  # exercises the WORKTREE's code
+        timeouts = [
+            t for c, t in zip(runner.calls, runner.timeouts, strict=True) if c[-1] == str(main_script)
+        ]
+        assert timeouts == [swarm_check.TEST_TIMEOUT]
+        # never the worktree copy
+        assert str(repo / "scripts" / "agents" / "exactness_carry.py") not in sum(runner.calls, [])
+
+    def test_rc_zero_without_identical_fails(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _main_carry(tmp_path, repo)
+        carry, _ = self._check(
+            tmp_path, repo, responses={"exactness_carry.py": (0, "no evidence line")},
+            exactness="always",
+        )
+        assert carry.status == "FAIL"
+        assert "drift (rc=0)" in carry.detail and "no evidence line" in carry.detail
+
+    def test_nonzero_rc_with_identical_fails(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _main_carry(tmp_path, repo)
+        carry, _ = self._check(
+            tmp_path, repo, responses={"exactness_carry.py": (3, "IDENTICAL then crashed")},
+            exactness="always",
+        )
+        assert carry.status == "FAIL"
+        assert "drift (rc=3)" in carry.detail
+
+    def test_disabled_by_exactness_never(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        (repo / "vibe_quant" / "portfolio").mkdir()
+        (repo / "vibe_quant" / "portfolio" / "sizing.py").write_text("S = 1\n")
+        _main_carry(tmp_path, repo)  # script present and a trigger changed: still disabled
+        carry, runner = self._check(tmp_path, repo, exactness="never")
+        assert carry.status == "SKIP" and carry.detail == "disabled"
+        assert not _called_with(runner, "exactness_carry.py")
+
+    def test_exactness_always_runs_it_without_a_trigger(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _main_carry(tmp_path, repo)
+        carry, runner = self._check(
+            tmp_path, repo, responses={"exactness": (0, "IDENTICAL")}, exactness="always"
+        )
+        assert carry.status == "PASS"
+        assert _called_with(runner, "exactness_carry.py")
+
+    def test_exactness_always_skips_when_main_lacks_the_script(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        carry, runner = self._check(tmp_path, repo, exactness="always")
+        assert carry.status == "SKIP"
+        assert "main has no exactness_carry.py yet" in carry.detail
+        assert not _called_with(runner, "exactness_carry.py")
 
 
 class TestFailClosed:
@@ -872,8 +1050,19 @@ class TestCacheKey:
 
     def test_main_key_files_cover_exactness_and_lockfiles(self) -> None:
         assert set(swarm_check.MAIN_KEY_FILES) == {
-            "scripts/agents/exactness_239.py", "uv.lock", "frontend/pnpm-lock.yaml",
+            "scripts/agents/exactness_239.py", "scripts/agents/exactness_carry.py",
+            "uv.lock", "frontend/pnpm-lock.yaml",
         }
+
+    def test_carry_pin_change_on_main_invalidates_the_key(self, tmp_path: Path) -> None:
+        """A pin edit to MAIN's exactness_carry.py invalidates stamps, as 239's does."""
+        cfg = _cfg(tmp_path, tmp_path)
+        script = tmp_path / "scripts" / "agents" / "exactness_carry.py"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("EXPECTED = 1\n")
+        first = swarm_check.cache_key("h", "s", cfg, "t")
+        script.write_text("EXPECTED = 2\n")
+        assert swarm_check.cache_key("h", "s", cfg, "t") != first
 
     def test_parse_check_line_roundtrip(self) -> None:
         check = swarm_check.Check("tests", "PASS", "1 passed | x: y")
@@ -1185,6 +1374,27 @@ class TestPassCache:
         runner = self._runner()
         assert self._main(repo, runner) == 0
         assert _called_with(runner, "pytest")
+        assert "PASS cache:" not in capsys.readouterr().out
+
+    def test_stamp_from_before_the_carry_check_not_reused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """No CACHE_VERSION bump is needed for the new exactness-carry line: every stamp
+        written before that check existed was keyed on a different tool hash (the key
+        hashes this script's own bytes), so an old stamp - which has no carry line - can
+        never match the key and is never served as a PASS."""
+        repo = self._unstamped_pass_repo(tmp_path)
+        head = _git(repo, "rev-parse", "HEAD").strip()
+        base_sha = _git(repo, "rev-parse", "main^{commit}").strip()
+        cfg = _cfg(tmp_path, repo, exactness="never", frontend="never")
+        pre_carry = tuple(c for c in _PASS_CHECKS if c.name != "exactness-carry")
+        assert len(pre_carry) == len(_PASS_CHECKS) - 1
+        old_key = swarm_check.cache_key(head, base_sha, cfg, "0" * 64)  # pre-change bytes
+        swarm_check.write_stamp(repo, FakeRunner(), cfg, old_key, pre_carry)
+        assert len(self._stamps(repo)) == 1
+        runner = self._runner()
+        assert self._main(repo, runner) == 0
+        assert _called_with(runner, "pytest")  # re-gated, never served from the old stamp
         assert "PASS cache:" not in capsys.readouterr().out
 
     def test_stored_fail_gate_not_reused(
