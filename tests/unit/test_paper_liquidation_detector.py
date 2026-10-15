@@ -46,6 +46,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
+    from vibe_quant.logging.events import Event
+
 _TRADER_ID = "PAPER-007"
 _RESTART_ID = "PAPER-008"
 #: Two traded symbols, because R50 says "EVERY traded symbol".
@@ -84,6 +86,26 @@ class _Alerts:
 
     def __call__(self, kind: str, message: str, *, critical: bool = False) -> None:
         self.calls.append((kind, message, critical))
+
+
+class _Trace:
+    """One ordered log of the side effects a contract orders (SF1 / R1 irdig).
+
+    The write and the alert are recorded into ONE list: separate spies prove counts,
+    not relative order, so a helper mutated from write-then-alert to alert-then-write
+    still passes a count-only test. ``order`` is the thing under test.
+    """
+
+    def __init__(self, alerts: _Alerts) -> None:
+        self.order: list[str] = []
+        self.alerts = alerts
+
+    def write(self, event: Event) -> None:
+        self.order.append("write")
+
+    def alert(self, kind: str, message: str, *, critical: bool = False) -> None:
+        self.order.append("alert")
+        self.alerts(kind, message, critical=critical)
 
 
 class _Spy:
@@ -843,6 +865,7 @@ async def test_degraded_then_recovered_report_risk_checks_and_non_critical_alert
 ) -> None:
     """R52: the third consecutive failure warns once; the next success reports recovery."""
     harness = await _harness(monkeypatch, seeded, errors={"BTCUSDT": ConnectionError("boom")})
+    trace, _error, _restore = _trace_side_effects(monkeypatch, harness)
     watcher = harness.node._build_liquidation_watcher()
 
     for _ in range(3):
@@ -859,6 +882,9 @@ async def test_degraded_then_recovered_report_risk_checks_and_non_critical_alert
     assert harness.alerts.calls == [
         ("error", "WARNING: liquidation detector degraded: BTCUSDT ConnectionError", False)
     ], "a degraded detector is not a critical alert"
+    assert trace.order == ["write", "alert"], (
+        "SF1: on the success path the degraded warning is written before it is sent"
+    )
 
     harness.fetch.errors.clear()
     await watcher.poll_once()
@@ -876,6 +902,9 @@ async def test_degraded_then_recovered_report_risk_checks_and_non_critical_alert
         "liquidation detector recovered: BTCUSDT after 3 failures",
         False,
     ), "recovery is not a critical alert either"
+    assert trace.order == ["write", "alert", "write", "alert"], (
+        "SF1: the recovery write also precedes its alert"
+    )
     await harness.node._shutdown()
 
 
@@ -933,3 +962,258 @@ async def test_run_loop_starts_the_watch_task_beside_the_control_loop(
         assert node._liquidation_task is None
     finally:
         await node._shutdown()
+
+
+# -------------------------------------------------- R1 (irdig) failing event write
+
+
+def _trace_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    harness: _Harness,
+    *,
+    fail_write: bool = False,
+) -> tuple[_Trace, OSError | None, Callable[[], None]]:
+    """Record every event write and alert in ONE ordered trace (SF1 / R1 irdig).
+
+    Both hooks append to ``trace.order``, so the write-before-alert contract is
+    asserted as an order, not as two counts. ``fail_write=True`` makes the writer
+    raise after recording the "write" (a persistent disk-full), tracing the raising
+    path too: the alert must still follow the attempted write.
+
+    Returns the trace, the error every write raises (``None`` when writes succeed),
+    and a ``restore`` that puts the real writer and alert spy back, so a test can pin
+    the R47b retry (and shut the node down).
+    """
+    writer = harness.node._event_writer
+    assert writer is not None
+    original_write = writer.write
+    error = OSError("disk full") if fail_write else None
+    trace = _Trace(harness.alerts)
+
+    def write(event: Event) -> None:
+        trace.write(event)
+        if error is not None:
+            raise error
+        original_write(event)
+
+    monkeypatch.setattr(writer, "write", write)
+    monkeypatch.setattr(harness.node, "_send_telegram_alert", trace.alert)
+
+    def restore() -> None:
+        monkeypatch.setattr(writer, "write", original_write)
+        monkeypatch.setattr(harness.node, "_send_telegram_alert", harness.alerts)
+
+    return trace, error, restore
+
+
+async def test_exchange_liquidation_traces_write_before_alert(
+    monkeypatch: pytest.MonkeyPatch,
+    seeded: dict[str, Any],
+    fake_tradingnode: type[_FakeTradingNode],
+) -> None:
+    """SF1: on the success path the write is recorded before the alert, in one trace."""
+    harness = await _harness(monkeypatch, seeded)
+    trace, _error, _restore = _trace_side_effects(monkeypatch, harness)
+
+    await harness.node._on_exchange_liquidation(_order())
+
+    assert trace.order == ["write", "alert"], (
+        "the helper must write the event before it sends the alert"
+    )
+    await harness.node._shutdown()
+
+
+async def test_liquidation_alert_survives_a_failing_write_and_the_row_is_retried(
+    monkeypatch: pytest.MonkeyPatch,
+    seeded: dict[str, Any],
+    fake_tradingnode: type[_FakeTradingNode],
+) -> None:
+    """R1: a failing write still alerts and re-raises; R47b retry is unchanged."""
+    order = _order()
+    harness = await _harness(monkeypatch, seeded, orders={"BTCUSDT": [order]})
+    node = harness.node
+    trace, error, restore = _trace_side_effects(monkeypatch, harness, fail_write=True)
+    assert error is not None
+    watcher = node._build_liquidation_watcher()
+
+    with pytest.raises(OSError) as caught:
+        await node._on_exchange_liquidation(order)
+
+    assert caught.value is error, "the write's own exception object is re-raised"
+    assert trace.order == ["write", "alert"], (
+        "the attempted write is recorded before the alert, even though it raised"
+    )
+    assert harness.alerts.calls == [
+        (
+            "error",
+            f"EXCHANGE {order.auto_close_type} {order.symbol} {order.side} "
+            f"qty {order.executed_qty} @ {order.avg_price} (order {order.order_id}); "
+            "paper position state may be stale; NO paper action taken",
+            True,
+        )
+    ], "the CRITICAL alert is sent with the unchanged text despite the failed write"
+
+    # R47b: the raise fails that symbol's cycle, so the cursor stays put ...
+    await watcher.poll_once()
+    assert harness.events(EventType.LIQUIDATION) == [], "nothing was recorded"
+    assert watcher.state()["cursors"]["BTCUSDT"] == _START_MS, "R47b: cursor unchanged"
+    assert harness.alerts.calls == [harness.alerts.calls[0]] * 2, (
+        "the retry alerts again: a duplicate alert is accepted, a lost one is not"
+    )
+    assert trace.order == ["write", "alert"] * 2, "the retry writes before it alerts too"
+
+    # ... and the row is delivered once the writer works again.
+    restore()
+    harness.clock.advance(61)  # exactly the first backoff (60 s) plus a second
+    await watcher.poll_once()
+    assert len(harness.events(EventType.LIQUIDATION)) == 1, "delivered on retry"
+    assert len(harness.alerts.calls) == 3
+    # The trace only covers the two raising attempts above: ``restore`` put the real
+    # writer and alert spy back, so the successful retry is recorded by them, not here.
+    assert trace.order == ["write", "alert"] * 2
+    await node._shutdown()
+
+
+async def test_degraded_alert_survives_a_failing_event_write(
+    monkeypatch: pytest.MonkeyPatch,
+    seeded: dict[str, Any],
+    fake_tradingnode: type[_FakeTradingNode],
+) -> None:
+    """R1: the degraded warning is not critical, and a failing write cannot drop it."""
+    harness = await _harness(monkeypatch, seeded)
+    trace, error, restore = _trace_side_effects(monkeypatch, harness, fail_write=True)
+    assert error is not None
+
+    with pytest.raises(OSError) as caught:
+        await harness.node._on_liquidation_warning(
+            "liquidation detector degraded: BTCUSDT ConnectionError"
+        )
+
+    assert caught.value is error
+    assert harness.alerts.calls == [
+        ("error", "WARNING: liquidation detector degraded: BTCUSDT ConnectionError", False)
+    ]
+    assert trace.order == ["write", "alert"], (
+        "the degraded warning is written first, then sent, even when the write raised"
+    )
+    restore()
+    await harness.node._shutdown()
+
+
+async def test_recovered_alert_survives_a_failing_event_write(
+    monkeypatch: pytest.MonkeyPatch,
+    seeded: dict[str, Any],
+    fake_tradingnode: type[_FakeTradingNode],
+) -> None:
+    """R1: the recovery report is not critical either, and survives a failing write."""
+    harness = await _harness(monkeypatch, seeded)
+    trace, error, restore = _trace_side_effects(monkeypatch, harness, fail_write=True)
+    assert error is not None
+
+    with pytest.raises(OSError) as caught:
+        await harness.node._on_liquidation_recovered("BTCUSDT", 3)
+
+    assert caught.value is error
+    assert harness.alerts.calls == [
+        ("error", "liquidation detector recovered: BTCUSDT after 3 failures", False)
+    ], "a recovery is a non-critical alert"
+    assert trace.order == ["write", "alert"], "the recovery is written before it is sent"
+    restore()
+    await harness.node._shutdown()
+
+
+async def test_watch_failure_alert_survives_a_failing_event_write(
+    monkeypatch: pytest.MonkeyPatch,
+    seeded: dict[str, Any],
+    fake_tradingnode: type[_FakeTradingNode],
+) -> None:
+    """R1: the task's terminal handler never raises, even when the write does."""
+    harness = await _harness(monkeypatch, seeded)
+    node = harness.node
+    trace, _error, restore = _trace_side_effects(monkeypatch, harness, fail_write=True)
+
+    def broken(api_key: str, api_secret: str, account_type: str, testnet: bool) -> Any:
+        raise ImportError("cannot import signer")
+
+    monkeypatch.setattr(node_module, "build_binance_fetch", broken)
+    node._start_liquidation_task()
+    task = node._liquidation_task
+    assert task is not None
+    await asyncio.wait_for(task, 5)
+
+    assert task.exception() is None, "a failing write never escapes the watch task"
+    assert harness.actions("liquidation_watch_failed") == [], "that write failed"
+    assert harness.alerts.calls == [
+        (
+            "error",
+            "liquidation watch failed: ImportError; "
+            "exchange liquidations are NOT being reported",
+            True,
+        )
+    ], "the CRITICAL alert is sent even though the RISK_CHECK could not be written"
+    assert trace.order == ["write", "alert"], (
+        "the terminal handler attempts the write before the critical alert"
+    )
+    restore()
+    await node._shutdown()
+
+
+_LEAK = "signature=ZZLEAK9 apiKey=QQLEAK7"
+
+
+async def test_failing_write_log_carries_the_class_only_not_the_fetch_exception_chain(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    seeded: dict[str, Any],
+    fake_tradingnode: type[_FakeTradingNode],
+) -> None:
+    """R1b: a write failing inside on_warning while a fetch error is active never prints it."""
+    harness = await _harness(monkeypatch, seeded)
+    _trace_side_effects(monkeypatch, harness, fail_write=True)
+
+    with pytest.raises(OSError):  # noqa: PT012
+        try:
+            raise RuntimeError(f"GET /fapi failed {_LEAK}")
+        except RuntimeError:
+            await harness.node._on_liquidation_warning("liquidation detector degraded: BTCUSDT")
+
+    assert "ZZLEAK9" not in caplog.text
+    assert "QQLEAK7" not in caplog.text
+    assert "Traceback" not in caplog.text
+    assert "OSError" in caplog.text, "the write failure is still logged, by class"
+    assert len(harness.alerts.calls) == 1, "the alert still goes out"
+
+
+async def test_watch_failed_write_failure_log_carries_the_class_only(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    seeded: dict[str, Any],
+    fake_tradingnode: type[_FakeTradingNode],
+) -> None:
+    """R1b: the terminal watch-failed handler logs a failing write by class, no traceback."""
+    harness = await _harness(monkeypatch, seeded)
+    node = harness.node
+    writer = node._event_writer
+    assert writer is not None
+
+    def write(event: Event) -> None:
+        raise OSError(f"disk {_LEAK}")
+
+    monkeypatch.setattr(writer, "write", write)
+
+    def broken(api_key: str, api_secret: str, account_type: str, testnet: bool) -> Any:
+        raise ImportError("cannot import signer")
+
+    monkeypatch.setattr(node_module, "build_binance_fetch", broken)
+    node._start_liquidation_task()
+    task = node._liquidation_task
+    assert task is not None
+    await asyncio.wait_for(task, 5)
+
+    assert "ZZLEAK9" not in caplog.text
+    assert "QQLEAK7" not in caplog.text
+    assert "paper event write failed" in caplog.text
+    assert "OSError" in caplog.text
+    assert len(harness.alerts.calls) == 1
+    monkeypatch.undo()
+    await node._shutdown()

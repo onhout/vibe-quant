@@ -484,6 +484,36 @@ class PaperTradingNode:
             # failures back into ErrorHandler (that would alert about alerts).
             logger.warning("telegram alert task failed: %s", type(exc).__name__)
 
+    def _write_then_alert(
+        self,
+        event_type: EventType,
+        data: dict[str, object],
+        kind: str,
+        message: str,
+        *,
+        critical: bool = False,
+        timestamp: datetime | None = None,
+    ) -> None:
+        """Write the event, then alert, even when the write itself raises (R1/irdig).
+
+        Order stays write -> alert, but a persistent writer failure (disk full,
+        permissions) must not also swallow the operator's warning, so the alert is
+        sent with the same text and ``critical`` flag and only then does the write's
+        own exception propagate unchanged: the caller keeps its retry semantics
+        (R47b - the watcher fails the symbol's cycle and re-delivers the row).
+        """
+        try:
+            self._write_event(event_type, data, timestamp=timestamp)
+        except Exception as exc:
+            # R1b: class only. ``logger.exception`` would print the active exception's
+            # ``__context__`` chain too (a fetch error with signature/apiKey text).
+            logger.error(
+                "paper event write failed (%s); sending the alert anyway", type(exc).__name__
+            )
+            self._send_telegram_alert(kind, message, critical=critical)
+            raise
+        self._send_telegram_alert(kind, message, critical=critical)
+
     # ------------------------------------------------------ strategy setup
 
     def _load_strategy(self) -> StrategyDSL:
@@ -1026,19 +1056,25 @@ class PaperTradingNode:
             # R42d: never overwrite an existing (halt) message.
             self._status.error_message = message
             self._status.updated_at = self._now()
-        self._write_event(
-            EventType.RISK_CHECK,
-            {
-                "action": "startup_connect_timeout",
-                "timeout_s": STARTUP_CONNECT_TIMEOUT_S,
-                "margin_type": (
-                    self._resolved.margin_type if self._resolved else DEFAULT_MARGIN_TYPE
-                ),
-                "passed": False,
-            },
-        )
+        # R1c: the alert goes out even if the write raises (the latch is already set, so
+        # there is no retry); the write failure is logged by class and never escapes,
+        # which keeps it from chaining onto a connectivity-probe exception.
         # Critical: bypass the per-type rate limit, this venue never finished setup.
-        self._send_telegram_alert("error", message, critical=True)
+        with contextlib.suppress(Exception):
+            self._write_then_alert(
+                EventType.RISK_CHECK,
+                {
+                    "action": "startup_connect_timeout",
+                    "timeout_s": STARTUP_CONNECT_TIMEOUT_S,
+                    "margin_type": (
+                        self._resolved.margin_type if self._resolved else DEFAULT_MARGIN_TYPE
+                    ),
+                    "passed": False,
+                },
+                "error",
+                message,
+                critical=True,
+            )
 
     # ----------------------------------------------- liquidation watch (T6)
 
@@ -1093,15 +1129,20 @@ class PaperTradingNode:
             # R52g: a dead detector must not be silent. Only the exception class is
             # reported: its text can carry request URLs or credentials.
             message = f"liquidation watch failed: {type(exc).__name__}"
-            self._write_event(
-                EventType.RISK_CHECK,
-                {"action": "liquidation_watch_failed", "message": message, "passed": False},
-            )
-            self._send_telegram_alert(
-                "error",
-                f"{message}; exchange liquidations are NOT being reported",
-                critical=True,
-            )
+            with contextlib.suppress(Exception):
+                # R1/irdig: the alert goes out even if the write raises; the write's
+                # own error is already logged, and this terminal handler never raises.
+                self._write_then_alert(
+                    EventType.RISK_CHECK,
+                    {
+                        "action": "liquidation_watch_failed",
+                        "message": message,
+                        "passed": False,
+                    },
+                    "error",
+                    f"{message}; exchange liquidations are NOT being reported",
+                    critical=True,
+                )
 
     def _build_liquidation_watcher(self) -> LiquidationWatcher:
         """Build the watcher from the node's own Binance config and checkpoint (R50).
@@ -1159,8 +1200,10 @@ class PaperTradingNode:
 
         R47b: a missing or failing event writer RAISES, so the watcher fails that
         symbol's cycle (its cursor stays put) and delivers the row on the next one.
-        Nothing is swallowed here and nothing is ordered: paper cannot reproduce the
-        venue's close, it can only say that it happened.
+        R1/irdig: a failing write does not cost the alert - it is sent, with this
+        same text, before the writer's own exception is re-raised (a duplicate alert
+        on the retry is accepted). Nothing is swallowed here and nothing is ordered:
+        paper cannot reproduce the venue's close, it can only say that it happened.
         """
         if self._event_writer is None:
             raise RuntimeError("cannot report an exchange liquidation without an event writer")
@@ -1170,7 +1213,7 @@ class PaperTradingNode:
         # R47e: the event's own vocabulary ('isolated'/'cross'), not the venue's
         # 'ISOLATED'/'CROSSED' margin type.
         mode = "isolated" if margin_type == "ISOLATED" else "cross"
-        self._write_event(
+        self._write_then_alert(
             EventType.LIQUIDATION,
             {
                 "source": "binance_force_orders",
@@ -1188,27 +1231,26 @@ class PaperTradingNode:
                 "client_order_id": order.client_order_id,
                 "status": order.status,
             },
-            timestamp=_ns_to_dt(order.ts_ns),
-        )
-        self._send_telegram_alert(
             "error",
             f"EXCHANGE {order.auto_close_type} {order.symbol} {order.side} "
             f"qty {order.executed_qty} @ {order.avg_price} (order {order.order_id}); "
             "paper position state may be stale; NO paper action taken",
             critical=True,
+            timestamp=_ns_to_dt(order.ts_ns),
         )
 
     async def _on_liquidation_warning(self, message: str) -> None:
         """R52: a degraded or clamped detector warns without a critical alert."""
-        self._write_event(
+        self._write_then_alert(
             EventType.RISK_CHECK,
             {"action": "liquidation_watch_degraded", "message": message, "passed": False},
+            "error",
+            f"WARNING: {message}",
         )
-        self._send_telegram_alert("error", f"WARNING: {message}")
 
     async def _on_liquidation_recovered(self, symbol: str, failures: int) -> None:
         """R52: the first success after a degraded run is reported once."""
-        self._write_event(
+        self._write_then_alert(
             EventType.RISK_CHECK,
             {
                 "action": "liquidation_watch_recovered",
@@ -1216,9 +1258,8 @@ class PaperTradingNode:
                 "failures": failures,
                 "passed": True,
             },
-        )
-        self._send_telegram_alert(
-            "error", f"liquidation detector recovered: {symbol} after {failures} failures"
+            "error",
+            f"liquidation detector recovered: {symbol} after {failures} failures",
         )
 
     @staticmethod

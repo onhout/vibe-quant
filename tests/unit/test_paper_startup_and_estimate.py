@@ -888,3 +888,30 @@ async def test_failing_estimate_event_write_does_not_break_position_handling(
         assert len(_open_logged(node, seeded)) == 1
     finally:
         await node._shutdown()
+
+
+async def test_startup_timeout_alert_survives_a_failing_event_write(
+    seeded: dict[str, Any], fake_tradingnode: type[_FakeTradingNode], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1c: a failing RISK_CHECK write cannot silence the only refused-margin signal."""
+    node = await _initialized(seeded)
+    alerts = _Alerts()
+    monkeypatch.setattr(node, "_send_telegram_alert", alerts)
+    writer = node._event_writer
+    assert writer is not None
+    original_write = writer.write
+
+    def write(event: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(writer, "write", write)
+    node.status.started_at = datetime.now(UTC) - timedelta(seconds=_TIMEOUT_S + 1)
+    try:
+        node._check_connectivity()  # the write failure never escapes the probe
+        assert alerts.calls == [("error", _timeout_message(), True)]
+
+        node._check_connectivity()  # latch stays set: one report per session
+        assert alerts.calls == [("error", _timeout_message(), True)]
+    finally:
+        monkeypatch.setattr(writer, "write", original_write)
+        await node._shutdown()
