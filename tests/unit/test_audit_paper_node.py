@@ -63,6 +63,16 @@ DSL = {
     "sweep": {},
 }
 
+#: R43: a validated run with liquidation OFF gets exactly this one extra diff
+#: entry (after ``symbols``, before ``fee_schedule``): validation never simulated
+#: the liquidation the exchange will apply, so parity is unverified.
+LIQ_OFF_ENTRY: dict[str, object] = {
+    "field": "liquidation",
+    "validated": "off",
+    "paper": "exchange liquidation (CROSSED)",
+    "note": "validation did not simulate liquidation; paper liquidation parity is unverified",
+}
+
 
 @pytest.fixture(autouse=True)
 def _dispose_engines() -> Any:
@@ -189,7 +199,7 @@ async def test_validated_run_params_and_leverage_reach_live_config(
         assert resolved.symbols == ["BTCUSDT"]
         assert resolved.strategy_params == {"rsi_14_period": 21, "take_profit_risk_reward": 3.0}
         assert resolved.leverage == 5
-        assert resolved.diff == [], "paper from a validated run must trade it exactly"
+        assert resolved.diff == [LIQ_OFF_ENTRY], "paper from a validated run must trade it exactly"
 
         strat: Any = node._compiled_strategies[0]
         assert strat.config.rsi_14_period == 21
@@ -216,7 +226,7 @@ async def test_validated_run_params_and_leverage_reach_live_config(
             for line in (seeded["tmp"] / "logs" / "PAPER-007.jsonl").read_text().splitlines()
             if '"action":"start"' in line
         ][0]
-        assert start["data"]["config_diff"] == []
+        assert start["data"]["config_diff"] == [LIQ_OFF_ENTRY]
         assert start["data"]["leverage"] == 5
     finally:
         await node._shutdown()
@@ -234,6 +244,7 @@ async def test_sizing_override_shows_in_config_diff(
         assert diff == {
             "strategy_params.risk_per_trade": (None, 0.01),
             "leverage": (5.0, 3),
+            "liquidation": ("off", "exchange liquidation (CROSSED)"),
         }
     finally:
         await node._shutdown()

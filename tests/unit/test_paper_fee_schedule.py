@@ -15,7 +15,10 @@ from typing import Any
 
 import pytest
 
-from tests.unit.test_audit_paper_node import _config
+from tests.unit.test_audit_paper_node import (
+    LIQ_OFF_ENTRY,
+    _config,
+)
 from tests.unit.test_audit_paper_node import (
     fake_tradingnode as _audit_fake_tradingnode,  # noqa: F401  (via getfixturevalue)
 )
@@ -85,7 +88,7 @@ async def test_default_schedule_adds_no_diff_entry(request: pytest.FixtureReques
     try:
         resolved = node.resolved_config
         assert resolved is not None
-        assert resolved.diff == [], "a default fee schedule must not add a diff entry"
+        assert resolved.diff == [LIQ_OFF_ENTRY], "a default fee schedule must not add a diff entry"
         assert resolved.validated is not None
         assert resolved.validated["fee_schedule"] == {"fee_tier": "VIP0", "bnb_discount": False}
     finally:

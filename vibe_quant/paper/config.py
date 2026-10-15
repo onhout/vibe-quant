@@ -176,7 +176,9 @@ class PaperTradingConfig:
         validation_run_id: Completed validation run whose exact parameters,
             symbols and leverage paper must reproduce.
         leverage: Venue leverage override (None = validation run's leverage).
-        margin_type: Binance futures margin type (``CROSSED`` / ``ISOLATED``).
+        margin_type: Binance futures margin type override. ``None`` (the default)
+            means "derive it from the validation run's liquidation mode"
+            (isolated -> ``ISOLATED``, cross/off -> ``CROSSED``).
         sizing: Position sizing overrides.
         risk: Risk limits.
         db_path: Path to SQLite state database.
@@ -191,7 +193,7 @@ class PaperTradingConfig:
     strategy_id: int | None = None
     validation_run_id: int | None = None
     leverage: int | None = None
-    margin_type: str = DEFAULT_MARGIN_TYPE
+    margin_type: str | None = None
     sizing: SizingModuleConfig = field(default_factory=SizingModuleConfig)
     risk: RiskModuleConfig = field(default_factory=RiskModuleConfig)
     db_path: Path | None = None
@@ -246,8 +248,8 @@ class PaperTradingConfig:
                     f"leverage {self.leverage} exceeds max_leverage {self.sizing.max_leverage}"
                 )
 
-        if self.margin_type not in ("CROSSED", "ISOLATED"):
-            errors.append("margin_type must be CROSSED or ISOLATED")
+        if self.margin_type is not None and self.margin_type not in ("CROSSED", "ISOLATED"):
+            errors.append("margin_type must be CROSSED, ISOLATED or null (derive from the run)")
 
         if self.risk.max_drawdown_pct <= 0 or self.risk.max_drawdown_pct > 1:
             errors.append("max_drawdown_pct must be between 0 and 1")

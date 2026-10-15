@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING
 
 from vibe_quant.jobs.manager import run_with_heartbeat
 from vibe_quant.paper.config import (
-    DEFAULT_MARGIN_TYPE,
     DEFAULT_PAPER_LOGS_PATH,
     BinanceTestnetConfig,
     ConfigurationError,
@@ -107,6 +106,19 @@ def load_config_from_json(config_path: Path) -> PaperTradingConfig:
     # The override is validated by the shared whole-number rule, never int()-cast
     # (which silently turned 2.5 into 2 and True into 1).
     leverage = validated_leverage_override(raw_leverage) if raw_leverage is not None else None
+    # An absent or null margin_type means "derive it from the validation run's
+    # liquidation mode"; an explicit CROSSED/ISOLATED is an override. Anything
+    # else fails the load instead of silently becoming CROSSED.
+    raw_margin_type = data.get("margin_type")
+    if raw_margin_type is None:
+        margin_type: str | None = None
+    elif raw_margin_type in ("CROSSED", "ISOLATED"):
+        margin_type = str(raw_margin_type)
+    else:
+        raise ConfigurationError(
+            "margin_type must be CROSSED, ISOLATED or null (derive from the "
+            f"validation run), got {raw_margin_type!r}"
+        )
 
     return PaperTradingConfig(
         trader_id=data["trader_id"],
@@ -115,7 +127,7 @@ def load_config_from_json(config_path: Path) -> PaperTradingConfig:
         strategy_id=data.get("strategy_id"),
         validation_run_id=int(validation_run_id) if validation_run_id is not None else None,
         leverage=leverage,
-        margin_type=str(data.get("margin_type", DEFAULT_MARGIN_TYPE)),
+        margin_type=margin_type,
         sizing=sizing,
         risk=risk,
         db_path=Path(db_path_str) if db_path_str else None,

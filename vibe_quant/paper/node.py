@@ -13,7 +13,10 @@ Safety model (see :mod:`vibe_quant.paper.guard`):
   (:class:`~vibe_quant.paper.persistence.PaperCommandQueue`), not POSIX signals,
   and the system kill switch in the state DB is polled continuously;
 * the node trades the exact strategy parameters + leverage of the validation run
-  it was started from and logs any difference.
+  it was started from and logs any difference;
+* the venue can close a position on its own (liquidation, ADL) without NT ever seeing
+  the fill, so a REPORT-ONLY watcher task polls forceOrders beside the control loop,
+  writes a LIQUIDATION event and alerts — it never submits, cancels, closes or halts.
 """
 
 from __future__ import annotations
@@ -36,11 +39,13 @@ from vibe_quant.liquidation_settings import LiquidationConfigError, LiquidationS
 from vibe_quant.logging.events import Event, EventType, create_event
 from vibe_quant.logging.writer import EventWriter
 from vibe_quant.paper.config import (
+    DEFAULT_MARGIN_TYPE,
     DEFAULT_VALIDATION_LEVERAGE,
     ConfigurationError,
     PaperTradingConfig,
 )
 from vibe_quant.paper.errors import ErrorContext, ErrorHandler
+from vibe_quant.paper.force_orders import build_binance_fetch
 from vibe_quant.paper.guard import (
     OPERATOR_RESUMABLE_HALTS,
     CloseAllResult,
@@ -51,6 +56,7 @@ from vibe_quant.paper.guard import (
     TradingGuard,
     TradingGuardConfig,
 )
+from vibe_quant.paper.liquidation_watch import LiquidationWatcher
 from vibe_quant.paper.persistence import (
     PaperCommand,
     PaperCommandQueue,
@@ -63,6 +69,7 @@ if TYPE_CHECKING:
 
     from vibe_quant.alerts.telegram import TelegramBot
     from vibe_quant.dsl.schema import StrategyDSL
+    from vibe_quant.paper.force_orders import ForceOrder
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +84,21 @@ _BACKTEST_ONLY_PARAMS = frozenset(
         "command_release_bar_type",
     }
 )
+
+#: R42b: how long the venue may stay unconnected before the node reports the startup
+#: refusal (an exchange that refuses the margin change leaves the node not trading).
+STARTUP_CONNECT_TIMEOUT_S = 120
+
+#: ``PositionOpened.side`` (a ``PositionSide``) -> the sign the solvency formula wants.
+_POSITION_SIDE_SIGNS = {"LONG": 1, "SHORT": -1}
+
+#: R44b: the estimate's ``basis`` names the method; it is not a free-form note.
+_ISOLATED_LP_BASIS = (
+    "isolated formula at entry: entry_price, leverage, Binance tier MMR (table {version}); "
+    "excludes fees, funding and later margin changes"
+)
+#: R45: a crossed LP depends on the account wallet and every other open position.
+_CROSS_LP_REASON = "cross LP depends on the account wallet and other positions; not estimated"
 
 
 class _TradingNodeLifecycle(Protocol):
@@ -205,6 +227,16 @@ def _ns_to_dt(ns: int) -> datetime:
     return datetime.fromtimestamp(ns / 1_000_000_000, tz=UTC)
 
 
+def _int_map(value: object) -> dict[str, int]:
+    """The int-valued entries of a stored map (a checkpoint round-trips through JSON)."""
+    result: dict[str, int] = {}
+    if isinstance(value, dict):
+        for key, entry in value.items():
+            if isinstance(entry, int) and not isinstance(entry, bool):
+                result[str(key)] = entry
+    return result
+
+
 def validated_run_strategy_params(run: dict[str, Any]) -> dict[str, object]:
     """Strategy overrides exactly as ``ValidationRunner`` builds them for this run."""
     from vibe_quant.validation.runner import ValidationRunner
@@ -291,6 +323,13 @@ class _GuardBridge(GuardListener):
         self._node._on_guard_warning(message)
 
 
+def _is_tier_error(exc: Exception) -> bool:
+    """True for the liquidation rule's own domain errors (expected, reported as a reason)."""
+    from vibe_quant.liquidation.tiers import InsolventPosition, TierTableError, UnknownSymbol
+
+    return isinstance(exc, TierTableError | InsolventPosition | UnknownSymbol)
+
+
 class PaperTradingNode:
     """Paper trading node for live simulated execution.
 
@@ -339,7 +378,14 @@ class PaperTradingNode:
         )
         self._alert_tasks: set[asyncio.Task[bool]] = set()
         self._control_task: asyncio.Task[None] | None = None
+        self._liquidation_task: asyncio.Task[None] | None = None
+        self._liquidation_stop = asyncio.Event()
+        self._liquidation_watcher: LiquidationWatcher | None = None
+        # R50b: the restored watch state plus the checkpoint timestamp it is anchored to.
+        self._restored_watch: dict[str, dict[str, int]] | None = None
+        self._restored_watch_ms = 0
         self._connected: bool | None = None
+        self._startup_timeout_reported = False
         self._kill_reason_seen: str | None = None
         self._previous_state: NodeState | None = None  # pre-start halt fallback
         self._trades_day: date | None = None
@@ -498,6 +544,10 @@ class PaperTradingNode:
         base_params: dict[str, object] = {}
         symbols = list(cfg.symbols)
         leverage_f = float(DEFAULT_VALIDATION_LEVERAGE)
+        # The margin type is derived from the validated run's liquidation mode
+        # (R39) and only falls back to CROSSED when there is nothing to derive it
+        # from (no validation run at all).
+        derived_margin_type = DEFAULT_MARGIN_TYPE
 
         if cfg.validation_run_id is not None:
             run = self._state_manager.get_backtest_run(cfg.validation_run_id)
@@ -559,13 +609,22 @@ class PaperTradingNode:
                     cfg.validation_run_id,
                     dropped,
                 )
-            leverage_f = validated_run_leverage(run)
+            liquidation = validated_run_liquidation(run)
+            leverage_f = liquidation.leverage
+            # R39: an isolated validation is the one mode that maps to ISOLATED;
+            # cross and off both trade NT's backtest MARGIN account (cross).
+            derived_margin_type = (
+                "ISOLATED" if liquidation.mode == "isolated" else DEFAULT_MARGIN_TYPE
+            )
             validated = {
                 "validation_run_id": cfg.validation_run_id,
                 "symbols": run_symbols,
                 "strategy_params": dict(base_params),
                 "leverage": leverage_f,
-                "margin_type": "CROSSED",
+                "margin_type": derived_margin_type,
+                # R43: whether validation simulated liquidation at all decides
+                # whether paper's exchange liquidation is comparable to it.
+                "liquidation": liquidation.mode,
                 "fee_schedule": fee_schedule.to_notes(),
             }
 
@@ -593,7 +652,9 @@ class PaperTradingNode:
             symbols=symbols,
             strategy_params=params,
             leverage=leverage,
-            margin_type=cfg.margin_type,
+            # An explicit config-file margin type overrides the derived one (R40);
+            # None means "use the validated run's, or CROSSED without one" (R39).
+            margin_type=cfg.margin_type if cfg.margin_type is not None else derived_margin_type,
             validated=validated,
         )
         if validated is not None:
@@ -625,6 +686,21 @@ class PaperTradingNode:
         if validated.get("symbols") != resolved.symbols:
             diff.append(
                 {"field": "symbols", "validated": validated.get("symbols"), "paper": resolved.symbols}
+            )
+        # R43: validation that ran with liquidation off never exercised the
+        # liquidation the venue will apply, so paper cannot claim parity - name it
+        # (after symbols, before fee_schedule) instead of a silent exact match.
+        if validated.get("liquidation") == "off":
+            diff.append(
+                {
+                    "field": "liquidation",
+                    "validated": "off",
+                    "paper": f"exchange liquidation ({resolved.margin_type})",
+                    "note": (
+                        "validation did not simulate liquidation; paper liquidation "
+                        "parity is unverified"
+                    ),
+                }
             )
         # A non-default validated fee schedule cannot be reproduced by paper: the
         # live Binance account charges the exchange's own commission. Surface it
@@ -874,18 +950,42 @@ class PaperTradingNode:
 
     def _check_connectivity(self) -> None:
         kernel = getattr(self._trading_node, "kernel", None)
-        if kernel is None:
-            return
-        try:
-            connected = bool(
-                kernel.data_engine.check_connected() and kernel.exec_engine.check_connected()
-            )
-        except Exception:
-            logger.exception("connectivity check failed")
-            return
+        connected = False
+        if kernel is not None:
+            try:
+                connected = bool(
+                    kernel.data_engine.check_connected() and kernel.exec_engine.check_connected()
+                )
+            except Exception:
+                logger.exception("connectivity check failed")
+                if self._connected is None:
+                    # R42e: a stuck connect can break the probe itself; that is still
+                    # "not connected" for the startup timeout.
+                    self._check_startup_connect_timeout()
+                return
         if self._connected is None:
-            if connected:
-                self._connected = True  # first time fully connected
+            if not connected:
+                # R42b/R42e: the probe ran first, so only a venue that is still not
+                # connected is reported (a stalled loop that finds it up stays silent).
+                self._check_startup_connect_timeout()
+                return
+            self._connected = True  # first time fully connected
+            if self._startup_timeout_reported:
+                # R42c: the venue set up late; say so once, without a critical alert.
+                if self._status.error_message == self._startup_timeout_message():
+                    # R42d: clear only our own message, never a later halt message.
+                    self._status.error_message = None
+                    self._status.updated_at = self._now()
+                self._write_event(
+                    EventType.RISK_CHECK,
+                    {"action": "venue_connected_after_startup_timeout", "passed": True},
+                )
+                self._send_telegram_alert(
+                    "error",
+                    f"paper {self._config.trader_id} venue connected after startup timeout",
+                )
+            return
+        if kernel is None:
             return
         if self._connected and not connected:
             self._connected = False
@@ -898,6 +998,242 @@ class PaperTradingNode:
             self._error_handler.reset_retry_count("connectivity", "")
             self._write_event(EventType.SIGNAL, {"action": "reconnected"})
             self._send_telegram_alert("error", "venue connection restored")
+
+    def _startup_timeout_message(self) -> str:
+        return (
+            f"paper {self._config.trader_id} not connected after {STARTUP_CONNECT_TIMEOUT_S} s; "
+            "venue setup refused (e.g. margin type change with open orders or position); "
+            "strategy NOT trading"
+        )
+
+    def _check_startup_connect_timeout(self) -> None:
+        """R42b: report ONCE when the venue has not connected after the startup timeout.
+
+        An exchange that refuses the margin change (open orders or a position) leaves
+        NT connecting, so the node reports the refusal and stays silent until it can
+        say something new. Report only: no strategy is started and no order is placed.
+        """
+        if self._startup_timeout_reported:
+            return
+        started_at = self._status.started_at
+        if started_at is None:
+            return
+        if (self._now() - started_at).total_seconds() <= STARTUP_CONNECT_TIMEOUT_S:
+            return
+        self._startup_timeout_reported = True
+        message = self._startup_timeout_message()
+        if not self._status.error_message:
+            # R42d: never overwrite an existing (halt) message.
+            self._status.error_message = message
+            self._status.updated_at = self._now()
+        self._write_event(
+            EventType.RISK_CHECK,
+            {
+                "action": "startup_connect_timeout",
+                "timeout_s": STARTUP_CONNECT_TIMEOUT_S,
+                "margin_type": (
+                    self._resolved.margin_type if self._resolved else DEFAULT_MARGIN_TYPE
+                ),
+                "passed": False,
+            },
+        )
+        # Critical: bypass the per-type rate limit, this venue never finished setup.
+        self._send_telegram_alert("error", message, critical=True)
+
+    # ----------------------------------------------- liquidation watch (T6)
+
+    def _now_ms(self) -> int:
+        """Wall clock in epoch milliseconds (R50: one seam for the watch cursors)."""
+        return int(self._now().timestamp() * 1_000)
+
+    @staticmethod
+    def _checkpoint_ms(timestamp: datetime) -> int:
+        """The epoch milliseconds of a checkpoint row's timestamp (R50b).
+
+        ``StatePersistence`` stores ``datetime('now')``, i.e. NAIVE UTC text
+        (persistence.py:39), so the timestamp is taken as UTC and the distance to the
+        epoch is computed in whole seconds: reading a naive timestamp through
+        ``.timestamp()`` would shift every restored cursor by the host's UTC offset.
+        """
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        delta = timestamp.astimezone(UTC) - datetime(1970, 1, 1, tzinfo=UTC)
+        return int(delta.total_seconds()) * 1_000
+
+    def _start_liquidation_task(self) -> None:
+        """Start the report-only watch task beside the control loop (R47, R53)."""
+        self._liquidation_stop = asyncio.Event()
+        self._liquidation_task = asyncio.create_task(self._liquidation_loop())
+
+    async def _stop_liquidation_loop(self) -> None:
+        """R53: set the stop event, cancel the task, never hang and never raise."""
+        task = self._liquidation_task
+        self._liquidation_task = None
+        self._liquidation_stop.set()
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    async def _liquidation_loop(self) -> None:
+        """Poll forceOrders until shutdown (R47-R53, REPORT ONLY).
+
+        A failure here can lose an alert but never move a position, so it is logged and
+        ends the task instead of stopping the node: the watcher holds no reference to the
+        strategy, the guard or the exec engine (R49).
+        """
+        try:
+            watcher = self._build_liquidation_watcher()
+            await watcher.run(self._liquidation_stop)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("liquidation watch task failed; paper trading continues")
+            # R52g: a dead detector must not be silent. Only the exception class is
+            # reported: its text can carry request URLs or credentials.
+            message = f"liquidation watch failed: {type(exc).__name__}"
+            self._write_event(
+                EventType.RISK_CHECK,
+                {"action": "liquidation_watch_failed", "message": message, "passed": False},
+            )
+            self._send_telegram_alert(
+                "error",
+                f"{message}; exchange liquidations are NOT being reported",
+                critical=True,
+            )
+
+    def _build_liquidation_watcher(self) -> LiquidationWatcher:
+        """Build the watcher from the node's own Binance config and checkpoint (R50).
+
+        Raises:
+            ConfigurationError: If the run config was not resolved.
+        """
+        resolved = self._resolved
+        if resolved is None:
+            raise ConfigurationError("run config not resolved before the liquidation watcher")
+        binance = self._config.binance
+        fetch = build_binance_fetch(
+            binance.api_key, binance.api_secret, binance.account_type, binance.testnet
+        )
+        cursors: dict[str, int] | None = None
+        seen: dict[str, int] | None = None
+        restored = self._restored_watch
+        if restored is not None:
+            # R50b/R50c: the checkpoint's own cursor per traded symbol; one it does not
+            # name starts at the checkpoint itself, which covers the downtime gap.
+            cursors = {
+                symbol: restored["cursors"].get(symbol, self._restored_watch_ms)
+                for symbol in resolved.symbols
+            }
+            seen = restored["seen"]
+        watcher = LiquidationWatcher(
+            fetch,
+            resolved.symbols,
+            on_liquidation=self._on_exchange_liquidation,
+            on_warning=self._on_liquidation_warning,
+            on_recovered=self._on_liquidation_recovered,
+            now_ms=self._now_ms,
+            cursors=cursors,
+            seen=seen,
+        )
+        self._liquidation_watcher = watcher
+        return watcher
+
+    def _unstarted_watch_state(self) -> dict[str, dict[str, int]]:
+        """The restored watch state as it stands before a watcher exists (R50d).
+
+        Traded symbols the stored state omits get the checkpoint timestamp, the same
+        cursor ``_build_liquidation_watcher`` would give them (R50c).
+        """
+        restored = self._restored_watch
+        assert restored is not None
+        cursors = dict(restored["cursors"])
+        if self._resolved is not None:
+            for symbol in self._resolved.symbols:
+                cursors.setdefault(symbol, self._restored_watch_ms)
+        return {"cursors": cursors, "seen": dict(restored["seen"])}
+
+    async def _on_exchange_liquidation(self, order: ForceOrder) -> None:
+        """Report one exchange-initiated close: one event, one CRITICAL alert (R47).
+
+        R47b: a missing or failing event writer RAISES, so the watcher fails that
+        symbol's cycle (its cursor stays put) and delivers the row on the next one.
+        Nothing is swallowed here and nothing is ordered: paper cannot reproduce the
+        venue's close, it can only say that it happened.
+        """
+        if self._event_writer is None:
+            raise RuntimeError("cannot report an exchange liquidation without an event writer")
+        margin_type = (
+            self._resolved.margin_type if self._resolved is not None else DEFAULT_MARGIN_TYPE
+        )
+        # R47e: the event's own vocabulary ('isolated'/'cross'), not the venue's
+        # 'ISOLATED'/'CROSSED' margin type.
+        mode = "isolated" if margin_type == "ISOLATED" else "cross"
+        self._write_event(
+            EventType.LIQUIDATION,
+            {
+                "source": "binance_force_orders",
+                "position_id": f"{order.symbol}-PERP.BINANCE",
+                "symbol": order.symbol,
+                "side": order.side,
+                "auto_close_type": order.auto_close_type,
+                "liquidation_price": order.avg_price,
+                "quantity": order.executed_qty,
+                # R47: never a fake 0 - the venue's close carries no PnL we can trust.
+                "loss": None,
+                "ts_ns": int(order.ts_ns),
+                "mode": mode,
+                "venue_order_id": str(order.order_id),
+                "client_order_id": order.client_order_id,
+                "status": order.status,
+            },
+            timestamp=_ns_to_dt(order.ts_ns),
+        )
+        self._send_telegram_alert(
+            "error",
+            f"EXCHANGE {order.auto_close_type} {order.symbol} {order.side} "
+            f"qty {order.executed_qty} @ {order.avg_price} (order {order.order_id}); "
+            "paper position state may be stale; NO paper action taken",
+            critical=True,
+        )
+
+    async def _on_liquidation_warning(self, message: str) -> None:
+        """R52: a degraded or clamped detector warns without a critical alert."""
+        self._write_event(
+            EventType.RISK_CHECK,
+            {"action": "liquidation_watch_degraded", "message": message, "passed": False},
+        )
+        self._send_telegram_alert("error", f"WARNING: {message}")
+
+    async def _on_liquidation_recovered(self, symbol: str, failures: int) -> None:
+        """R52: the first success after a degraded run is reported once."""
+        self._write_event(
+            EventType.RISK_CHECK,
+            {
+                "action": "liquidation_watch_recovered",
+                "symbol": symbol,
+                "failures": failures,
+                "passed": True,
+            },
+        )
+        self._send_telegram_alert(
+            "error", f"liquidation detector recovered: {symbol} after {failures} failures"
+        )
+
+    @staticmethod
+    def _restored_watch_state(value: object) -> dict[str, dict[str, int]]:
+        """Read ``node_status["liquidation_watch"]`` from a prior checkpoint (R50).
+
+        A missing or malformed payload is an empty state rather than an error: every
+        traded symbol then starts at the checkpoint timestamp (R50b), which only ever
+        costs a duplicate alert.
+        """
+        payload = value if isinstance(value, dict) else {}
+        return {
+            "cursors": _int_map(payload.get("cursors")),
+            "seen": _int_map(payload.get("seen")),
+        }
 
     async def process_commands(self) -> None:
         """Execute queued operator commands for this trader."""
@@ -1059,6 +1395,86 @@ class PaperTradingNode:
             },
             timestamp=_ns_to_dt(event.ts_event),
         )
+        self._emit_liquidation_estimate(event)
+
+    def _emit_liquidation_estimate(self, event: Any) -> None:
+        """R44/R45/R45b: report the estimated liquidation price of a newly opened position.
+
+        Report only: never trades, never halts and never raises (it runs inside the NT
+        position callback, so a raise would also skip the guard's risk evaluation). An
+        ISOLATED position is priced with the shared ``vibe_quant.liquidation`` rule at
+        its entry margin (notional / leverage, so the number is a pure estimate); a
+        CROSSED one depends on the whole account wallet. Any failure, expected or not,
+        is reported as a null price plus a reason.
+        """
+        resolved = self._resolved
+        payload: dict[str, object] = {
+            "action": "liquidation_estimate",
+            "position_id": None,
+            "symbol": None,
+            "side": None,
+            "quantity": None,
+            "entry_price": None,
+            "leverage": resolved.leverage if resolved else 1,
+            "margin_type": resolved.margin_type if resolved else DEFAULT_MARGIN_TYPE,
+            "isolated_margin": None,
+            "est_liquidation_price": None,
+            "tier_table_version": None,
+            "basis": None,
+            "passed": True,
+        }
+        timestamp: datetime | None = None
+        try:
+            timestamp = _ns_to_dt(event.ts_event)
+            self._fill_liquidation_estimate(payload, event)
+        except Exception as exc:
+            # Domain errors (tier table, insolvent) are expected; anything else is a bug.
+            if not _is_tier_error(exc):
+                logger.exception("liquidation estimate failed")
+            payload["est_liquidation_price"] = None
+            payload["reason"] = str(exc) or type(exc).__name__
+        try:
+            self._write_event(EventType.RISK_CHECK, payload, timestamp=timestamp)
+        except Exception:
+            logger.exception("liquidation estimate could not be written")
+
+    def _fill_liquidation_estimate(self, payload: dict[str, object], event: Any) -> None:
+        leverage = payload["leverage"]
+        assert isinstance(leverage, int)
+        symbol = str(event.instrument_id).split(".")[0].removesuffix("-PERP")
+        side = event.side.name  # PositionSide: LONG / SHORT (never the entry OrderSide)
+        quantity = float(event.quantity)
+        entry_price = float(event.avg_px_open)
+        payload.update(
+            position_id=str(event.position_id),
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            entry_price=entry_price,
+        )
+        if payload["margin_type"] != "ISOLATED":
+            payload["reason"] = _CROSS_LP_REASON
+            return
+        isolated_margin = quantity * entry_price / leverage
+        payload["isolated_margin"] = isolated_margin
+        # Imported here on purpose: a run that trades no isolated position never
+        # loads the liquidation package.
+        from vibe_quant.liquidation.tiers import isolated_liq_price, load_tier_tables
+
+        tables = load_tier_tables()
+        payload["tier_table_version"] = tables.version
+        payload["est_liquidation_price"] = isolated_liq_price(
+            _POSITION_SIDE_SIGNS[side],
+            quantity,
+            entry_price,
+            isolated_margin,
+            tables[symbol],
+        )
+        payload["basis"] = _ISOLATED_LP_BASIS.format(version=tables.version)
+
+    def _now(self) -> datetime:
+        """Current UTC time (one seam for the time-based checks)."""
+        return datetime.now(UTC)
 
     def _on_position_closed(self, event: Any) -> None:
         pnl = event.realized_pnl
@@ -1156,6 +1572,15 @@ class PaperTradingNode:
             node_status["config_diff"] = self._resolved.diff
             node_status["validation_run_id"] = self._config.validation_run_id
             node_status["leverage"] = self._resolved.leverage
+        if self._liquidation_watcher is not None:
+            # R50/R52b: per-symbol cursors and the keys delivered so far. This periodic
+            # checkpoint is what bounds re-alerting after a crash.
+            node_status["liquidation_watch"] = self._liquidation_watcher.state()
+        elif self._restored_watch is not None:
+            # R50d: a checkpoint written while no watcher runs (the one `_initialize`
+            # saves, an early-failure shutdown, a failed watcher) must not drop the
+            # restored cursors and `seen`, or the downtime gap is never rescanned.
+            node_status["liquidation_watch"] = self._unstarted_watch_state()
 
         return StateCheckpoint(
             trader_id=self._config.trader_id,
@@ -1221,6 +1646,12 @@ class PaperTradingNode:
         prior = self._persistence.load_latest_checkpoint(self._config.trader_id)
         if prior is None:
             return
+        # R50b/R50c: any checkpoint restores the watch state; the ones written before
+        # the watcher existed still cover the downtime gap through their timestamp.
+        self._restored_watch_ms = self._checkpoint_ms(prior.timestamp)
+        self._restored_watch = self._restored_watch_state(
+            prior.node_status.get("liquidation_watch")
+        )
         risk_raw = prior.node_status.get("risk") if isinstance(prior.node_status, dict) else None
         self._restored_risk = RiskState.from_dict(risk_raw if isinstance(risk_raw, dict) else None)
         self._write_event(
@@ -1405,6 +1836,7 @@ class PaperTradingNode:
             await self._persistence.start_periodic_checkpointing(self._capture_checkpoint)
 
         self._control_task = asyncio.create_task(self._control_loop())
+        self._start_liquidation_task()
 
         # Run Nautilus on our event loop (run_async) instead of in a worker
         # thread — wrapping the blocking ``run()`` in ``asyncio.to_thread``
@@ -1432,6 +1864,7 @@ class PaperTradingNode:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
             await self._stop_control_loop()
+            await self._stop_liquidation_loop()
 
         if run_exc is not None:
             raise run_exc
@@ -1462,6 +1895,8 @@ class PaperTradingNode:
         )
 
         await self._stop_control_loop()
+        # R53: before the final checkpoint, so the watch state it captures is still there.
+        await self._stop_liquidation_loop()
 
         if self._persistence is not None:
             with contextlib.suppress(Exception):
