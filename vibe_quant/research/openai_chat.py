@@ -75,6 +75,7 @@ def chat_completion(
     config: OpenAIConfig,
     timeout_seconds: float,
     image_paths: list[str] | None = None,
+    temperature: float | None = None,
 ) -> str:
     """Send one user message (plus optional local images) and return the reply text.
 
@@ -90,7 +91,12 @@ def chat_completion(
         content: str | list[dict[str, Any]] = prompt
         if with_images:
             content = [{"type": "text", "text": prompt}, *(_image_part(p) for p in images)]
-        body = {"model": config.model, "messages": [{"role": "user", "content": content}]}
+        body: dict[str, Any] = {
+            "model": config.model,
+            "messages": [{"role": "user", "content": content}],
+        }
+        if temperature is not None:
+            body["temperature"] = temperature
         return httpx.post(
             f"{config.base_url}/chat/completions",
             json=body,
@@ -118,14 +124,29 @@ def chat_completion(
     return content
 
 
-def research_completion(prompt: str, *, timeout_seconds: float) -> str:
+def research_completion(
+    prompt: str,
+    *,
+    timeout_seconds: float,
+    temperature: float | None = None,
+    image_paths: list[str] | None = None,
+) -> str:
     """One prompt to the research LLM: the OpenAI-compatible endpoint when
-    ``VQ_EXTRACTOR=openai``, else the ``claude`` CLI. Raises on any failure."""
+    ``VQ_EXTRACTOR=openai``, else the ``claude`` CLI (which ignores ``temperature``
+    and ``image_paths``). Raises on any failure."""
     if use_openai():
-        return chat_completion(prompt, config=config_from_env(), timeout_seconds=timeout_seconds)
+        return chat_completion(
+            prompt,
+            config=config_from_env(),
+            timeout_seconds=timeout_seconds,
+            temperature=temperature,
+            image_paths=image_paths,
+        )
     claude = shutil.which("claude")
     if claude is None:
-        raise FileNotFoundError("no research LLM: set VQ_EXTRACTOR=openai or install the claude CLI")
+        raise FileNotFoundError(
+            "no research LLM: set VQ_EXTRACTOR=openai or install the claude CLI"
+        )
     proc = subprocess.run(  # noqa: S603
         [claude, "-p", "--output-format", "json", prompt],
         check=False,

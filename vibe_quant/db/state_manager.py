@@ -1793,6 +1793,11 @@ class StateManager:
             )
             self.conn.commit()
 
+    def list_research_item_ids(self) -> list[int]:
+        with self._write_lock:
+            rows = self.conn.execute("SELECT id FROM research_items ORDER BY id DESC").fetchall()
+        return [int(r["id"]) for r in rows]
+
     def get_research_item_tags(self, item_id: int) -> JsonDict | None:
         with self._write_lock:
             row = self.conn.execute(

@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     tag.add_argument("--backfill", action="store_true", help="Keep going until no item needs tags")
     tag.add_argument("--limit", type=int, default=50, help="Items per batch (default 50)")
     tag.add_argument("--retag", type=int, nargs="*", default=None, metavar="ITEM_ID", help="Re-tag these item ids now")
+    tag.add_argument("--all", action="store_true", help="Re-tag every item (e.g. after a tagging prompt change)")
     tag.add_argument("--db-path", type=Path, default=None, help="Override SQLite path")
     tag.add_argument("--log-level", default="INFO")
 
@@ -99,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             tagger = MarketTagger(sm)
             total = 0
+            if args.all:
+                args.retag = sm.list_research_item_ids()
             if args.retag:
                 for item_id in args.retag:
                     row = sm.get_research_item(item_id)

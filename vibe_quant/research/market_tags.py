@@ -62,6 +62,30 @@ BREAKER_COOLDOWN_SECONDS = 300
 UNIVERSE_PATH = Path("data/research/market_universe.json")
 UNIVERSE_MAX_AGE = timedelta(days=1)
 
+# Futures roots; some (ES, CL, GC, SI, NG...) are also stock tickers, so they count as
+# futures whenever the post is about futures.
+FUTURES_ROOTS: frozenset[str] = frozenset(
+    {
+        "ES",
+        "NQ",
+        "YM",
+        "RTY",
+        "CL",
+        "GC",
+        "SI",
+        "ZN",
+        "ZB",
+        "NG",
+        "HG",
+        "MES",
+        "MNQ",
+        "MYM",
+        "M2K",
+        "MCL",
+        "MGC",
+    }
+)
+
 # Index symbols people trade (mostly through options) that aren't Alpaca equities.
 INDEX_SYMBOLS: frozenset[str] = frozenset({"SPX", "NDX", "RUT", "VIX", "DJI", "DJIA", "XSP"})
 
@@ -303,6 +327,15 @@ class Universe:
     def is_real(self, symbol: str) -> bool:
         return symbol in self.equities or symbol in self.crypto or symbol in INDEX_SYMBOLS
 
+    def market_in_context(self, symbol: str, markets: set[str]) -> str | None:
+        """The symbol's market given the post's markets: a futures root in a futures post
+        is the contract, a coin in a crypto post is the coin (not the same-named stock/ETF)."""
+        if symbol in FUTURES_ROOTS and "futures" in markets:
+            return "futures"
+        if symbol in self.crypto and "crypto" in markets:
+            return "crypto"
+        return self.market_of(symbol)
+
     def market_of(self, symbol: str) -> str | None:
         if symbol in INDEX_SYMBOLS or symbol in self.etfs:
             return "etf_index"
@@ -424,8 +457,12 @@ def prepass(item: RawItem | dict[str, Any], universe: Universe) -> MarketTags:
             add(symbol)
 
     markets = {m for m, cue in _CUES.items() if cue.search(text)}
+    if "futures" in markets:
+        for token in _UPPER_TOKEN.findall(title):
+            if token in FUTURES_ROOTS and token not in tickers:
+                add(token)
     for symbol in tickers:
-        market = universe.market_of(symbol)
+        market = universe.market_in_context(symbol, markets)
         if market:
             markets.add(market)
     if extras.get("subreddit") in {"options", "thetagang"}:
@@ -451,15 +488,17 @@ markets: every asset class the post trades or discusses concretely, chosen from
   Examples: "NVDA 220c YOLO" -> ["us_stocks","options"]; "SPY 0DTE puts" -> ["etf_index","options"];
   "CPI tomorrow, bonds dumping" -> ["macro"]; "BTC to 150k" -> ["crypto"]. A general question
   about trading with no market -> [].
-tickers: US stock/ETF symbols, index symbols (SPX, NDX, VIX) and crypto coin symbols (BTC, ETH)
-  the post is about, upper case, no "$". Map company names to their symbol only when certain.
+tickers: US stock/ETF symbols, index symbols (SPX, NDX, VIX), futures roots (ES, NQ, CL) and
+  crypto coin symbols (BTC, ETH) the post is about, upper case, no "$". Include companies named
+  in words when you are sure of the symbol (Chevron -> CVX, Nvidia -> NVDA, Micron -> MU).
   Leave out tickers merely mentioned in passing.
 primary_ticker: the main ticker, else null.
-direction: the author's stance on the primary ticker or market (bullish / bearish / neutral /
-  mixed), null when there is none.
+direction: the author's stance on the primary ticker or market: bullish / bearish / neutral /
+  mixed, only when the author states or clearly implies an expected move or holds a position
+  (long/short, calls/puts). Methodology, backtesting, tooling, questions and education posts -> null.
 
 Keyword scan hints (may be incomplete or wrong): markets={hint_markets} tickers={hint_tickers}
-Subreddit: {subreddit}   Flair: {flair}
+Subreddit: {subreddit}   Flair: {flair}{image_note}
 Title: {title}
 Post:
 {body}
@@ -488,7 +527,13 @@ def classify(item: RawItem | dict[str, Any], hints: MarketTags, universe: Univer
         for c in (extras.get("comments") or [])[:3]
         if isinstance(c, dict)
     )
+    images = [str(p) for p in (extras.get("image_paths") or [])[:1] if Path(str(p)).is_file()]
     prompt = _PROMPT.format(
+        image_note=(
+            "\nThe post's image is attached (often a screenshot of the position or chart): use it."
+            if images
+            else ""
+        ),
         hint_markets=hints.markets,
         hint_tickers=hints.tickers,
         subreddit=extras.get("subreddit") or "-",
@@ -498,7 +543,9 @@ def classify(item: RawItem | dict[str, Any], hints: MarketTags, universe: Univer
         comments=comments or "(none)",
     )
     data = _parse_reply(
-        openai_chat.research_completion(prompt, timeout_seconds=MODEL_TIMEOUT_SECONDS)
+        openai_chat.research_completion(
+            prompt, timeout_seconds=MODEL_TIMEOUT_SECONDS, temperature=0, image_paths=images
+        )
     )
 
     markets = {
@@ -510,7 +557,12 @@ def classify(item: RawItem | dict[str, Any], hints: MarketTags, universe: Univer
     tickers: list[str] = []
     for raw in data.get("tickers") or []:
         symbol = str(raw).strip().upper().lstrip("$").split("/")[0].removesuffix("-USD")
-        if symbol and (universe.is_real(symbol) or symbol in known) and symbol not in tickers:
+        futures_root = symbol in FUTURES_ROOTS and "futures" in markets
+        if (
+            symbol
+            and (universe.is_real(symbol) or symbol in known or futures_root)
+            and symbol not in tickers
+        ):
             tickers.append(symbol)
     # Explicit cashtags stay even if the model left them out.
     title_body = f"{title}\n{body[:6000]}"
@@ -518,8 +570,9 @@ def classify(item: RawItem | dict[str, Any], hints: MarketTags, universe: Univer
         symbol = tag.upper()
         if symbol in known and symbol not in tickers:
             tickers.append(symbol)
+    model_markets = set(markets)
     for symbol in tickers:
-        market = universe.market_of(symbol)
+        market = universe.market_in_context(symbol, model_markets)
         if market:
             markets.add(market)
     primary = str(data.get("primary_ticker") or "").strip().upper().lstrip("$") or None
