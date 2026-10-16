@@ -20,6 +20,7 @@ from vibe_quant.data.catalog import (
     aggregate_bars,
     create_instrument,
     get_bar_type,
+    is_equity_symbol,
     klines_to_bars,
 )
 from vibe_quant.data.downloader import (
@@ -43,7 +44,11 @@ from vibe_quant.utils import generate_month_range
 logger = logging.getLogger(__name__)
 
 # Timeframes aggregated from 1m bars (1d = UTC-midnight aligned; ts_event=open, ts_init=close).
+# US stocks aggregate on New York session periods instead (catalog.equity_period_key).
 AGGREGATION_INTERVALS = ["5m", "15m", "1h", "4h", "1d"]
+
+# Archive source tag of Alpaca US stock bars.
+ALPACA_SOURCE = "alpaca_sip"
 
 # Cap for the download-session error summary so one bad symbol cannot bloat the row.
 _MAX_SESSION_SUMMARY = 2000
@@ -177,8 +182,13 @@ def get_download_preview(
         for symbol in symbols:
             for year, month in months:
                 actual = archive.get_month_kline_count(symbol, "1m", year, month)
-                _, days = calendar.monthrange(year, month)
-                expected = days * 24 * 60
+                if is_equity_symbol(symbol):
+                    from vibe_quant.data.alpaca import expected_month_klines
+
+                    expected = expected_month_klines(year, month)
+                else:
+                    _, days = calendar.monthrange(year, month)
+                    expected = days * 24 * 60
 
                 if actual >= expected * 0.9:
                     status = "Archived"
@@ -277,6 +287,8 @@ def update_symbol(
     Raises:
         ValueError: If symbol is not in INSTRUMENT_CONFIGS.
     """
+    if is_equity_symbol(symbol):
+        return update_equity_symbol(symbol, archive=archive, catalog=catalog, verbose=verbose)
     if symbol not in INSTRUMENT_CONFIGS:
         supported = sorted(INSTRUMENT_CONFIGS.keys())
         raise ValueError(f"Unsupported symbol '{symbol}'. Supported symbols: {supported}")
@@ -382,12 +394,12 @@ def update_all(
     Returns:
         Dict mapping symbol to counts dict.
     """
-    if symbols is None:
-        symbols = SUPPORTED_SYMBOLS
-
     archive = RawDataArchive()
     catalog = CatalogManager()
     results: dict[str, dict[str, Any]] = {}
+    if symbols is None:
+        # The Binance perps plus every US stock already in the archive.
+        symbols = [*SUPPORTED_SYMBOLS, *(s for s in archive.get_symbols() if is_equity_symbol(s))]
 
     session_id = archive.create_download_session(
         symbols=symbols,
@@ -578,6 +590,11 @@ def ingest_symbol(
         failed = download errored after retries (a hole to re-run), unavailable
         = Binance Vision has no archive (404), not an error.
     """
+    if is_equity_symbol(symbol):
+        return ingest_equity_symbol(
+            symbol, years=years, start_date=start_date, end_date=end_date,
+            archive=archive, catalog=catalog, verbose=verbose,
+        )
     if symbol not in INSTRUMENT_CONFIGS:
         supported = sorted(INSTRUMENT_CONFIGS.keys())
         raise ValueError(f"Unsupported symbol '{symbol}'. Supported symbols: {supported}")
@@ -735,6 +752,136 @@ def ingest_symbol(
         if verbose:
             print(f"Wrote {len(agg_bars)} {interval} bars")
 
+    return counts
+
+
+def write_symbol_catalog(
+    symbol: str,
+    archive: RawDataArchive,
+    catalog: CatalogManager,
+    counts: dict[str, Any],
+    verbose: bool = True,
+) -> None:
+    """Rebuild a US stock's catalog bars (1m + aggregates) from its archived 1m klines."""
+    instrument = create_instrument(symbol)
+    catalog.write_instrument(instrument)
+    all_klines = archive.get_klines(symbol, "1m")
+    if not all_klines:
+        return
+    for interval in ["1m", *AGGREGATION_INTERVALS]:
+        catalog.clear_bar_data(symbol, interval)
+    size_prec = instrument.size_precision
+    price_prec = instrument.price_precision
+    bars_1m = klines_to_bars(all_klines, instrument.id, get_bar_type(symbol, "1m"), size_prec, price_prec)
+    catalog.write_bars(bars_1m)
+    counts["bars_1m"] = len(bars_1m)
+    for interval in AGGREGATION_INTERVALS:
+        agg_bars = aggregate_bars(
+            bars_1m, get_bar_type(symbol, interval), _interval_to_minutes(interval), size_prec, price_prec
+        )
+        catalog.write_bars(agg_bars)
+        counts[f"bars_{interval}"] = len(agg_bars)
+    if verbose:
+        print(f"Wrote {instrument.id}: {counts.get('bars_1m', 0)} 1m bars and aggregates")
+
+
+def ingest_equity_symbol(
+    symbol: str,
+    years: int = 2,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    archive: RawDataArchive | None = None,
+    catalog: CatalogManager | None = None,
+    verbose: bool = True,
+) -> dict[str, Any]:
+    """Ingest a US stock's 1m regular-session bars from Alpaca (SIP, split-adjusted).
+
+    Months already archived (>= 90% of the weekday sessions) are skipped, except the
+    current month, which is topped up. Same return shape as :func:`ingest_symbol`.
+    """
+    from vibe_quant.data.alpaca import AlpacaDownloadError, download_klines, expected_month_klines
+
+    if archive is None:
+        archive = RawDataArchive()
+    if catalog is None:
+        catalog = CatalogManager()
+    effective_end = end_date or datetime.now(UTC)
+    if start_date is not None:
+        months = get_months_in_range(start_date, effective_end)
+        range_start = start_date
+    else:
+        months = get_years_months_to_download(years)
+        range_start = effective_end - timedelta(days=365 * years)
+    now = datetime.now(UTC)
+    counts: dict[str, Any] = {"klines_fetched": 0, "klines_inserted": 0}
+    failed_months: list[str] = []
+    skipped = 0
+    for year, month in months:
+        month_start = datetime(year, month, 1, tzinfo=UTC)
+        next_month = datetime(year + (month == 12), month % 12 + 1, 1, tzinfo=UTC)
+        current = month_start <= now < next_month
+        expected = expected_month_klines(year, month)
+        if not current and archive.get_month_kline_count(symbol, "1m", year, month) >= expected * 0.9:
+            skipped += 1
+            continue
+        try:
+            klines = download_klines(symbol, max(month_start, range_start), min(next_month, effective_end))
+        except AlpacaDownloadError as e:
+            failed_months.append(f"{year}-{month:02d}")
+            logger.error("%s %d-%02d: Alpaca download FAILED: %s", symbol, year, month, e)
+            if verbose:
+                print(f"  {year}-{month:02d}: FAILED ({e})")
+            continue
+        if klines:
+            inserted = archive.insert_klines(symbol, "1m", klines, ALPACA_SOURCE)
+            counts["klines_fetched"] += len(klines)
+            counts["klines_inserted"] += inserted
+            if verbose:
+                print(f"  {year}-{month:02d}: {len(klines)} bars ({inserted} new)")
+    counts["months_skipped"] = skipped
+    counts["months_downloaded"] = len(months) - skipped - len(failed_months)
+    counts["failed_months"] = failed_months
+    counts["unavailable_months"] = []
+    counts["failed_ranges"] = []
+    counts["missing_days"] = []
+    write_symbol_catalog(symbol, archive, catalog, counts, verbose)
+    return counts
+
+
+def update_equity_symbol(
+    symbol: str,
+    archive: RawDataArchive | None = None,
+    catalog: CatalogManager | None = None,
+    verbose: bool = True,
+) -> dict[str, Any]:
+    """Fetch a US stock's bars after its last archived minute (Alpaca), then rebuild its catalog."""
+    from vibe_quant.data.alpaca import AlpacaDownloadError, download_klines
+
+    if archive is None:
+        archive = RawDataArchive()
+    if catalog is None:
+        catalog = CatalogManager()
+    counts: dict[str, Any] = {"new_klines": 0, "new_funding_rates": 0, "failed_ranges": []}
+    date_range = archive.get_date_range(symbol, "1m")
+    if date_range is None:
+        if verbose:
+            print(f"{symbol}: no existing data, use 'ingest' command first")
+        return counts
+    start = datetime.fromtimestamp((date_range[1] + 60_000) / 1000, tz=UTC)
+    try:
+        klines = download_klines(symbol, start, datetime.now(UTC))
+    except AlpacaDownloadError as e:
+        counts["failed_ranges"].append(f"{start:%Y-%m-%d}..now: {e}")
+        logger.error("%s: Alpaca update FAILED: %s", symbol, e)
+        return counts
+    if not klines:
+        if verbose:
+            print(f"{symbol}: already up to date")
+        return counts
+    counts["new_klines"] = archive.insert_klines(symbol, "1m", klines, ALPACA_SOURCE)
+    if verbose:
+        print(f"  Archived {counts['new_klines']} new bars")
+    write_symbol_catalog(symbol, archive, catalog, counts, verbose)
     return counts
 
 
@@ -1055,7 +1202,7 @@ def ingest_all(
                 catalog=catalog,
                 verbose=verbose,
             )
-            funding_count = ingest_funding_rates(
+            funding_count = 0 if is_equity_symbol(symbol) else ingest_funding_rates(
                 symbol,
                 years=years,
                 start_date=start_date,
@@ -1425,8 +1572,8 @@ def main(argv: list[str] | None = None) -> int:
     update_parser.add_argument(
         "--symbols",
         type=str,
-        default=",".join(SUPPORTED_SYMBOLS),
-        help="Comma-separated symbols to update",
+        default=None,
+        help="Comma-separated symbols to update (default: the Binance perps + archived US stocks)",
     )
 
     # Rebuild command
@@ -1636,8 +1783,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {line}", file=sys.stderr)
             return 1
     elif args.command == "update":
-        symbols = [s.strip() for s in args.symbols.split(",")]
-        update_results = update_all(symbols=symbols, verbose=True)
+        update_symbols = [s.strip() for s in args.symbols.split(",")] if args.symbols else None
+        update_results = update_all(symbols=update_symbols, verbose=True)
         update_failed = [
             f"{sym}: {r}" for sym, c in update_results.items() for r in c.get("failed_ranges", [])
         ]
