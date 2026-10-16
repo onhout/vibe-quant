@@ -14,6 +14,10 @@ const routeMeta: Record<string, { title: string; description?: string }> = {
     title: "Discovery",
     description: "Evolve new strategies with the genetic algorithm",
   },
+  "/tuner": {
+    title: "Strategy Tuner",
+    description: "Tune strategies until they make money in bull and bear markets",
+  },
   "/discovery/results": {
     title: "Discovery Results",
     description: "Review strategies found by past discovery runs",

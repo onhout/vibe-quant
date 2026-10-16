@@ -42,6 +42,7 @@ const AccountPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import("./routes/settings").then((m) => ({ default: m.SettingsPage })),
 );
+const TunerPage = lazy(() => import("./routes/tuner").then((m) => ({ default: m.TunerPage })));
 const GuidePage = lazy(() => import("./routes/guide").then((m) => ({ default: m.GuidePage })));
 const BrowserPage = lazy(() =>
   import("./routes/browser").then((m) => ({ default: m.BrowserPage })),
@@ -112,6 +113,18 @@ const discoveryRoute = createRoute({
     return (
       <SuspensePage>
         <DiscoveryPage />
+      </SuspensePage>
+    );
+  },
+});
+
+const tunerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/tuner",
+  component: function TunerRouteComponent() {
+    return (
+      <SuspensePage>
+        <TunerPage />
       </SuspensePage>
     );
   },
@@ -299,6 +312,7 @@ const routeTree = rootRoute.addChildren([
   strategyEditRoute,
   discoveryResultsRoute,
   discoveryRoute,
+  tunerRoute,
   backtestRoute,
   resultsRoute,
   resultsDetailRoute,

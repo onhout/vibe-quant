@@ -62,6 +62,15 @@ def main(argv: list[str] | None = None) -> int:
     loop.add_argument("--db-path", type=Path, default=None, help="Override SQLite path")
     loop.add_argument("--log-level", default="INFO")
 
+    tune = sub.add_parser(
+        "tune",
+        help="Run the regime tuner (test bull/bear/other markets -> AI parameters -> settle -> paper)",
+    )
+    tune.add_argument("--once", action="store_true", help="Run one attempt and exit")
+    tune.add_argument("--strategy-id", type=int, default=None, help="Tune only this strategy")
+    tune.add_argument("--dry-run", action="store_true", help="Log the runs it would launch; change nothing")
+    tune.add_argument("--log-level", default="INFO")
+
     groups = sub.add_parser("groups", help="Print the research loop's ticker groups for a timeframe")
     groups.add_argument("--timeframe", default="1d")
     groups.add_argument("--config", type=Path, default=None)
@@ -80,6 +89,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "sources":
         for n in list_sources():
             print(n)
+        return 0
+
+    if args.cmd == "tune":
+        from vibe_quant.research.tuner import RegimeTuner
+
+        tuner = RegimeTuner(dry_run=args.dry_run)
+        if args.once or args.dry_run or args.strategy_id is not None:
+            tuner.step(only=args.strategy_id)
+        else:
+            tuner.run_forever()
         return 0
 
     if args.cmd in ("loop", "groups"):

@@ -5085,6 +5085,111 @@
         }
       }
     },
+    "/api/tuner": {
+      "get": {
+        "tags": [
+          "tuner"
+        ],
+        "summary": "Get Tuner",
+        "operationId": "get_tuner_api_tuner_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TunerStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tuner/candidates/{root_strategy_id}": {
+      "get": {
+        "tags": [
+          "tuner"
+        ],
+        "summary": "Get Candidate",
+        "operationId": "get_candidate_api_tuner_candidates__root_strategy_id__get",
+        "parameters": [
+          {
+            "name": "root_strategy_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Root Strategy Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TunerCandidate"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tuner/queue": {
+      "post": {
+        "tags": [
+          "tuner"
+        ],
+        "summary": "Queue Strategy",
+        "description": "Tune this strategy next (and, with ``restart``, start its journey over).",
+        "operationId": "queue_strategy_api_tuner_queue_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TunerQueueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TunerStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/backtest/jobs/{run_id}/progress": {
       "get": {
         "tags": [
@@ -11683,6 +11788,819 @@
           "trades"
         ],
         "title": "TradesBatchRequest"
+      },
+      "TunerAI": {
+        "properties": {
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          },
+          "new_strategy_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Strategy Id"
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggestion"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "title": "TunerAI"
+      },
+      "TunerAttempt": {
+        "properties": {
+          "n": {
+            "type": "integer",
+            "title": "N"
+          },
+          "strategy_id": {
+            "type": "integer",
+            "title": "Strategy Id"
+          },
+          "strategy_name": {
+            "type": "string",
+            "title": "Strategy Name"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "dsl": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Dsl"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/TunerWindowResult"
+            },
+            "type": "array",
+            "title": "Windows"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "passed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passed"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "ai": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TunerAI"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "n",
+          "strategy_id",
+          "strategy_name",
+          "stage",
+          "dsl",
+          "windows"
+        ],
+        "title": "TunerAttempt"
+      },
+      "TunerCandidate": {
+        "properties": {
+          "root_strategy_id": {
+            "type": "integer",
+            "title": "Root Strategy Id"
+          },
+          "root_name": {
+            "type": "string",
+            "title": "Root Name"
+          },
+          "timeframe": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeframe"
+          },
+          "symbols": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Symbols"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "current_strategy_id": {
+            "type": "integer",
+            "title": "Current Strategy Id"
+          },
+          "round": {
+            "type": "integer",
+            "title": "Round"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "settled_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "paper": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TunerPaper"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Reason"
+          },
+          "attempt_list": {
+            "items": {
+              "$ref": "#/components/schemas/TunerAttempt"
+            },
+            "type": "array",
+            "title": "Attempt List"
+          }
+        },
+        "type": "object",
+        "required": [
+          "root_strategy_id",
+          "root_name",
+          "symbols",
+          "status",
+          "stage",
+          "current_strategy_id",
+          "round",
+          "attempts",
+          "attempt_list"
+        ],
+        "title": "TunerCandidate"
+      },
+      "TunerCandidateSummary": {
+        "properties": {
+          "root_strategy_id": {
+            "type": "integer",
+            "title": "Root Strategy Id"
+          },
+          "root_name": {
+            "type": "string",
+            "title": "Root Name"
+          },
+          "timeframe": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeframe"
+          },
+          "symbols": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Symbols"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "current_strategy_id": {
+            "type": "integer",
+            "title": "Current Strategy Id"
+          },
+          "round": {
+            "type": "integer",
+            "title": "Round"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "settled_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "paper": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TunerPaper"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "root_strategy_id",
+          "root_name",
+          "symbols",
+          "status",
+          "stage",
+          "current_strategy_id",
+          "round",
+          "attempts"
+        ],
+        "title": "TunerCandidateSummary"
+      },
+      "TunerCurrent": {
+        "properties": {
+          "root_strategy_id": {
+            "type": "integer",
+            "title": "Root Strategy Id"
+          },
+          "strategy_id": {
+            "type": "integer",
+            "title": "Strategy Id"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          }
+        },
+        "type": "object",
+        "required": [
+          "root_strategy_id",
+          "strategy_id",
+          "stage"
+        ],
+        "title": "TunerCurrent"
+      },
+      "TunerPaper": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "validation_run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Run Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "title": "TunerPaper"
+      },
+      "TunerQueueRequest": {
+        "properties": {
+          "strategy_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Strategy Id"
+          },
+          "restart": {
+            "type": "boolean",
+            "title": "Restart",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "strategy_id"
+        ],
+        "title": "TunerQueueRequest"
+      },
+      "TunerSettings": {
+        "properties": {
+          "min_return": {
+            "type": "number",
+            "title": "Min Return"
+          },
+          "min_profit_factor": {
+            "type": "number",
+            "title": "Min Profit Factor"
+          },
+          "min_stage_trades": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Min Stage Trades"
+          },
+          "min_total_trades": {
+            "type": "integer",
+            "title": "Min Total Trades"
+          },
+          "max_rounds": {
+            "type": "integer",
+            "title": "Max Rounds"
+          },
+          "timeframes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Timeframes"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/TunerWindowConfig"
+            },
+            "type": "array",
+            "title": "Windows"
+          },
+          "queued": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Queued"
+          },
+          "auto_paper": {
+            "type": "boolean",
+            "title": "Auto Paper"
+          }
+        },
+        "type": "object",
+        "required": [
+          "min_return",
+          "min_profit_factor",
+          "min_stage_trades",
+          "min_total_trades",
+          "max_rounds",
+          "timeframes",
+          "windows",
+          "queued",
+          "auto_paper"
+        ],
+        "title": "TunerSettings"
+      },
+      "TunerStatusResponse": {
+        "properties": {
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TunerCurrent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settings": {
+            "$ref": "#/components/schemas/TunerSettings"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/TunerCandidateSummary"
+            },
+            "type": "array",
+            "title": "Candidates"
+          }
+        },
+        "type": "object",
+        "required": [
+          "settings",
+          "candidates"
+        ],
+        "title": "TunerStatusResponse"
+      },
+      "TunerWindowConfig": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "start": {
+            "type": "string",
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "title": "End"
+          },
+          "symbols": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Symbols"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "stage",
+          "start",
+          "end",
+          "symbols"
+        ],
+        "title": "TunerWindowConfig"
+      },
+      "TunerWindowResult": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "start": {
+            "type": "string",
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "title": "End"
+          },
+          "symbols": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Symbols"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "default": ""
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          },
+          "total_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Return"
+          },
+          "profit_factor": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profit Factor"
+          },
+          "trades": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trades"
+          },
+          "max_drawdown": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Drawdown"
+          },
+          "win_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Win Rate"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "run_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "stage",
+          "start",
+          "end",
+          "symbols"
+        ],
+        "title": "TunerWindowResult"
       },
       "UnlockRequest": {
         "properties": {
