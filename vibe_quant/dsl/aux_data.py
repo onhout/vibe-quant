@@ -260,7 +260,9 @@ def _ref_bar_type(symbol: str, tf: str) -> str:
     if unit is None:
         msg = f"Unsupported reference timeframe {tf!r}"
         raise AuxDataUnavailableError(msg)
-    return f"{symbol}-PERP.BINANCE-{unit}-LAST-EXTERNAL"
+    from vibe_quant.data.catalog import instrument_id_str
+
+    return f"{instrument_id_str(symbol)}-{unit}-LAST-EXTERNAL"
 
 
 def _ref_bars(symbol: str, tf: str, refresh: bool = False) -> tuple[object, np.ndarray, np.ndarray]:

@@ -59,29 +59,37 @@ def load_daily_closes(
 ) -> dict[str, dict[int, float]]:
     """``{symbol: {day: close}}`` from the catalog's 1d LAST bars.
 
-    Reads ``f"{symbol}-PERP.BINANCE-1-DAY-LAST-EXTERNAL"`` and keeps only
+    Reads the symbol's ``1-DAY-LAST-EXTERNAL`` bars (``catalog.instrument_id_str``) and keeps only
     COMPLETE bars, the same rule as :mod:`vibe_quant.dsl.aux_data`: a bar's
     ``ts_init`` is its close, either exactly on the midnight boundary
     (``ts % DAY == 0``; the close belongs to the PREVIOUS UTC day, so the key
     is ``ts // DAY - 1``) or 1 ms before it (``(ts + 1ms) % DAY == 0``; key
-    ``ts // DAY``). Anything else is an in-progress bar and is dropped.
+    ``ts // DAY``). Anything else is an in-progress bar and is dropped. US stocks
+    (Alpaca) have one bar per session closing at 16:00 New York (same UTC day);
+    the catalog only holds complete sessions, so every bar counts, keyed ``ts // DAY``.
 
     Raises:
         ValueError: the bar type is missing or empty for ``symbol``, or a
             complete bar has a non-finite / non-positive close (fail closed).
     """
+    from vibe_quant.data.catalog import instrument_id_str, is_equity_symbol
+
     out: dict[str, dict[int, float]] = {}
     for symbol in symbols:
-        bar_type = f"{symbol}-PERP.BINANCE-1-DAY-LAST-EXTERNAL"
+        bar_type = f"{instrument_id_str(symbol)}-1-DAY-LAST-EXTERNAL"
         bars = load_catalog_bars(catalog_path, bar_type)
         if bars is None or bars.ts.size == 0:
             msg = f"No 1d catalog bars for {symbol} ({bar_type}) in {catalog_path}"
             raise ValueError(msg)
         raw = np.asarray(bars.ts, dtype=np.int64)
         close = np.asarray(bars.close, dtype=np.float64)
-        on_midnight = raw % DAY_NS == 0
-        complete = on_midnight | ((raw + _MS_NS) % DAY_NS == 0)
-        day = np.where(on_midnight, raw // DAY_NS - 1, raw // DAY_NS)
+        if is_equity_symbol(symbol):
+            complete = np.ones(raw.size, dtype=bool)
+            day = raw // DAY_NS
+        else:
+            on_midnight = raw % DAY_NS == 0
+            complete = on_midnight | ((raw + _MS_NS) % DAY_NS == 0)
+            day = np.where(on_midnight, raw // DAY_NS - 1, raw // DAY_NS)
         closes = {int(d): float(c) for d, c in zip(day[complete], close[complete], strict=True)}
         for d, c in closes.items():
             if not _valid_close(c):

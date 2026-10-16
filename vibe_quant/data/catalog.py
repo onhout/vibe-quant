@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -12,7 +13,7 @@ from typing import TYPE_CHECKING
 from nautilus_trader.model.data import Bar, BarSpecification, BarType
 from nautilus_trader.model.enums import BarAggregation, PriceType
 from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
-from nautilus_trader.model.instruments import CryptoPerpetual
+from nautilus_trader.model.instruments import CryptoPerpetual, Equity
 from nautilus_trader.model.objects import Currency, Money, Price, Quantity
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
@@ -25,8 +26,9 @@ if TYPE_CHECKING:
 # Default catalog path
 DEFAULT_CATALOG_PATH = Path("data/catalog")
 
-# Venue identifier
+# Venue identifiers: Binance USDT-M perpetuals (crypto) and Alpaca (US stocks)
 BINANCE_VENUE = Venue("BINANCE")
+ALPACA_VENUE = Venue("ALPACA")
 
 # Instrument configurations for supported symbols.
 # Filters (price_increment=PRICE_FILTER.tickSize, size_increment/min_quantity=LOT_SIZE,
@@ -112,15 +114,69 @@ INTERVAL_TO_AGGREGATION = {
 }
 
 
-def create_instrument(symbol: str) -> CryptoPerpetual:
+# US stocks traded on Alpaca: whole shares, USD, zero commission, $0.01 ticks.
+EQUITY_PRICE_PRECISION = 2
+_EQUITY_SYMBOL = re.compile(r"[A-Z][A-Z.]{0,5}")
+_CRYPTO_QUOTES = ("USDT", "USDC", "BUSD")
+
+
+def is_equity_symbol(symbol: str) -> bool:
+    """True for a US stock ticker (Alpaca: ``AAPL``, ``BRK.B``); crypto pairs are Binance perps."""
+    return (
+        symbol not in INSTRUMENT_CONFIGS
+        and not symbol.endswith(_CRYPTO_QUOTES)
+        and _EQUITY_SYMBOL.fullmatch(symbol) is not None
+    )
+
+
+def instrument_id_str(symbol: str) -> str:
+    """NautilusTrader instrument id of a symbol: ``AAPL.ALPACA`` or ``BTCUSDT-PERP.BINANCE``."""
+    if is_equity_symbol(symbol):
+        return f"{symbol}.{ALPACA_VENUE}"
+    return f"{symbol}-PERP.{BINANCE_VENUE}"
+
+
+def venue_for_symbols(symbols: Sequence[str]) -> str:
+    """The one venue a run's symbols trade on ("BINANCE" or "ALPACA"); mixing is refused."""
+    venues = {str(ALPACA_VENUE) if is_equity_symbol(s) else str(BINANCE_VENUE) for s in symbols}
+    if len(venues) > 1:
+        raise ValueError(f"cannot mix Alpaca stocks and Binance perpetuals in one run: {sorted(symbols)}")
+    return venues.pop() if venues else str(BINANCE_VENUE)
+
+
+def instrument_kind_dir(symbol: str) -> str:
+    """Catalog sub-directory NautilusTrader writes the symbol's instrument under."""
+    return "equity" if is_equity_symbol(symbol) else "crypto_perpetual"
+
+
+def create_equity(symbol: str) -> Equity:
+    """Alpaca US stock: whole shares, USD, zero maker/taker fees."""
+    return Equity(
+        instrument_id=InstrumentId.from_str(instrument_id_str(symbol)),
+        raw_symbol=Symbol(symbol),
+        currency=Currency.from_str("USD"),
+        price_precision=EQUITY_PRICE_PRECISION,
+        price_increment=Price.from_str("0.01"),
+        lot_size=Quantity.from_int(1),
+        ts_event=0,
+        ts_init=0,
+        min_quantity=Quantity.from_int(1),
+        maker_fee=Decimal(0),
+        taker_fee=Decimal(0),
+    )
+
+
+def create_instrument(symbol: str) -> CryptoPerpetual | Equity:
     """Create NautilusTrader instrument for a symbol.
 
     Args:
-        symbol: Trading symbol (e.g., 'BTCUSDT').
+        symbol: Trading symbol (e.g., 'BTCUSDT', or a US stock like 'AAPL').
 
     Returns:
-        CryptoPerpetual instrument.
+        CryptoPerpetual (Binance) or Equity (Alpaca) instrument.
     """
+    if is_equity_symbol(symbol):
+        return create_equity(symbol)
     config = INSTRUMENT_CONFIGS[symbol]
     quote = Currency.from_str(config["quote"])
 
@@ -201,6 +257,42 @@ def klines_to_bars(
     return bars
 
 
+# US equity sessions are keyed in New York local time (regular hours 09:30-16:00):
+# a 1d bar is one session, 4h bars are 09:30-12:00 and 12:00-16:00, 1h bars follow
+# the clock hours. UTC-aligned keys (the crypto rule) would split sessions across
+# DST-shifting buckets and need a 00:00 UTC boundary that stocks never trade at.
+_HOUR_NS = 3_600_000_000_000
+_DAY_NS = 86_400_000_000_000
+_SESSION_CLOSE_NS = 16 * _HOUR_NS
+_NY_OFFSET_CACHE: dict[int, int] = {}
+
+
+def ny_offset_ns(ts_ns: int) -> int:
+    """New York's UTC offset (ns, negative) at a UTC timestamp; cached per hour (DST moves on the hour)."""
+    hour = ts_ns // _HOUR_NS
+    cached = _NY_OFFSET_CACHE.get(hour)
+    if cached is None:
+        from zoneinfo import ZoneInfo
+
+        offset = datetime.fromtimestamp(hour * 3600, tz=ZoneInfo("America/New_York")).utcoffset()
+        cached = int(offset.total_seconds()) * 1_000_000_000 if offset is not None else 0
+        _NY_OFFSET_CACHE[hour] = cached
+    return cached
+
+
+def equity_period_key(ts_ns: int, period_ns: int) -> int:
+    """Session-aligned period of a timestamp: New York local time // period."""
+    return (ts_ns + ny_offset_ns(ts_ns)) // period_ns
+
+
+def equity_period_complete(key: int, period_ns: int, last_ts_init: int) -> bool:
+    """A period is complete once its last 1m bar closes at the period end or the 16:00 close."""
+    period_end = (key + 1) * period_ns
+    session_close = ((key * period_ns) // _DAY_NS) * _DAY_NS + _SESSION_CLOSE_NS
+    end_local = min(period_end, session_close)
+    return last_ts_init + ny_offset_ns(last_ts_init) >= end_local - 1_000_000
+
+
 def aggregate_bars(
     bars_1m: list[Bar],
     target_bar_type: BarType,
@@ -233,13 +325,17 @@ def aggregate_bars(
     # bar_ts_ns // 1_000_000 // 60_000 // target_minutes
     # = bar_ts_ns // (1_000_000 * 60_000 * target_minutes)
     ns_per_target_period = 1_000_000 * 60_000 * target_minutes
+    equity = target_bar_type.instrument_id.venue == ALPACA_VENUE
 
     aggregated: list[Bar] = []
     current_group: list[Bar] = []
     group_key: int | None = None
 
     for bar in bars_1m:
-        bar_key = bar.ts_event // ns_per_target_period
+        if equity:
+            bar_key = equity_period_key(bar.ts_event, ns_per_target_period)
+        else:
+            bar_key = bar.ts_event // ns_per_target_period
 
         if group_key is None:
             group_key = bar_key
@@ -263,8 +359,12 @@ def aggregate_bars(
     # kept as-is; only the trailing one is judged. A later update, once the
     # period finishes, writes the completed bar (no permanent gap).
     if current_group and group_key is not None:
-        period_end_ns = (group_key + 1) * ns_per_target_period - 1_000_000
-        if current_group[-1].ts_init >= period_end_ns:
+        if equity:
+            complete = equity_period_complete(group_key, ns_per_target_period, current_group[-1].ts_init)
+        else:
+            period_end_ns = (group_key + 1) * ns_per_target_period - 1_000_000
+            complete = current_group[-1].ts_init >= period_end_ns
+        if complete:
             aggregated.append(
                 _aggregate_group(current_group, target_bar_type, size_precision, price_precision)
             )
@@ -355,7 +455,7 @@ def get_bar_type(symbol: str, interval: str, price_type: PriceType = PriceType.L
     Returns:
         NautilusTrader BarType.
     """
-    instrument_id = InstrumentId(Symbol(f"{symbol}-PERP"), BINANCE_VENUE)
+    instrument_id = InstrumentId.from_str(instrument_id_str(symbol))
     step, aggregation = INTERVAL_TO_AGGREGATION[interval]
 
     bar_spec = BarSpecification(step, aggregation, price_type)
@@ -385,11 +485,13 @@ def cleanup_epoch_parquet(catalog_path: Path) -> None:
             logger.info("Removing corrupt epoch parquet: %s", corrupt_file)
             corrupt_file.unlink(missing_ok=True)
 
-    # 2. Clean crypto_perpetual/ ONLY if the file is a corrupt stub (< 1KB).
-    #    Legitimate instrument definitions are ~5-10KB.
-    perp_dir = catalog_path / "data" / "crypto_perpetual"
-    if perp_dir.exists():
-        for epoch_file in perp_dir.rglob(epoch_pattern):
+    # 2. Clean instrument dirs (crypto_perpetual/, equity/) ONLY if the file is a
+    #    corrupt stub (< 1KB). Legitimate instrument definitions are ~5-10KB.
+    for kind in ("crypto_perpetual", "equity"):
+        kind_dir = catalog_path / "data" / kind
+        if not kind_dir.exists():
+            continue
+        for epoch_file in kind_dir.rglob(epoch_pattern):
             size = epoch_file.stat().st_size
             if size < 1024:
                 logger.info(
@@ -439,7 +541,7 @@ class CatalogManager:
         """
         cleanup_epoch_parquet(self._catalog_path)
 
-    def write_instrument(self, instrument: CryptoPerpetual) -> None:
+    def write_instrument(self, instrument: CryptoPerpetual | Equity) -> None:
         """Write instrument to catalog, replacing a differing existing definition.
 
         NT's write_data skips an existing instrument ("already exists, skipping
@@ -451,7 +553,8 @@ class CatalogManager:
         """
         import shutil
 
-        inst_dir = self._catalog_path / "data" / "crypto_perpetual" / str(instrument.id)
+        kind = "equity" if isinstance(instrument, Equity) else "crypto_perpetual"
+        inst_dir = self._catalog_path / "data" / kind / str(instrument.id)
         if inst_dir.exists():
             import pyarrow.lib
 

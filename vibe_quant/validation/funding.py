@@ -104,6 +104,11 @@ class FundingCalculator:
         return self._default_rate
 
     @staticmethod
+    def is_perpetual(instrument_id: str) -> bool:
+        """Only perpetual swaps pay funding (``BTCUSDT-PERP.BINANCE``); stocks (``AAPL.ALPACA``) never do."""
+        return "-PERP." in str(instrument_id)
+
+    @staticmethod
     def symbol_from_instrument_id(instrument_id: str) -> str:
         """"BTCUSDT-PERP.BINANCE" -> "BTCUSDT" (archive symbol key)."""
         return instrument_id.split(".")[0].removesuffix("-PERP")
@@ -166,6 +171,8 @@ class FundingCalculator:
         accrual = FundingAccrual()
         if exit_ns is None or exit_ns <= entry_ns or entry_notional <= 0:
             return accrual
+        if not self.is_perpetual(instrument_id):
+            return accrual
 
         symbol = self.symbol_from_instrument_id(instrument_id)
         sign = 1.0 if direction.upper() == "LONG" else -1.0
@@ -220,6 +227,8 @@ class FundingCalculator:
         """
         accrual = FundingAccrual()
         if not fills or end_ns <= fills[0][0]:
+            return accrual
+        if not self.is_perpetual(instrument_id):
             return accrual
         fill_ts = [ts for ts, _ in fills]
         held: list[float] = []
