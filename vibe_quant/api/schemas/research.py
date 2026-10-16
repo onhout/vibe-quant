@@ -76,6 +76,29 @@ class ExtractionResponse(BaseModel):
     scaffolds: list[IndicatorScaffoldRow] = Field(default_factory=list)
 
 
+class MarketTagsResponse(BaseModel):
+    """Markets (asset classes) and tickers an item is about; see research.market_tags."""
+
+    status: Literal["prepass", "tagged", "failed"]
+    markets: list[str]
+    tickers: list[str]
+    primary_ticker: str | None = None
+    direction: str | None = None
+    model: str | None = None
+    tagged_at: str | None = None
+
+
+class TagFacet(BaseModel):
+    value: str
+    count: int
+
+
+class TagFacetsResponse(BaseModel):
+    markets: list[TagFacet]
+    tickers: list[TagFacet]
+    untagged: int
+
+
 class ResearchItemResponse(BaseModel):
     id: int
     source: str
@@ -89,6 +112,7 @@ class ResearchItemResponse(BaseModel):
     extras: dict[str, object] | None = None
     fetched_at: str | None
     extraction_status: str
+    market_tags: MarketTagsResponse | None = None
 
 
 class ExtractionJobResponse(BaseModel):
@@ -113,6 +137,7 @@ class ExtractionQueueJobResponse(ExtractionJobResponse):
     item_title: str | None
     item_url: str
     item_source: str
+    item_market_tags: MarketTagsResponse | None = None
 
 
 class ExtractionQueueResponse(BaseModel):

@@ -4,6 +4,7 @@
  * vibe-quant API
  * OpenAPI spec version: 0.1.0
  */
+import type { MarketTagsResponse } from './marketTagsResponse';
 
 /**
  * Queue-page view: includes parent item title + url for display.
@@ -23,4 +24,5 @@ export interface ExtractionQueueJobResponse {
   item_title: string | null;
   item_url: string;
   item_source: string;
+  item_market_tags?: MarketTagsResponse | null;
 }

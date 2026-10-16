@@ -62,6 +62,16 @@ def main(argv: list[str] | None = None) -> int:
     loop.add_argument("--db-path", type=Path, default=None, help="Override SQLite path")
     loop.add_argument("--log-level", default="INFO")
 
+    tag = sub.add_parser(
+        "tag",
+        help="Market-tag research items (asset classes, tickers, direction); --backfill tags every item still missing model tags",
+    )
+    tag.add_argument("--backfill", action="store_true", help="Keep going until no item needs tags")
+    tag.add_argument("--limit", type=int, default=50, help="Items per batch (default 50)")
+    tag.add_argument("--retag", type=int, nargs="*", default=None, metavar="ITEM_ID", help="Re-tag these item ids now")
+    tag.add_argument("--db-path", type=Path, default=None, help="Override SQLite path")
+    tag.add_argument("--log-level", default="INFO")
+
     groups = sub.add_parser("groups", help="Print the research loop's ticker groups for a timeframe")
     groups.add_argument("--timeframe", default="1d")
     groups.add_argument("--config", type=Path, default=None)
@@ -82,13 +92,45 @@ def main(argv: list[str] | None = None) -> int:
             print(n)
         return 0
 
+    if args.cmd == "tag":
+        from vibe_quant.research.market_tags import MarketTagger
+
+        sm = StateManager(args.db_path)
+        try:
+            tagger = MarketTagger(sm)
+            total = 0
+            if args.retag:
+                for item_id in args.retag:
+                    row = sm.get_research_item(item_id)
+                    if row is None:
+                        print(f"item {item_id}: not found", file=sys.stderr)
+                        continue
+                    tags = tagger.tag(item_id, row)
+                    print(f"item {item_id}: {tags.get('status')} {tags.get('markets')} {tags.get('tickers')}")
+                    total += 1
+            else:
+                while True:
+                    done = tagger.tag_backlog(limit=args.limit)
+                    total += done
+                    logging.info("tagged %d item(s) (%d so far)", done, total)
+                    if not args.backfill or done == 0 or not tagger.model_available():
+                        break
+            print(f"tagged {total} item(s); untagged left: {sm.research_tag_facets()['untagged']}")
+        finally:
+            sm.close()
+        return 0
+
     if args.cmd in ("loop", "groups"):
         from vibe_quant.research.loop import CONFIG_PATH, LoopConfig, ResearchLoop, ticker_groups
 
         cfg = LoopConfig.load(args.config or CONFIG_PATH)
         if args.cmd == "groups":
-            for name, members in sorted(ticker_groups(cfg, args.timeframe).items()):
-                print(f"{name}: {', '.join(members)}")
+            groups_sm = StateManager()
+            try:
+                for name, members in sorted(ticker_groups(cfg, args.timeframe, groups_sm).items()):
+                    print(f"{name}: {', '.join(members)}")
+            finally:
+                groups_sm.close()
             return 0
         if args.interval_min is not None:
             cfg.interval_minutes = args.interval_min

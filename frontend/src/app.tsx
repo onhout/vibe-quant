@@ -244,6 +244,8 @@ type ResearchSearch = {
   sort?: string | undefined;
   hide_low_trade?: boolean | undefined;
   q?: string | undefined;
+  market?: string | undefined;
+  ticker?: string | undefined;
 };
 
 const researchRoute = createRoute({
@@ -258,6 +260,12 @@ const researchRoute = createRoute({
         ? true
         : undefined,
     q: typeof search.q === "string" && search.q.length > 0 ? search.q : undefined,
+    market:
+      typeof search.market === "string" && search.market.length > 0 ? search.market : undefined,
+    ticker:
+      typeof search.ticker === "string" && search.ticker.length > 0
+        ? search.ticker.toUpperCase()
+        : undefined,
   }),
   component: function ResearchRouteComponent() {
     return (

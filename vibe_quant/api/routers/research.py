@@ -26,6 +26,7 @@ from vibe_quant.api.schemas.research import (
     ExtractionResponse,
     IndicatorScaffoldResponse,
     IndicatorScaffoldRow,
+    MarketTagsResponse,
     PromoteIndicatorResponse,
     PromoteResponse,
     ResearchItemDetailResponse,
@@ -36,6 +37,8 @@ from vibe_quant.api.schemas.research import (
     SourceListResponse,
     SubredditsResponse,
     SubredditsUpdateRequest,
+    TagFacet,
+    TagFacetsResponse,
 )
 from vibe_quant.db.state_manager import StateManager
 from vibe_quant.dsl.indicators import indicator_registry
@@ -50,6 +53,7 @@ from vibe_quant.research.indicator_scaffold import (
     scaffold_full,
     suggest_alt_name,
 )
+from vibe_quant.research.market_tags import MARKETS
 from vibe_quant.research.sources import list_sources, load_builtin_sources
 
 logger = logging.getLogger(__name__)
@@ -90,6 +94,7 @@ def _item_to_response(row: dict[str, Any]) -> ResearchItemResponse:
             extras = {}
         extras["latest_confidence"] = row["latest_confidence"]
     return ResearchItemResponse(
+        market_tags=_tags_to_response(row),
         id=int(row["id"]),
         source=str(row["source"]),
         external_id=str(row["external_id"]),
@@ -102,6 +107,30 @@ def _item_to_response(row: dict[str, Any]) -> ResearchItemResponse:
         extras=extras,
         fetched_at=row.get("fetched_at"),
         extraction_status=str(row.get("extraction_status") or "pending"),
+    )
+
+
+def _tags_to_response(row: dict[str, Any]) -> MarketTagsResponse | None:
+    """Tags from a list row (``tag_*`` columns) or a detail row (``market_tags`` dict)."""
+    tags = row.get("market_tags")
+    if isinstance(tags, dict):
+        return MarketTagsResponse(
+            status=tags["status"],
+            markets=list(tags.get("markets") or []),
+            tickers=list(tags.get("tickers") or []),
+            primary_ticker=tags.get("primary_ticker"),
+            direction=tags.get("direction"),
+            model=tags.get("model"),
+            tagged_at=tags.get("tagged_at"),
+        )
+    if row.get("tag_status") is None:
+        return None
+    return MarketTagsResponse(
+        status=row["tag_status"],
+        markets=json.loads(row.get("tag_markets_json") or "[]"),
+        tickers=json.loads(row.get("tag_tickers_json") or "[]"),
+        primary_ticker=row.get("tag_primary_ticker"),
+        direction=row.get("tag_direction"),
     )
 
 
@@ -214,7 +243,11 @@ def start_scrape(body: ScrapeRequest, sm: StateMgr) -> ScrapeRunResponse:
             detail=f"unknown source '{body.source}'. Available: {sorted(list_sources())}",
         )
 
-    # 409 if a scrape for this source is already running
+    # 409 if a scrape for this source is already running (runs whose process
+    # died are closed out first so they can't block the source forever)
+    from vibe_quant.research.pipeline import reap_orphan_scrape_runs
+
+    reap_orphan_scrape_runs(sm)
     active = sm.list_active_scrape_runs(source=body.source)
     if active:
         raise HTTPException(
@@ -322,9 +355,16 @@ def list_items(
     offset: Annotated[int, Query(ge=0)] = 0,
     hide_low_trade: Annotated[bool, Query()] = False,
     q: Annotated[str | None, Query(max_length=200)] = None,
+    market: Annotated[str | None, Query(description="Only items tagged with this market")] = None,
+    ticker: Annotated[
+        str | None, Query(max_length=12, description="Only items tagged with this ticker")
+    ] = None,
 ) -> ResearchItemListResponse:
     if sort not in _VALID_SORTS:
         raise HTTPException(status_code=422, detail=f"invalid sort: {sort}")
+    if market is not None and market not in MARKETS:
+        raise HTTPException(status_code=422, detail=f"invalid market: {market}. Valid: {list(MARKETS)}")
+    ticker = ticker.strip().upper() or None if ticker else None
     q_normalized = q.strip() if q else None
     if q_normalized == "":
         q_normalized = None
@@ -336,12 +376,16 @@ def list_items(
         offset=offset,
         hide_low_trade=hide_low_trade,
         q=q_normalized,
+        market=market,
+        ticker=ticker,
     )
     total = sm.count_research_items(
         source=source,
         status=status,
         hide_low_trade=hide_low_trade,
         q=q_normalized,
+        market=market,
+        ticker=ticker,
     )
     return ResearchItemListResponse(
         items=[_item_to_response(r) for r in rows],
@@ -351,11 +395,40 @@ def list_items(
     )
 
 
+@router.get("/tags/facets", response_model=TagFacetsResponse)
+def get_tag_facets(
+    sm: StateMgr, source: Annotated[str | None, Query()] = None
+) -> TagFacetsResponse:
+    """Item counts per market and for the most-tagged tickers (the list's filter options)."""
+    facets = sm.research_tag_facets(source=source)
+    return TagFacetsResponse(
+        markets=[TagFacet(**f) for f in facets["markets"]],
+        tickers=[TagFacet(**f) for f in facets["tickers"]],
+        untagged=int(facets["untagged"]),
+    )
+
+
+@router.post("/items/{item_id}/tags", response_model=MarketTagsResponse)
+def retag_item(item_id: int, sm: StateMgr) -> MarketTagsResponse:
+    """Re-run market tagging (pre-pass + model) for one item now."""
+    from vibe_quant.research.market_tags import MarketTagger
+
+    row = sm.get_research_item(item_id)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"research_item {item_id} not found")
+    tags = MarketTagger(sm).tag(item_id, row)
+    response = _tags_to_response({"market_tags": tags})
+    if response is None:
+        raise HTTPException(status_code=500, detail="tagging stored nothing")
+    return response
+
+
 @router.get("/items/{item_id}", response_model=ResearchItemDetailResponse)
 def get_item(item_id: int, sm: StateMgr) -> ResearchItemDetailResponse:
     row = sm.get_research_item(item_id)
     if not row:
         raise HTTPException(status_code=404, detail=f"research_item {item_id} not found")
+    row["market_tags"] = sm.get_research_item_tags(item_id)
     extractions = sm.list_extractions_for_item(item_id)
     base = _item_to_response(row)
     latest = _latest_job_for_item(sm, item_id)
@@ -444,6 +517,7 @@ def _queue_job_to_response(row: dict[str, Any]) -> ExtractionQueueJobResponse:
         item_title=row.get("item_title"),
         item_url=str(row.get("item_url") or ""),
         item_source=str(row.get("item_source") or ""),
+        item_market_tags=_tags_to_response(row),
     )
 
 

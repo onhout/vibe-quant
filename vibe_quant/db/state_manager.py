@@ -140,6 +140,25 @@ def _trade_insert(run_id: int, trades: Sequence[JsonDict]) -> tuple[str, list[li
     return f"INSERT INTO trades ({', '.join(columns)}) VALUES ({placeholders})", rows
 
 
+def _tag_filters(
+    query: str, params: list[Any], *, market: str | None, ticker: str | None
+) -> tuple[str, list[Any]]:
+    """Append research-item market/ticker filters (``i`` aliases research_items)."""
+    if market:
+        query += (
+            " AND EXISTS (SELECT 1 FROM research_item_tag_values tm"
+            " WHERE tm.research_item_id = i.id AND tm.kind = 'market' AND tm.value = ?)"
+        )
+        params.append(market)
+    if ticker:
+        query += (
+            " AND EXISTS (SELECT 1 FROM research_item_tag_values tt"
+            " WHERE tt.research_item_id = i.id AND tt.kind = 'ticker' AND tt.value = ?)"
+        )
+        params.append(ticker.strip().upper())
+    return query, params
+
+
 class StateManager:
     """Manager for vibe-quant SQLite state database.
 
@@ -1288,6 +1307,8 @@ class StateManager:
         offset: int = 0,
         hide_low_trade: bool = False,
         q: str | None = None,
+        market: str | None = None,
+        ticker: str | None = None,
     ) -> list[JsonDict]:
         order_clauses = {
             "newest_scraped": "i.fetched_at DESC, i.id DESC",
@@ -1317,7 +1338,12 @@ class StateManager:
             ") AS credibility_score, ("
             " SELECT MAX(screen_sharpe) FROM research_extractions e"
             " WHERE e.research_item_id = i.id"
-            ") AS max_screen_sharpe FROM research_items i WHERE 1=1"
+            ") AS max_screen_sharpe,"
+            " t.status AS tag_status, t.markets_json AS tag_markets_json,"
+            " t.tickers_json AS tag_tickers_json, t.primary_ticker AS tag_primary_ticker,"
+            " t.direction AS tag_direction"
+            " FROM research_items i"
+            " LEFT JOIN research_item_tags t ON t.research_item_id = i.id WHERE 1=1"
         )
         params: list[Any] = []
         if source is not None:
@@ -1340,6 +1366,7 @@ class StateManager:
         if q:
             query += " AND LOWER(i.title) LIKE ?"
             params.append(f"%{q.lower()}%")
+        query, params = _tag_filters(query, params, market=market, ticker=ticker)
         query += f" ORDER BY {order_by} LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         with self._write_lock:
@@ -1684,6 +1711,8 @@ class StateManager:
         status: str | None = None,
         hide_low_trade: bool = False,
         q: str | None = None,
+        market: str | None = None,
+        ticker: str | None = None,
     ) -> int:
         query = "SELECT COUNT(*) AS c FROM research_items i WHERE 1=1"
         params: list[Any] = []
@@ -1705,9 +1734,142 @@ class StateManager:
         if q:
             query += " AND LOWER(i.title) LIKE ?"
             params.append(f"%{q.lower()}%")
+        query, params = _tag_filters(query, params, market=market, ticker=ticker)
         with self._write_lock:
             row = self.conn.execute(query, params).fetchone()
         return int(row["c"]) if row else 0
+
+    # ---------- research item market tags ----------
+
+    def upsert_research_item_tags(
+        self,
+        item_id: int,
+        *,
+        status: str,
+        markets: list[str],
+        tickers: list[str],
+        primary_ticker: str | None,
+        direction: str | None,
+        model: str | None,
+        attempts: int,
+        error: str | None = None,
+    ) -> None:
+        """Write an item's market tags (record + indexed values) in one transaction."""
+        with self._write_lock:
+            self.conn.execute(
+                """INSERT INTO research_item_tags
+                       (research_item_id, status, markets_json, tickers_json, primary_ticker,
+                        direction, model, attempts, error, tagged_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                   ON CONFLICT(research_item_id) DO UPDATE SET
+                       status = excluded.status,
+                       markets_json = excluded.markets_json,
+                       tickers_json = excluded.tickers_json,
+                       primary_ticker = excluded.primary_ticker,
+                       direction = excluded.direction,
+                       model = excluded.model,
+                       attempts = excluded.attempts,
+                       error = excluded.error,
+                       tagged_at = excluded.tagged_at""",
+                (
+                    item_id,
+                    status,
+                    json.dumps(markets),
+                    json.dumps(tickers),
+                    primary_ticker,
+                    direction,
+                    model,
+                    attempts,
+                    error,
+                ),
+            )
+            self.conn.execute(
+                "DELETE FROM research_item_tag_values WHERE research_item_id = ?", (item_id,)
+            )
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO research_item_tag_values (research_item_id, kind, value)"
+                " VALUES (?, ?, ?)",
+                [(item_id, "market", m) for m in markets] + [(item_id, "ticker", t) for t in tickers],
+            )
+            self.conn.commit()
+
+    def get_research_item_tags(self, item_id: int) -> JsonDict | None:
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM research_item_tags WHERE research_item_id = ?", (item_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["markets"] = json.loads(d.pop("markets_json") or "[]")
+        d["tickers"] = json.loads(d.pop("tickers_json") or "[]")
+        return d
+
+    def list_items_needing_tags(
+        self, *, limit: int, max_attempts: int, include_prepass: bool = True
+    ) -> list[JsonDict]:
+        """Items never tagged, plus (``include_prepass``) items with pre-pass tags only and
+        model attempts left; never-tagged first, newest first."""
+        with self._write_lock:
+            rows = self.conn.execute(
+                """SELECT i.* FROM research_items i
+                   LEFT JOIN research_item_tags t ON t.research_item_id = i.id
+                   WHERE t.research_item_id IS NULL
+                      OR (? AND t.status = 'prepass' AND t.attempts < ?)
+                   ORDER BY t.research_item_id IS NOT NULL, i.id DESC
+                   LIMIT ?""",
+                (1 if include_prepass else 0, max_attempts, limit),
+            ).fetchall()
+        out = []
+        for row in rows:
+            d = dict(row)
+            d["extras"] = json.loads(d["extras_json"]) if d.get("extras_json") else {}
+            out.append(d)
+        return out
+
+    def research_tag_facets(self, *, source: str | None = None, top_tickers: int = 40) -> JsonDict:
+        """Item counts per market and for the most-tagged tickers (filter options)."""
+        where, params = "", []
+        if source is not None:
+            where = " AND i.source = ?"
+            params.append(source)
+        query = (
+            "SELECT v.kind, v.value, COUNT(*) AS n FROM research_item_tag_values v"
+            " JOIN research_items i ON i.id = v.research_item_id"
+            f" WHERE v.kind = ?{where} GROUP BY v.value ORDER BY n DESC, v.value"
+        )
+        with self._write_lock:
+            markets = self.conn.execute(query, ["market", *params]).fetchall()
+            tickers = self.conn.execute(query + " LIMIT ?", ["ticker", *params, top_tickers]).fetchall()
+            untagged = self.conn.execute(
+                "SELECT COUNT(*) AS c FROM research_items i"
+                " LEFT JOIN research_item_tags t ON t.research_item_id = i.id"
+                f" WHERE t.research_item_id IS NULL{where}",
+                params,
+            ).fetchone()
+        return {
+            "markets": [{"value": r["value"], "count": int(r["n"])} for r in markets],
+            "tickers": [{"value": r["value"], "count": int(r["n"])} for r in tickers],
+            "untagged": int(untagged["c"]) if untagged else 0,
+        }
+
+    def recent_tagged_tickers(self, *, days: int, markets: list[str]) -> list[tuple[str, int]]:
+        """Tickers of items fetched in the last ``days`` days that carry one of ``markets``, by count."""
+        placeholders = ",".join("?" for _ in markets)
+        with self._write_lock:
+            rows = self.conn.execute(
+                f"""SELECT tv.value AS ticker, COUNT(DISTINCT tv.research_item_id) AS n
+                    FROM research_item_tag_values tv
+                    JOIN research_items i ON i.id = tv.research_item_id
+                    WHERE tv.kind = 'ticker'
+                      AND i.fetched_at >= datetime('now', ?)
+                      AND EXISTS (SELECT 1 FROM research_item_tag_values mv
+                                  WHERE mv.research_item_id = tv.research_item_id
+                                    AND mv.kind = 'market' AND mv.value IN ({placeholders}))
+                    GROUP BY tv.value ORDER BY n DESC""",
+                [f"-{int(days)} days", *markets],
+            ).fetchall()
+        return [(str(r["ticker"]), int(r["n"])) for r in rows]
 
     def update_scrape_run_heartbeat(self, run_id: int) -> bool:
         with self._write_lock:
@@ -2112,9 +2274,13 @@ class StateManager:
                        j.started_at, j.completed_at, j.attempts, j.max_attempts,
                        j.last_error, j.error_message, j.heartbeat_at,
                        i.title AS item_title, i.url AS item_url,
-                       i.source AS item_source
+                       i.source AS item_source,
+                       t.status AS tag_status, t.markets_json AS tag_markets_json,
+                       t.tickers_json AS tag_tickers_json,
+                       t.primary_ticker AS tag_primary_ticker, t.direction AS tag_direction
                 FROM research_extraction_jobs j
                 JOIN research_items i ON j.research_item_id = i.id
+                LEFT JOIN research_item_tags t ON t.research_item_id = i.id
                 WHERE j.status IN ({placeholders})
                 ORDER BY j.queued_at ASC, j.id ASC
                 LIMIT ?""",
