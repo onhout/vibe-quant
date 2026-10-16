@@ -806,12 +806,10 @@ def ingest_equity_symbol(
     if catalog is None:
         catalog = CatalogManager()
     effective_end = end_date or datetime.now(UTC)
-    if start_date is not None:
-        months = get_months_in_range(start_date, effective_end)
-        range_start = start_date
-    else:
-        months = get_years_months_to_download(years)
-        range_start = effective_end - timedelta(days=365 * years)
+    range_start = start_date if start_date is not None else effective_end - timedelta(days=365 * years)
+    # Every month the range touches, the current (partial) one included: Alpaca's REST
+    # API serves it like any other (the Binance helpers stop at the last complete month).
+    months = list(generate_month_range(range_start, effective_end))
     now = datetime.now(UTC)
     counts: dict[str, Any] = {"klines_fetched": 0, "klines_inserted": 0}
     failed_months: list[str] = []
