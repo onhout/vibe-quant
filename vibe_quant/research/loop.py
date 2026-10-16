@@ -23,9 +23,11 @@ the existing pipeline unattended, every ``interval_minutes``:
    with the default holdout and fail-closed gates, outside market hours only.
 4. **Validate champions.** Champions of finished loop runs (they passed every
    gate) are promoted with ``mode=validation`` on the held-out range.
-5. **Trade.** A holdout validation that clears the paper thresholds starts a
-   paper session (``POST /api/paper/start``) with the protected sizing caps,
-   when none is running (Peter's choice: winners trade right away).
+5. **Trade.** A holdout validation that clears the paper thresholds is queued for
+   the regime tuner (``require_regime_pass``): it must make money in bull and bear
+   markets first, and the tuner starts the paper session (``POST /api/paper/start``)
+   once it settles. With ``require_regime_pass`` off
+   the loop starts the session itself when none is running.
 
 Heavy jobs go through the backend API so they are tracked and visible in the
 UI like manual launches; the loop's own bookkeeping lives in
@@ -117,12 +119,15 @@ class LoopConfig:
     group_size: int = 8
     static_groups: dict[str, list[str]] = field(default_factory=dict)
     idea_lookback_days: int = 30
-    # Paper (protected sizing caps apply to every loop session)
+    # Paper sessions started by the loop
     auto_paper: bool = True
+    # A holdout winner must also make money in bear and bull markets: it is queued for the
+    # regime tuner (vibe_quant.research.tuner), which starts the paper session once it settles.
+    require_regime_pass: bool = True
     paper_min_trades: int = 5
     paper_min_profit_factor: float = 1.2
     paper_min_return: float = 0.0
-    paper_max_position_pct: float = 0.5
+    paper_max_position_pct: float = 1.0  # the full account per position (Peter: no 50% cap)
     paper_max_position_count: int = 1
 
     @classmethod
@@ -480,6 +485,17 @@ class ResearchLoop:
                 run_id, trades, pf, ret, "PASS" if passed else "fail",
             )
             if not passed or not cfg.auto_paper or self.dry_run:
+                continue
+            if cfg.require_regime_pass:
+                from vibe_quant.research.tuner import TunerConfig
+
+                tuner_cfg = TunerConfig.load()
+                strategy_id = int(info["strategy_id"])
+                if strategy_id not in tuner_cfg.candidate_ids:
+                    tuner_cfg.candidate_ids.append(strategy_id)
+                    tuner_cfg.save()
+                info["verdict"] = "passed the holdout; queued for the regime tuner (bull + bear) before paper"
+                logger.info("research loop: strategy %s queued for the regime tuner", strategy_id)
                 continue
             status = self._api("GET", "/api/paper/status")
             if status.get("state") not in ("idle", None):

@@ -56,11 +56,42 @@ def main(argv: list[str] | None = None) -> int:
         help="Run the autonomous research loop (sources -> extraction -> discovery -> gates -> paper)",
     )
     loop.add_argument("--once", action="store_true", help="Run one cycle and exit")
-    loop.add_argument("--dry-run", action="store_true", help="Log what each stage would do; change nothing")
-    loop.add_argument("--config", type=Path, default=None, help="Loop config JSON (default data/state/research_loop_config.json)")
-    loop.add_argument("--interval-min", type=int, default=None, help="Minutes between cycles (overrides config)")
+    loop.add_argument(
+        "--dry-run", action="store_true", help="Log what each stage would do; change nothing"
+    )
+    loop.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Loop config JSON (default data/state/research_loop_config.json)",
+    )
+    loop.add_argument(
+        "--interval-min", type=int, default=None, help="Minutes between cycles (overrides config)"
+    )
     loop.add_argument("--db-path", type=Path, default=None, help="Override SQLite path")
     loop.add_argument("--log-level", default="INFO")
+
+    tune = sub.add_parser(
+        "tune",
+        help="Run the regime tuner (test bull/bear/other markets -> AI parameters -> settle -> paper)",
+    )
+    tune.add_argument("--once", action="store_true", help="Run one attempt and exit")
+    tune.add_argument(
+        "--strategy-id",
+        type=int,
+        action="append",
+        default=None,
+        help="Tune only this strategy (repeat for several, in order)",
+    )
+    tune.add_argument(
+        "--until-done",
+        action="store_true",
+        help="With --strategy-id: keep going until each strategy settles or runs out of rounds",
+    )
+    tune.add_argument(
+        "--dry-run", action="store_true", help="Log the runs it would launch; change nothing"
+    )
+    tune.add_argument("--log-level", default="INFO")
 
     tag = sub.add_parser(
         "tag",
@@ -91,6 +122,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "sources":
         for n in list_sources():
             print(n)
+        return 0
+
+    if args.cmd == "tune":
+        from vibe_quant.research.tuner import RegimeTuner
+
+        if args.strategy_id and args.until_done and not args.dry_run:
+            for strategy_id in args.strategy_id:
+                while True:
+                    cand = RegimeTuner().step(only=strategy_id)
+                    if cand is None or cand["status"] in ("settled", "exhausted"):
+                        break
+            return 0
+        tuner = RegimeTuner(dry_run=args.dry_run)
+        if args.once or args.dry_run or args.strategy_id:
+            tuner.step(only=args.strategy_id[0] if args.strategy_id else None)
+        else:
+            tuner.run_forever()
         return 0
 
     if args.cmd == "tag":
@@ -164,13 +212,17 @@ def main(argv: list[str] | None = None) -> int:
 
                     extract_fn = get_default_extractor()
                 except ImportError:
-                    logger.warning("extractor module not available; running with --no-extract semantics")
+                    logger.warning(
+                        "extractor module not available; running with --no-extract semantics"
+                    )
                     extract_fn = None
                 except ConfigurationError as e:
                     print(f"error: {e}", file=sys.stderr)
                     return 1
                 except FileNotFoundError as e:
-                    logger.warning("extractor unavailable: %s; items will land at extraction_status=pending", e)
+                    logger.warning(
+                        "extractor unavailable: %s; items will land at extraction_status=pending", e
+                    )
                     extract_fn = None
             source_kwargs: dict[str, object] = {}
             if args.source == "reddit":

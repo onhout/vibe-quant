@@ -552,11 +552,15 @@ def classify(item: RawItem | dict[str, Any], hints: MarketTags, universe: Univer
         body=body[:2500] or "(no text)",
         comments=comments or "(none)",
     )
-    # Prompt-only JSON (no response_format: not every endpoint supports it), validated
-    # below; one immediate retry when the reply isn't a JSON object.
+    # JSON mode (json_object; deepseek-flash has no json_schema, and the client drops it
+    # if an endpoint refuses it), validated below; one retry when the reply isn't a JSON object.
     for attempt in range(2):
         reply = openai_chat.research_completion(
-            prompt, timeout_seconds=MODEL_TIMEOUT_SECONDS, temperature=0, image_paths=images
+            prompt,
+            timeout_seconds=MODEL_TIMEOUT_SECONDS,
+            temperature=0,
+            image_paths=images,
+            json_object=True,
         )
         try:
             data = _parse_reply(reply)
