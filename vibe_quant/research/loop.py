@@ -45,7 +45,12 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from vibe_quant.research.pipeline import PromoteError, promote_extraction, run_scrape
+from vibe_quant.research.pipeline import (
+    PromoteError,
+    promote_extraction,
+    reap_orphan_scrape_runs,
+    run_scrape,
+)
 
 if TYPE_CHECKING:
     from vibe_quant.db.state_manager import StateManager
@@ -190,7 +195,15 @@ def median_daily_range_pct(symbol: str, bars: int = 120) -> float | None:
     return statistics.median(ranges) if len(ranges) >= 20 else None
 
 
-def ticker_groups(cfg: LoopConfig, timeframe: str) -> dict[str, list[str]]:
+# Tagged research posts (market_tags) feed the "reddit_tagged" group: tickers of
+# stock / option / ETF posts fetched in the last TAGGED_GROUP_DAYS days.
+TAGGED_GROUP_DAYS = 14
+TAGGED_GROUP_MARKETS = ["us_stocks", "options", "etf_index"]
+
+
+def ticker_groups(
+    cfg: LoopConfig, timeframe: str, sm: StateManager | None = None
+) -> dict[str, list[str]]:
     """Auto groups for discovery, each limited to symbols with catalog data."""
     from vibe_quant.research.sources.wsb_archive import mention_counts
 
@@ -201,6 +214,9 @@ def ticker_groups(cfg: LoopConfig, timeframe: str) -> dict[str, list[str]]:
     hot = catalog_symbols(ranked(30), timeframe)[: cfg.group_size]
     favourites = catalog_symbols(ranked(365), timeframe)[: cfg.group_size]
     groups: dict[str, list[str]] = {"wsb_hot": hot, "wsb_favorites": favourites}
+    if sm is not None:
+        tagged = [t for t, _ in sm.recent_tagged_tickers(days=TAGGED_GROUP_DAYS, markets=TAGGED_GROUP_MARKETS)]
+        groups["reddit_tagged"] = catalog_symbols(tagged[: cfg.group_size * 5], timeframe)[: cfg.group_size]
     for name, members in cfg.static_groups.items():
         groups[name] = catalog_symbols([m.upper() for m in members], timeframe)
     pool = sorted({s for members in groups.values() for s in members})
@@ -249,6 +265,9 @@ class ResearchLoop:
 
     def run_sources(self) -> None:
         from vibe_quant.research.extractor import get_default_extractor
+
+        if not self.dry_run:
+            reap_orphan_scrape_runs(self.sm)  # this loop's own runs from before a restart
 
         try:
             extractor = get_default_extractor()
@@ -326,7 +345,7 @@ class ResearchLoop:
             logger.info("research loop: a discovery run is in progress; waiting")
             return None
         timeframe = cfg.discovery_timeframes[self.state.cycle % len(cfg.discovery_timeframes)]
-        groups = ticker_groups(cfg, timeframe)
+        groups = ticker_groups(cfg, timeframe, self.sm)
         if not groups:
             logger.info("research loop: no ticker group has %s catalog data yet; discovery skipped", timeframe)
             return None

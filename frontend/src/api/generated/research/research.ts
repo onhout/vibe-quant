@@ -32,10 +32,12 @@ import type {
   ExtractionResponse,
   GetCredentialsStatusApiResearchCredentialsStatusGetParams,
   GetLatestScrapeApiResearchScrapeLatestGetParams,
+  GetTagFacetsApiResearchTagsFacetsGetParams,
   HTTPValidationError,
   IndicatorScaffoldResponse,
   ListExtractionQueueApiResearchExtractionQueueGetParams,
   ListItemsApiResearchItemsGetParams,
+  MarketTagsResponse,
   PromoteIndicatorResponse,
   ResearchItemDetailResponse,
   ResearchItemListResponse,
@@ -45,6 +47,7 @@ import type {
   SourceListResponse,
   SubredditsResponse,
   SubredditsUpdateRequest,
+  TagFacetsResponse,
   VibeQuantApiSchemasResearchPromoteResponse
 } from '.././models';
 
@@ -1116,6 +1119,220 @@ export function useListItemsApiResearchItemsGet<TData = Awaited<ReturnType<typeo
 
 
 /**
+ * Item counts per market and for the most-tagged tickers (the list's filter options).
+ * @summary Get Tag Facets
+ */
+export type getTagFacetsApiResearchTagsFacetsGetResponse200 = {
+  data: TagFacetsResponse
+  status: 200
+}
+
+export type getTagFacetsApiResearchTagsFacetsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getTagFacetsApiResearchTagsFacetsGetResponseSuccess = (getTagFacetsApiResearchTagsFacetsGetResponse200) & {
+  headers: Headers;
+};
+export type getTagFacetsApiResearchTagsFacetsGetResponseError = (getTagFacetsApiResearchTagsFacetsGetResponse422) & {
+  headers: Headers;
+};
+
+export type getTagFacetsApiResearchTagsFacetsGetResponse = (getTagFacetsApiResearchTagsFacetsGetResponseSuccess | getTagFacetsApiResearchTagsFacetsGetResponseError)
+
+export const getGetTagFacetsApiResearchTagsFacetsGetUrl = (params?: GetTagFacetsApiResearchTagsFacetsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/research/tags/facets?${stringifiedParams}` : `/api/research/tags/facets`
+}
+
+export const getTagFacetsApiResearchTagsFacetsGet = async (params?: GetTagFacetsApiResearchTagsFacetsGetParams, options?: RequestInit): Promise<getTagFacetsApiResearchTagsFacetsGetResponse> => {
+  
+  return customInstance<getTagFacetsApiResearchTagsFacetsGetResponse>(getGetTagFacetsApiResearchTagsFacetsGetUrl(params),
+  {      
+    ...options,
+    method: 'GET'
+    
+    
+  }
+);}
+
+
+
+
+
+export const getGetTagFacetsApiResearchTagsFacetsGetQueryKey = (params?: GetTagFacetsApiResearchTagsFacetsGetParams,) => {
+    return [
+    `/api/research/tags/facets`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+    
+export const getGetTagFacetsApiResearchTagsFacetsGetQueryOptions = <TData = Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>, TError = HTTPValidationError>(params?: GetTagFacetsApiResearchTagsFacetsGetParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetTagFacetsApiResearchTagsFacetsGetQueryKey(params);
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>> = ({ signal }) => getTagFacetsApiResearchTagsFacetsGet(params, { signal, ...requestOptions });
+
+      
+
+      
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetTagFacetsApiResearchTagsFacetsGetQueryResult = NonNullable<Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>>
+export type GetTagFacetsApiResearchTagsFacetsGetQueryError = HTTPValidationError
+
+
+export function useGetTagFacetsApiResearchTagsFacetsGet<TData = Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>, TError = HTTPValidationError>(
+ params: undefined |  GetTagFacetsApiResearchTagsFacetsGetParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>,
+          TError,
+          Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetTagFacetsApiResearchTagsFacetsGet<TData = Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>, TError = HTTPValidationError>(
+ params?: GetTagFacetsApiResearchTagsFacetsGetParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>,
+          TError,
+          Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetTagFacetsApiResearchTagsFacetsGet<TData = Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>, TError = HTTPValidationError>(
+ params?: GetTagFacetsApiResearchTagsFacetsGetParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get Tag Facets
+ */
+
+export function useGetTagFacetsApiResearchTagsFacetsGet<TData = Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>, TError = HTTPValidationError>(
+ params?: GetTagFacetsApiResearchTagsFacetsGetParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getTagFacetsApiResearchTagsFacetsGet>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetTagFacetsApiResearchTagsFacetsGetQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+/**
+ * Re-run market tagging (pre-pass + model) for one item now.
+ * @summary Retag Item
+ */
+export type retagItemApiResearchItemsItemIdTagsPostResponse200 = {
+  data: MarketTagsResponse
+  status: 200
+}
+
+export type retagItemApiResearchItemsItemIdTagsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type retagItemApiResearchItemsItemIdTagsPostResponseSuccess = (retagItemApiResearchItemsItemIdTagsPostResponse200) & {
+  headers: Headers;
+};
+export type retagItemApiResearchItemsItemIdTagsPostResponseError = (retagItemApiResearchItemsItemIdTagsPostResponse422) & {
+  headers: Headers;
+};
+
+export type retagItemApiResearchItemsItemIdTagsPostResponse = (retagItemApiResearchItemsItemIdTagsPostResponseSuccess | retagItemApiResearchItemsItemIdTagsPostResponseError)
+
+export const getRetagItemApiResearchItemsItemIdTagsPostUrl = (itemId: number,) => {
+
+
+  
+
+  return `/api/research/items/${itemId}/tags`
+}
+
+export const retagItemApiResearchItemsItemIdTagsPost = async (itemId: number, options?: RequestInit): Promise<retagItemApiResearchItemsItemIdTagsPostResponse> => {
+  
+  return customInstance<retagItemApiResearchItemsItemIdTagsPostResponse>(getRetagItemApiResearchItemsItemIdTagsPostUrl(itemId),
+  {      
+    ...options,
+    method: 'POST'
+    
+    
+  }
+);}
+
+
+
+
+export const getRetagItemApiResearchItemsItemIdTagsPostMutationOptions = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof retagItemApiResearchItemsItemIdTagsPost>>, TError,{itemId: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof retagItemApiResearchItemsItemIdTagsPost>>, TError,{itemId: number}, TContext> => {
+
+const mutationKey = ['retagItemApiResearchItemsItemIdTagsPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof retagItemApiResearchItemsItemIdTagsPost>>, {itemId: number}> = (props) => {
+          const {itemId} = props ?? {};
+
+          return  retagItemApiResearchItemsItemIdTagsPost(itemId,requestOptions)
+        }
+
+
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RetagItemApiResearchItemsItemIdTagsPostMutationResult = NonNullable<Awaited<ReturnType<typeof retagItemApiResearchItemsItemIdTagsPost>>>
+    
+    export type RetagItemApiResearchItemsItemIdTagsPostMutationError = HTTPValidationError
+
+    /**
+ * @summary Retag Item
+ */
+export const useRetagItemApiResearchItemsItemIdTagsPost = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof retagItemApiResearchItemsItemIdTagsPost>>, TError,{itemId: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof retagItemApiResearchItemsItemIdTagsPost>>,
+        TError,
+        {itemId: number},
+        TContext
+      > => {
+      return useMutation(getRetagItemApiResearchItemsItemIdTagsPostMutationOptions(options), queryClient);
+    }
+    /**
  * @summary Get Item
  */
 export type getItemApiResearchItemsItemIdGetResponse200 = {

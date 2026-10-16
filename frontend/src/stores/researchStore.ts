@@ -26,12 +26,18 @@ interface ResearchState {
   page: number;
   hideLowTrade: boolean;
   q: string;
+  /** Market tag filter ("" = all; see components/research/MarketTags). */
+  market: string;
+  /** Ticker tag filter ("" = all). */
+  ticker: string;
   setSource: (source: string) => void;
   setStatus: (status: ResearchStatusFilter) => void;
   setSort: (sort: ResearchSort) => void;
   setPage: (page: number) => void;
   setHideLowTrade: (hide: boolean) => void;
   setQ: (q: string) => void;
+  setMarket: (market: string) => void;
+  setTicker: (ticker: string) => void;
   reset: () => void;
 }
 
@@ -42,6 +48,8 @@ const DEFAULTS = {
   page: 0,
   hideLowTrade: false,
   q: "",
+  market: "",
+  ticker: "",
 };
 
 export const PAGE_SIZE = 50;
@@ -56,6 +64,8 @@ export const useResearchStore = create<ResearchState>()(
       setPage: (page) => set({ page }),
       setHideLowTrade: (hide) => set({ hideLowTrade: hide, page: 0 }),
       setQ: (q) => set({ q, page: 0 }),
+      setMarket: (market) => set({ market, page: 0 }),
+      setTicker: (ticker) => set({ ticker: ticker.trim().toUpperCase(), page: 0 }),
       reset: () => set({ ...DEFAULTS }),
     }),
     { name: "vq.research.filters" },

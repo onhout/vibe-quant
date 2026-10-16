@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { ChevronLeft, ExternalLink } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -7,13 +7,16 @@ import {
   getGetItemApiResearchItemsItemIdGetQueryKey,
   useExtractItemApiResearchItemsItemIdExtractPost,
   useGetItemApiResearchItemsItemIdGet,
+  useRetagItemApiResearchItemsItemIdTagsPost,
 } from "@/api/generated/research/research";
 import { ExtractionCard } from "@/components/research/ExtractionCard";
+import { MarketTags } from "@/components/research/MarketTags";
 import { PostContent } from "@/components/research/PostContent";
-import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import { formatRelative } from "@/lib/time";
+import { useResearchStore } from "@/stores/researchStore";
 
 interface Props {
   itemId: number;
@@ -55,6 +58,14 @@ export function ResearchItemPage({ itemId }: Props) {
   });
   const reExtractMut = useExtractItemApiResearchItemsItemIdExtractPost();
   const [running, setRunning] = useState(false);
+  const retagMut = useRetagItemApiResearchItemsItemIdTagsPost();
+  const navigate = useNavigate();
+  const setMarket = useResearchStore((s) => s.setMarket);
+  const setTicker = useResearchStore((s) => s.setTicker);
+  const filterBy = (apply: () => void) => {
+    apply();
+    navigate({ to: "/research" });
+  };
 
   if (isLoading) {
     return <div className="py-16 text-center text-sm text-muted-foreground">Loading item…</div>;
@@ -78,8 +89,7 @@ export function ResearchItemPage({ itemId }: Props) {
     const tb = b.extracted_at ? Date.parse(b.extracted_at) : 0;
     return tb - ta;
   });
-  const failedJob =
-    item.latest_job && item.latest_job.status === "failed" ? item.latest_job : null;
+  const failedJob = item.latest_job && item.latest_job.status === "failed" ? item.latest_job : null;
 
   const handleRunExtraction = () => {
     setRunning(true);
@@ -130,6 +140,41 @@ export function ResearchItemPage({ itemId }: Props) {
           >
             open <ExternalLink className="h-3 w-3" />
           </a>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Markets</span>
+          <MarketTags
+            tags={item.market_tags}
+            onMarketClick={(m) => filterBy(() => setMarket(m))}
+            onTickerClick={(t) => filterBy(() => setTicker(t))}
+          />
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[11px]"
+            disabled={retagMut.isPending}
+            onClick={() =>
+              retagMut.mutate(
+                { itemId },
+                {
+                  onSuccess: (resp) => {
+                    if (resp.status === 200) {
+                      toast.success(`Tagged: ${resp.data.markets.join(", ") || "no market"}`);
+                      queryClient.invalidateQueries({ queryKey: itemKey });
+                    } else {
+                      toast.error("Re-tag failed");
+                    }
+                  },
+                  onError: () => toast.error("Re-tag failed"),
+                },
+              )
+            }
+          >
+            {retagMut.isPending ? "Tagging…" : "Re-tag"}
+          </Button>
+          {item.market_tags?.model && (
+            <span className="text-[10px] text-muted-foreground/60">{item.market_tags.model}</span>
+          )}
         </div>
       </div>
 

@@ -20,4 +20,12 @@ limit?: number;
 offset?: number;
 hide_low_trade?: boolean;
 q?: string | null;
+/**
+ * Only items tagged with this market
+ */
+market?: string | null;
+/**
+ * Only items tagged with this ticker
+ */
+ticker?: string | null;
 };

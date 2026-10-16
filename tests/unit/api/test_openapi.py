@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from vibe_quant.api.app import create_app
 
-EXPECTED_PATH_COUNT = 108  # +16: /api/alpaca (4), /api/options-bot (12)
-EXPECTED_SCHEMA_COUNT = 106  # +19 Alpaca account + options bot models; -DatabaseSwitchRequest (runtime DB switch removed); +ExitTimingSummary (vibe-quant-3r9wj)
+EXPECTED_PATH_COUNT = 110  # +16: /api/alpaca (4), /api/options-bot (12); +2 research market tags (facets, re-tag)
+EXPECTED_SCHEMA_COUNT = 109  # +3 research market tags (MarketTagsResponse, TagFacet, TagFacetsResponse); +19 Alpaca account + options bot models; -DatabaseSwitchRequest (runtime DB switch removed); +ExitTimingSummary (vibe-quant-3r9wj)
 
 REQUIRED_PATHS = [
     "/health",

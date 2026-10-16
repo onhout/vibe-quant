@@ -2395,6 +2395,43 @@
               ],
               "title": "Q"
             }
+          },
+          {
+            "name": "market",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only items tagged with this market",
+              "title": "Market"
+            },
+            "description": "Only items tagged with this market"
+          },
+          {
+            "name": "ticker",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 12
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only items tagged with this ticker",
+              "title": "Ticker"
+            },
+            "description": "Only items tagged with this ticker"
           }
         ],
         "responses": {
@@ -2404,6 +2441,99 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResearchItemListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/research/tags/facets": {
+      "get": {
+        "tags": [
+          "research"
+        ],
+        "summary": "Get Tag Facets",
+        "description": "Item counts per market and for the most-tagged tickers (the list's filter options).",
+        "operationId": "get_tag_facets_api_research_tags_facets_get",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagFacetsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/research/items/{item_id}/tags": {
+      "post": {
+        "tags": [
+          "research"
+        ],
+        "summary": "Retag Item",
+        "description": "Re-run market tagging (pre-pass + model) for one item now.",
+        "operationId": "retag_item_api_research_items__item_id__tags_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketTagsResponse"
                 }
               }
             }
@@ -7886,6 +8016,16 @@
           "item_source": {
             "type": "string",
             "title": "Item Source"
+          },
+          "item_market_tags": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketTagsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -8885,6 +9025,85 @@
           "base_latency_ms"
         ],
         "title": "LatencyPreset"
+      },
+      "MarketTagsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "prepass",
+              "tagged",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "markets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Markets"
+          },
+          "tickers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tickers"
+          },
+          "primary_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Ticker"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "tagged_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tagged At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "markets",
+          "tickers"
+        ],
+        "title": "MarketTagsResponse",
+        "description": "Markets (asset classes) and tickers an item is about; see research.market_tags."
       },
       "MonthlyReturn": {
         "properties": {
@@ -10201,6 +10420,16 @@
             "type": "string",
             "title": "Extraction Status"
           },
+          "market_tags": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketTagsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "extractions": {
             "items": {
               "$ref": "#/components/schemas/ExtractionResponse"
@@ -10366,6 +10595,16 @@
           "extraction_status": {
             "type": "string",
             "title": "Extraction Status"
+          },
+          "market_tags": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketTagsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -11491,6 +11730,53 @@
           "updated_at"
         ],
         "title": "SystemStatusResponse"
+      },
+      "TagFacet": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Value"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "value",
+          "count"
+        ],
+        "title": "TagFacet"
+      },
+      "TagFacetsResponse": {
+        "properties": {
+          "markets": {
+            "items": {
+              "$ref": "#/components/schemas/TagFacet"
+            },
+            "type": "array",
+            "title": "Markets"
+          },
+          "tickers": {
+            "items": {
+              "$ref": "#/components/schemas/TagFacet"
+            },
+            "type": "array",
+            "title": "Tickers"
+          },
+          "untagged": {
+            "type": "integer",
+            "title": "Untagged"
+          }
+        },
+        "type": "object",
+        "required": [
+          "markets",
+          "tickers",
+          "untagged"
+        ],
+        "title": "TagFacetsResponse"
       },
       "TradeResponse": {
         "properties": {

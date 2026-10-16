@@ -6,6 +6,7 @@
  */
 import type { ExtractionJobResponse } from './extractionJobResponse';
 import type { ExtractionResponse } from './extractionResponse';
+import type { MarketTagsResponse } from './marketTagsResponse';
 import type { ResearchItemDetailResponseExtras } from './researchItemDetailResponseExtras';
 
 export interface ResearchItemDetailResponse {
@@ -21,6 +22,7 @@ export interface ResearchItemDetailResponse {
   extras?: ResearchItemDetailResponseExtras;
   fetched_at: string | null;
   extraction_status: string;
+  market_tags?: MarketTagsResponse | null;
   extractions: ExtractionResponse[];
   latest_job?: ExtractionJobResponse | null;
 }

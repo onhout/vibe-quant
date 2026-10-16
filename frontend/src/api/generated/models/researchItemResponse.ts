@@ -4,6 +4,7 @@
  * vibe-quant API
  * OpenAPI spec version: 0.1.0
  */
+import type { MarketTagsResponse } from './marketTagsResponse';
 import type { ResearchItemResponseExtras } from './researchItemResponseExtras';
 
 export interface ResearchItemResponse {
@@ -19,4 +20,5 @@ export interface ResearchItemResponse {
   extras?: ResearchItemResponseExtras;
   fetched_at: string | null;
   extraction_status: string;
+  market_tags?: MarketTagsResponse | null;
 }

@@ -136,6 +136,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if reaped:
         logger.warning("startup: reaped %d orphan backtest run(s) with no live job", len(reaped))
 
+    # Same for research scrape runs whose process died mid-scrape.
+    from vibe_quant.research.pipeline import reap_orphan_scrape_runs
+
+    reap_orphan_scrape_runs(state_mgr)
+
     await ws_mgr.start()
     try:
         yield

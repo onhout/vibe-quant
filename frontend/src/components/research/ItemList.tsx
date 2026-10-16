@@ -14,6 +14,8 @@ export function ItemList() {
   const page = useResearchStore((s) => s.page);
   const hideLowTrade = useResearchStore((s) => s.hideLowTrade);
   const q = useResearchStore((s) => s.q);
+  const market = useResearchStore((s) => s.market);
+  const ticker = useResearchStore((s) => s.ticker);
   const setPage = useResearchStore((s) => s.setPage);
   const reset = useResearchStore((s) => s.reset);
 
@@ -27,6 +29,8 @@ export function ItemList() {
     offset: page * PAGE_SIZE,
     ...(hideLowTrade ? { hide_low_trade: true } : {}),
     ...(debouncedQ ? { q: debouncedQ } : {}),
+    ...(market ? { market } : {}),
+    ...(ticker ? { ticker } : {}),
   };
 
   const { data, isLoading, isError } = useListItemsApiResearchItemsGet(params);
@@ -45,12 +49,18 @@ export function ItemList() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   if (items.length === 0) {
-    const filteredOut = status !== "all" || !!debouncedQ || hideLowTrade;
+    const filteredOut = status !== "all" || !!debouncedQ || hideLowTrade || !!market || !!ticker;
     if (filteredOut) {
       return (
         <EmptyState
           title="No items match these filters"
-          description={debouncedQ ? `No titles match "${debouncedQ}".` : "Try clearing the filters."}
+          description={
+            debouncedQ
+              ? `No titles match "${debouncedQ}".`
+              : ticker
+                ? `No items tagged ${ticker}${market ? ` in ${market}` : ""}.`
+                : "Try clearing the filters."
+          }
           action={{ label: "Clear filters", onClick: reset }}
         />
       );
@@ -71,6 +81,7 @@ export function ItemList() {
             <TableRow className="hover:bg-transparent">
               <TableHead className="w-24">Posted</TableHead>
               <TableHead>Title</TableHead>
+              <TableHead className="w-72">Markets &amp; tickers</TableHead>
               <TableHead className="w-24">Source</TableHead>
               <TableHead className="w-16 text-right">Score</TableHead>
               <TableHead className="w-20 text-right">Comments</TableHead>
