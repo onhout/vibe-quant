@@ -4,6 +4,11 @@ export function pct(value: number | null | undefined, digits = 1): string {
   return `${v > 0 ? "+" : ""}${v.toFixed(digits)}%`;
 }
 
+export function dd(value: number | null | undefined, digits = 1): string {
+  if (value == null || Number.isNaN(value)) return "--";
+  return `${(Math.abs(value) * 100).toFixed(digits)}%`;
+}
+
 export function num(value: number | null | undefined, digits = 2): string {
   if (value == null || Number.isNaN(value)) return "--";
   return value.toFixed(digits);

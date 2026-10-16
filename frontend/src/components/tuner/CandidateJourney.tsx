@@ -11,7 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { num, pct, when } from "./format";
+import { dd, num, pct, when } from "./format";
 import { TunerBadge } from "./TunerBadges";
 
 function WindowsTable({ windows }: { windows: TunerWindowResult[] }) {
@@ -54,7 +54,7 @@ function WindowsTable({ windows }: { windows: TunerWindowResult[] }) {
             </TableCell>
             <TableCell className="text-right font-mono text-xs">{num(w.profit_factor)}</TableCell>
             <TableCell className="text-right font-mono text-xs">{w.trades ?? "--"}</TableCell>
-            <TableCell className="text-right font-mono text-xs">{pct(w.max_drawdown)}</TableCell>
+            <TableCell className="text-right font-mono text-xs">{dd(w.max_drawdown)}</TableCell>
             <TableCell>
               <div className="flex items-center gap-2">
                 <TunerBadge value={w.verdict ?? "running"} />
