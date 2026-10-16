@@ -27,7 +27,7 @@ ENV_OPENAI_BASE_URL = "VQ_OPENAI_BASE_URL"
 ENV_OPENAI_MODEL = "VQ_OPENAI_MODEL"
 ENV_OPENAI_API_KEY = "VQ_OPENAI_API_KEY"
 
-DEFAULT_OPENAI_MODEL = "gpt-5.6-sol"
+DEFAULT_OPENAI_MODEL = "deepseek-flash"
 
 
 class ChatCompletionError(ValueError):
@@ -158,3 +158,13 @@ def research_completion(
     if proc.returncode != 0:
         raise ChatCompletionError(f"claude exited {proc.returncode}: {proc.stderr[:300]}")
     return str(json.loads(proc.stdout).get("result") or "")
+
+
+def research_model_label() -> str:
+    """Label of the research LLM ``research_completion`` uses (e.g. ``openai:deepseek-flash``)."""
+    if use_openai():
+        try:
+            return config_from_env().label
+        except FileNotFoundError:
+            return "openai"
+    return os.getenv("VQ_EXTRACTOR_MODEL", "claude")

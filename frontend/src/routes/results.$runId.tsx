@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import { ArrowLeft } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getGetDrawdownApiResultsRunsRunIdDrawdownGetQueryKey,
   getGetEquityCurveApiResultsRunsRunIdEquityCurveGetQueryKey,
@@ -10,7 +11,7 @@ import {
   useGetSweepsApiResultsRunsRunIdSweepsGet,
   useListRunsApiResultsRunsGet,
 } from "@/api/generated/results/results";
-import { ArrowLeft } from "lucide-react";
+import { AiSummaryPanel } from "@/components/results/AiSummaryPanel";
 import { ChartsPanel } from "@/components/results/ChartsPanel";
 import { CostBreakdown } from "@/components/results/CostBreakdown";
 import { CrossWindowPanel } from "@/components/results/CrossWindowPanel";
@@ -57,10 +58,7 @@ function useRunPolling(runId: number) {
     const run = runs.find((r: { id: number; status: string }) => r.id === runId);
     const status = run?.status ?? null;
 
-    if (
-      prevStatus.current === "running" &&
-      (status === "completed" || status === "failed")
-    ) {
+    if (prevStatus.current === "running" && (status === "completed" || status === "failed")) {
       queryClient.invalidateQueries({
         queryKey: getGetRunSummaryApiResultsRunsRunIdGetQueryKey(runId),
       });
@@ -142,9 +140,16 @@ export function ResultsDetailPage({ runId }: ResultsDetailPageProps) {
 
       <MetricsPanel runId={runId} />
 
+      <AiSummaryPanel runId={runId} />
+
       <TradeChart runId={runId} highlightedTradeId={highlightedTradeId} />
 
-      <TradeLog runId={runId} onTradeHover={handleTradeHover} onTradeClick={handleTradeClick} highlightedTradeId={highlightedTradeId} />
+      <TradeLog
+        runId={runId}
+        onTradeHover={handleTradeHover}
+        onTradeClick={handleTradeClick}
+        highlightedTradeId={highlightedTradeId}
+      />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <CostBreakdown runId={runId} />

@@ -24,6 +24,8 @@ from vibe_quant.api.schemas.research import (
     ExtractionQueueResponse,
     ExtractionQueueStatusResponse,
     ExtractionResponse,
+    IdeaRequest,
+    IdeaResponse,
     IndicatorScaffoldResponse,
     IndicatorScaffoldRow,
     MarketTagsResponse,
@@ -393,6 +395,43 @@ def list_items(
         limit=limit,
         offset=offset,
     )
+
+
+@router.post("/ideas", response_model=IdeaResponse, status_code=201)
+def submit_idea(body: IdeaRequest, sm: StateMgr) -> IdeaResponse:
+    """Turn a plain-English strategy idea into a research item and queue its extraction.
+
+    The extraction worker writes the DSL (and auto-screens it) like for any post; the
+    item page then offers "Promote -> Backtest" to make it a strategy.
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    from vibe_quant.research.archive import archive_item
+    from vibe_quant.research.market_tags import MarketTagger
+    from vibe_quant.research.schema import RawItem
+
+    external_id = f"idea-{uuid.uuid4().hex[:12]}"
+    item = RawItem(
+        source="manual",
+        external_id=external_id,
+        url=f"vibe-quant://ideas/{external_id}",
+        title=body.title.strip(),
+        body=body.description.strip(),
+        author=None,
+        posted_at=datetime.now(tz=UTC),
+        score=None,
+        extras={"via": "strategies_page"},
+    )
+    _, item_id = archive_item(sm, item)
+    if item_id is None:  # pragma: no cover — the uuid makes a duplicate impossible
+        raise HTTPException(status_code=409, detail="idea already exists")
+    try:
+        MarketTagger(sm).tag(item_id, item)
+    except Exception:  # noqa: BLE001 — tags are best effort; the worker retries
+        logger.exception("market tagging failed for idea item %s", item_id)
+    job_id = sm.enqueue_extraction_job(item_id)
+    return IdeaResponse(item_id=item_id, job_id=job_id, status="queued")
 
 
 @router.get("/tags/facets", response_model=TagFacetsResponse)

@@ -2458,6 +2458,48 @@
         }
       }
     },
+    "/api/research/ideas": {
+      "post": {
+        "tags": [
+          "research"
+        ],
+        "summary": "Submit Idea",
+        "description": "Turn a plain-English strategy idea into a research item and queue its extraction.\n\nThe extraction worker writes the DSL (and auto-screens it) like for any post; the\nitem page then offers \"Promote -> Backtest\" to make it a strategy.",
+        "operationId": "submit_idea_api_research_ideas_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdeaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdeaResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/research/tags/facets": {
       "get": {
         "tags": [
@@ -3611,6 +3653,89 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BacktestResultResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/results/runs/{run_id}/ai-summary": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Get Ai Summary",
+        "operationId": "get_ai_summary_api_results_runs__run_id__ai_summary_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiSummaryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Create Ai Summary",
+        "description": "(Re)write the plain-language review of a run with the research model.",
+        "operationId": "create_ai_summary_api_results_runs__run_id__ai_summary_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiSummaryResponse"
                 }
               }
             }
@@ -5320,6 +5445,47 @@
   },
   "components": {
     "schemas": {
+      "AiSummaryResponse": {
+        "properties": {
+          "run_id": {
+            "type": "integer",
+            "title": "Run Id"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "summary"
+        ],
+        "title": "AiSummaryResponse",
+        "description": "Plain-language review of a run by the research model."
+      },
       "AlpacaAccountResponse": {
         "properties": {
           "account": {
@@ -8415,6 +8581,52 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "IdeaRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 3,
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 20,
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "description"
+        ],
+        "title": "IdeaRequest",
+        "description": "A strategy idea in plain English, turned into DSL by the research model."
+      },
+      "IdeaResponse": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
+          "job_id": {
+            "type": "integer",
+            "title": "Job Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "job_id",
+          "status"
+        ],
+        "title": "IdeaResponse"
       },
       "IndicatorCatalogEntry": {
         "properties": {

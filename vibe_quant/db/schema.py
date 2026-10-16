@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when adding new migrations to _migrate_add_columns. One-time data
 # migrations are additionally gated by ``PRAGMA user_version`` markers.
-SCHEMA_VERSION: int = 22
+SCHEMA_VERSION: int = 23
 
 SCHEMA_SQL = """
 -- Strategy definitions (DSL configs)
@@ -356,6 +356,15 @@ CREATE TABLE IF NOT EXISTS research_item_tag_values (
     kind TEXT NOT NULL CHECK (kind IN ('market', 'ticker')),
     value TEXT NOT NULL,
     PRIMARY KEY (research_item_id, kind, value)
+);
+
+-- Plain-language summary of a backtest run written by the research model
+-- (POST /api/results/runs/{id}/ai-summary); one per run, regenerated on demand.
+CREATE TABLE IF NOT EXISTS backtest_ai_summaries (
+    run_id INTEGER PRIMARY KEY REFERENCES backtest_runs(id),
+    summary TEXT NOT NULL,
+    model TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
 );
 
 -- Indexes

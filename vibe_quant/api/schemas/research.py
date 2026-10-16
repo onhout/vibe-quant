@@ -265,3 +265,16 @@ class CredentialsStatusResponse(BaseModel):
     source: str
     user_agent_value: str
     using_default: bool
+
+
+class IdeaRequest(BaseModel):
+    """A strategy idea in plain English, turned into DSL by the research model."""
+
+    title: Annotated[str, Field(min_length=3, max_length=200)]
+    description: Annotated[str, Field(min_length=20, max_length=20000)]
+
+
+class IdeaResponse(BaseModel):
+    item_id: int
+    job_id: int
+    status: str

@@ -1793,6 +1793,25 @@ class StateManager:
             )
             self.conn.commit()
 
+    def get_backtest_ai_summary(self, run_id: int) -> JsonDict | None:
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT * FROM backtest_ai_summaries WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_backtest_ai_summary(self, run_id: int, *, summary: str, model: str | None) -> None:
+        with self._write_lock:
+            self.conn.execute(
+                """INSERT INTO backtest_ai_summaries (run_id, summary, model, created_at)
+                   VALUES (?, ?, ?, datetime('now'))
+                   ON CONFLICT(run_id) DO UPDATE SET
+                       summary = excluded.summary, model = excluded.model,
+                       created_at = excluded.created_at""",
+                (run_id, summary, model),
+            )
+            self.conn.commit()
+
     def list_research_item_ids(self) -> list[int]:
         with self._write_lock:
             rows = self.conn.execute("SELECT id FROM research_items ORDER BY id DESC").fetchall()

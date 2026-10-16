@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import threading
 import time
@@ -542,11 +541,19 @@ def classify(item: RawItem | dict[str, Any], hints: MarketTags, universe: Univer
         body=body[:2500] or "(no text)",
         comments=comments or "(none)",
     )
-    data = _parse_reply(
-        openai_chat.research_completion(
+    # Prompt-only JSON (no response_format: not every endpoint supports it), validated
+    # below; one immediate retry when the reply isn't a JSON object.
+    for attempt in range(2):
+        reply = openai_chat.research_completion(
             prompt, timeout_seconds=MODEL_TIMEOUT_SECONDS, temperature=0, image_paths=images
         )
-    )
+        try:
+            data = _parse_reply(reply)
+            break
+        except ValueError:
+            if attempt == 1:
+                raise
+            prompt += "\n\nYour last reply was not a JSON object. Reply with ONLY the JSON object."
 
     markets = {
         str(m).strip().lower()
@@ -622,7 +629,7 @@ class MarketTagger:
                 return existing  # never downgrade model tags to a pre-pass
             self._store(item_id, hints, status="prepass", model=None, attempts=attempts)
             return self.sm.get_research_item_tags(item_id) or {}
-        label = _model_label()
+        label = openai_chat.research_model_label()
         try:
             tags = classify(item, hints, self.universe)
         except Exception as e:  # noqa: BLE001 — model down / bad reply: keep the pre-pass, retry later
@@ -703,12 +710,3 @@ class MarketTagger:
             self.tag(int(row["id"]), row)
             done += 1
         return done
-
-
-def _model_label() -> str:
-    if openai_chat.use_openai():
-        try:
-            return openai_chat.config_from_env().label
-        except FileNotFoundError:
-            return "openai"
-    return os.getenv("VQ_EXTRACTOR_MODEL", "claude")

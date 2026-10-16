@@ -293,6 +293,8 @@ def proposed_to_spec_args(proposed: dict[str, Any]) -> IndicatorSpecArgs:
 
 CLAUDE_BIN = "claude"
 CODEGEN_TIMEOUT_SECONDS = 60
+# Codegen attempts per scaffold: a failed mypy/ruff check is fed back for one retry.
+CODEGEN_ATTEMPTS = 2
 # Without --model, claude -p runs the CLI's default (Fable 5) and burns
 # premium quota on a task the mypy/ruff/AST gates already guard. Sonnet 5
 # handles single-function codegen fine; override per-deployment if a formula
@@ -704,6 +706,11 @@ def run_ruff(path: Path) -> tuple[bool, str]:
     return _run_tool([sys.executable, "-m", "ruff", "check", "--no-fix", str(path)])
 
 
+def fix_lint(path: Path) -> None:
+    """Apply ruff's safe autofixes to a generated plugin (never unsafe ones)."""
+    _run_tool([sys.executable, "-m", "ruff", "check", "--fix", "--quiet", str(path)])
+
+
 def plugin_path_for(name: str) -> Path:
     """Resolve where ``proposed_<name>.py`` lives. Tests monkeypatch PLUGINS_DIR."""
     return PLUGINS_DIR / f"proposed_{name.lower()}.py"
@@ -736,31 +743,40 @@ def synthesize_and_write(
     fn_name = f"compute_{spec.name.lower()}"
     prompt = _build_codegen_prompt(spec, formula, source_quote)
     call = runner if runner is not None else _default_codegen_runner()
-    body = call(prompt)
-    if not isinstance(body, str) or not body.strip():
-        raise CodegenError("empty_body", "runner returned empty string")
-
-    _ast_safety_check(body, fn_name)
-
-    rendered = render_plugin_file(
-        spec, body, extraction_id=extraction_id, source_quote=source_quote
-    )
     path = plugin_path_for(spec.name)
-    write_plugin_file(path, rendered)
+    feedback = ""
+    for attempt in range(CODEGEN_ATTEMPTS):
+        body = call(prompt + feedback)
+        if not isinstance(body, str) or not body.strip():
+            raise CodegenError("empty_body", "runner returned empty string")
 
-    try:
+        _ast_safety_check(body, fn_name)
+
+        rendered = render_plugin_file(
+            spec, body, extraction_id=extraction_id, source_quote=source_quote
+        )
+        write_plugin_file(path, rendered)
+        fix_lint(path)  # safe autofixes only (import order, whitespace)
         ok, output = run_mypy(path)
-        if not ok:
-            raise CodegenError("mypy_fail", output)
-        ok, output = run_ruff(path)
-        if not ok:
-            raise CodegenError("ruff_fail", output)
-    except CodegenError:
+        code = "mypy_fail"
+        if ok:
+            ok, output = run_ruff(path)
+            code = "ruff_fail"
+        if ok:
+            return path
         # Don't leave a broken plugin on disk — the next process restart
         # would import it and the registry would surface a load error.
         path.unlink(missing_ok=True)
-        raise
-    return path
+        if attempt == CODEGEN_ATTEMPTS - 1:
+            raise CodegenError(code, output)
+        # One more try with the checker's complaints (the model usually fixes style
+        # and typing nits it can see).
+        feedback = (
+            f"\n\nYOUR PREVIOUS ATTEMPT FAILED {'MYPY' if code == 'mypy_fail' else 'RUFF'}:\n"
+            f"{output[:2000]}\n"
+            "Fix every reported problem and output ONLY the corrected function definition."
+        )
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------

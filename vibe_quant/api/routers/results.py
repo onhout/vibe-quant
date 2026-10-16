@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from vibe_quant.api.deps import get_state_manager
 from vibe_quant.api.schemas.backtest import BacktestRunResponse
 from vibe_quant.api.schemas.result import (
+    AiSummaryResponse,
     BacktestResultResponse,
     ComparisonResponse,
     DrawdownPoint,
@@ -400,6 +401,89 @@ async def update_notes(
     if row is None:  # pragma: no cover
         raise HTTPException(status_code=500, detail="Result disappeared after update")
     return BacktestResultResponse(**_enrich_result_with_notes(row))
+
+
+_AI_SUMMARY_PROMPT = """You review one backtest for a trader. Reply in markdown, at most 220 words, with
+these bold headings: **Verdict** (one line), **What it trades** (one sentence from the rules),
+**Results** (what return, Sharpe, max drawdown, profit factor, win rate and trade count mean
+together), **Red flags** (e.g. few trades, one trade making most of the profit, costs eating the
+edge, drawdown large against the return, a short window, overfitting signs; say "none" if none),
+**Next step** (one concrete experiment). Use only the numbers below and say when one is missing.
+
+{context}
+"""
+
+
+def _ai_summary_context(mgr: StateManager, run_id: int) -> dict[str, Any]:
+    """Run setup, strategy rules, metrics and trade statistics for the summary prompt."""
+    run = mgr.get_backtest_run(run_id) or {}
+    strategy = mgr.get_strategy(int(run["strategy_id"])) if run.get("strategy_id") else None
+    result = mgr.get_backtest_result(run_id) or _best_sweep_row(mgr, run_id) or {}
+    metric_keys = (
+        "total_return", "cagr", "sharpe_ratio", "sortino_ratio", "max_drawdown", "total_trades",
+        "win_rate", "profit_factor", "avg_win", "avg_loss", "largest_win", "largest_loss",
+        "total_fees", "total_funding", "total_slippage", "deflated_sharpe", "starting_balance",
+    )
+    trades = mgr.get_trades(run_id)
+    pnls = sorted((float(t.get("net_pnl") or 0.0), t) for t in trades)
+    total_pnl = sum(p for p, _ in pnls)
+    best = pnls[-1][0] if pnls else None
+    exit_reasons: dict[str, int] = {}
+    for t in trades:
+        reason = str(t.get("exit_reason") or "unknown")
+        exit_reasons[reason] = exit_reasons.get(reason, 0) + 1
+    return {
+        "run": {k: run.get(k) for k in ("run_mode", "symbols", "timeframe", "start_date", "end_date")},
+        "strategy": {
+            "name": strategy.get("name") if strategy else None,
+            "rules": strategy.get("dsl_config") if strategy else None,
+        },
+        "metrics": {k: result.get(k) for k in metric_keys if result.get(k) is not None},
+        "trades": {
+            "count": len(trades),
+            "long": sum(1 for t in trades if t.get("direction") == "long"),
+            "short": sum(1 for t in trades if t.get("direction") == "short"),
+            "total_net_pnl": round(total_pnl, 2),
+            "best_trade_share_of_pnl": round(best / total_pnl, 2) if best and total_pnl > 0 else None,
+            "exit_reasons": exit_reasons,
+            "best": [_trade_brief(t) for _, t in pnls[-3:][::-1]],
+            "worst": [_trade_brief(t) for _, t in pnls[:3]],
+        },
+    }
+
+
+def _trade_brief(t: dict[str, Any]) -> dict[str, Any]:
+    keys = ("symbol", "direction", "entry_time", "exit_time", "net_pnl", "roi_percent", "exit_reason")
+    return {k: t.get(k) for k in keys}
+
+
+@router.get("/runs/{run_id}/ai-summary", response_model=AiSummaryResponse)
+async def get_ai_summary(run_id: int, mgr: StateMgr) -> AiSummaryResponse:
+    _ensure_run_exists(mgr, run_id)
+    row = mgr.get_backtest_ai_summary(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No summary yet")
+    return AiSummaryResponse(**row)
+
+
+@router.post("/runs/{run_id}/ai-summary", response_model=AiSummaryResponse)
+def create_ai_summary(run_id: int, mgr: StateMgr) -> AiSummaryResponse:
+    """(Re)write the plain-language review of a run with the research model."""
+    from vibe_quant.research import openai_chat
+
+    _ensure_run_exists(mgr, run_id)
+    context = _ai_summary_context(mgr, run_id)
+    if not context["metrics"] and not context["trades"]["count"]:
+        raise HTTPException(status_code=409, detail="This run has no results to summarize yet")
+    prompt = _AI_SUMMARY_PROMPT.format(context=json.dumps(context, default=str, indent=1))
+    try:
+        text = openai_chat.research_completion(prompt, timeout_seconds=120, temperature=0.2)
+    except Exception as e:  # noqa: BLE001 — model down: tell the user, change nothing
+        raise HTTPException(status_code=503, detail=f"research model unavailable: {e}") from e
+    mgr.save_backtest_ai_summary(run_id, summary=text.strip(), model=openai_chat.research_model_label())
+    row = mgr.get_backtest_ai_summary(run_id)
+    assert row is not None
+    return AiSummaryResponse(**row)
 
 
 @router.get("/runs/{run_id}/export/csv")

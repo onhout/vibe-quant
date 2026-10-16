@@ -1,9 +1,10 @@
 import { useNavigate } from "@tanstack/react-router";
-import { Wand2, Plus } from "lucide-react";
+import { Plus, Sparkles, Wand2 } from "lucide-react";
 import { useState } from "react";
 import type { StrategyResponse } from "@/api/generated/models";
 import { StrategyCreateDialog } from "@/components/strategies/StrategyCreateDialog";
 import { StrategyDeleteDialog } from "@/components/strategies/StrategyDeleteDialog";
+import { StrategyIdeaDialog } from "@/components/strategies/StrategyIdeaDialog";
 import { StrategyList } from "@/components/strategies/StrategyList";
 import { StrategyWizard } from "@/components/strategies/StrategyWizard";
 import { Button } from "@/components/ui/button";
@@ -12,6 +13,7 @@ export function StrategiesPage() {
   const navigate = useNavigate();
   const [createOpen, setCreateOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [ideaOpen, setIdeaOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<StrategyResponse | null>(null);
 
   const handleSelect = (strategy: StrategyResponse) => {
@@ -41,10 +43,15 @@ export function StrategiesPage() {
           Wizard
         </Button>
         <Button
+          variant="outline"
           size="sm"
-          onClick={() => setCreateOpen(true)}
-          className="gap-1.5 h-8 text-xs"
+          onClick={() => setIdeaOpen(true)}
+          className="gap-1.5 h-8 text-xs border-white/[0.09] bg-white/[0.03] hover:bg-white/[0.06] text-muted-foreground hover:text-foreground"
         >
+          <Sparkles className="h-3 w-3" />
+          Describe with AI
+        </Button>
+        <Button size="sm" onClick={() => setCreateOpen(true)} className="gap-1.5 h-8 text-xs">
           <Plus className="h-3 w-3" />
           New Strategy
         </Button>
@@ -60,6 +67,8 @@ export function StrategiesPage() {
         onClose={() => setCreateOpen(false)}
         onCreated={handleCreated}
       />
+
+      <StrategyIdeaDialog open={ideaOpen} onClose={() => setIdeaOpen(false)} />
 
       <StrategyDeleteDialog
         open={!!deleteTarget}

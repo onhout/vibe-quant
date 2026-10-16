@@ -173,3 +173,12 @@ class NotesUpdateRequest(BaseModel):
     """User free-text notes (stored in ``backtest_results.user_notes``)."""
 
     notes: str
+
+
+class AiSummaryResponse(BaseModel):
+    """Plain-language review of a run by the research model."""
+
+    run_id: int
+    summary: str
+    model: str | None = None
+    created_at: str | None = None

@@ -34,6 +34,8 @@ import type {
   GetLatestScrapeApiResearchScrapeLatestGetParams,
   GetTagFacetsApiResearchTagsFacetsGetParams,
   HTTPValidationError,
+  IdeaRequest,
+  IdeaResponse,
   IndicatorScaffoldResponse,
   ListExtractionQueueApiResearchExtractionQueueGetParams,
   ListItemsApiResearchItemsGetParams,
@@ -1119,6 +1121,99 @@ export function useListItemsApiResearchItemsGet<TData = Awaited<ReturnType<typeo
 
 
 /**
+ * Turn a plain-English strategy idea into a research item and queue its extraction.
+
+The extraction worker writes the DSL (and auto-screens it) like for any post; the
+item page then offers "Promote -> Backtest" to make it a strategy.
+ * @summary Submit Idea
+ */
+export type submitIdeaApiResearchIdeasPostResponse201 = {
+  data: IdeaResponse
+  status: 201
+}
+
+export type submitIdeaApiResearchIdeasPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type submitIdeaApiResearchIdeasPostResponseSuccess = (submitIdeaApiResearchIdeasPostResponse201) & {
+  headers: Headers;
+};
+export type submitIdeaApiResearchIdeasPostResponseError = (submitIdeaApiResearchIdeasPostResponse422) & {
+  headers: Headers;
+};
+
+export type submitIdeaApiResearchIdeasPostResponse = (submitIdeaApiResearchIdeasPostResponseSuccess | submitIdeaApiResearchIdeasPostResponseError)
+
+export const getSubmitIdeaApiResearchIdeasPostUrl = () => {
+
+
+  
+
+  return `/api/research/ideas`
+}
+
+export const submitIdeaApiResearchIdeasPost = async (ideaRequest: IdeaRequest, options?: RequestInit): Promise<submitIdeaApiResearchIdeasPostResponse> => {
+  
+  return customInstance<submitIdeaApiResearchIdeasPostResponse>(getSubmitIdeaApiResearchIdeasPostUrl(),
+  {      
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      ideaRequest,)
+  }
+);}
+
+
+
+
+export const getSubmitIdeaApiResearchIdeasPostMutationOptions = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof submitIdeaApiResearchIdeasPost>>, TError,{data: IdeaRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof submitIdeaApiResearchIdeasPost>>, TError,{data: IdeaRequest}, TContext> => {
+
+const mutationKey = ['submitIdeaApiResearchIdeasPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof submitIdeaApiResearchIdeasPost>>, {data: IdeaRequest}> = (props) => {
+          const {data} = props ?? {};
+
+          return  submitIdeaApiResearchIdeasPost(data,requestOptions)
+        }
+
+
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SubmitIdeaApiResearchIdeasPostMutationResult = NonNullable<Awaited<ReturnType<typeof submitIdeaApiResearchIdeasPost>>>
+    export type SubmitIdeaApiResearchIdeasPostMutationBody = IdeaRequest
+    export type SubmitIdeaApiResearchIdeasPostMutationError = HTTPValidationError
+
+    /**
+ * @summary Submit Idea
+ */
+export const useSubmitIdeaApiResearchIdeasPost = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof submitIdeaApiResearchIdeasPost>>, TError,{data: IdeaRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof submitIdeaApiResearchIdeasPost>>,
+        TError,
+        {data: IdeaRequest},
+        TContext
+      > => {
+      return useMutation(getSubmitIdeaApiResearchIdeasPostMutationOptions(options), queryClient);
+    }
+    /**
  * Item counts per market and for the most-tagged tickers (the list's filter options).
  * @summary Get Tag Facets
  */

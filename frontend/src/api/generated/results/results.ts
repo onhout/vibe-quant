@@ -24,6 +24,7 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
+  AiSummaryResponse,
   BacktestResultResponse,
   BacktestRunResponse,
   CompareRunsApiResultsCompareGetParams,
@@ -1365,6 +1366,212 @@ export const useUpdateNotesApiResultsRunsRunIdNotesPut = <TError = HTTPValidatio
         TContext
       > => {
       return useMutation(getUpdateNotesApiResultsRunsRunIdNotesPutMutationOptions(options), queryClient);
+    }
+    /**
+ * @summary Get Ai Summary
+ */
+export type getAiSummaryApiResultsRunsRunIdAiSummaryGetResponse200 = {
+  data: AiSummaryResponse
+  status: 200
+}
+
+export type getAiSummaryApiResultsRunsRunIdAiSummaryGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getAiSummaryApiResultsRunsRunIdAiSummaryGetResponseSuccess = (getAiSummaryApiResultsRunsRunIdAiSummaryGetResponse200) & {
+  headers: Headers;
+};
+export type getAiSummaryApiResultsRunsRunIdAiSummaryGetResponseError = (getAiSummaryApiResultsRunsRunIdAiSummaryGetResponse422) & {
+  headers: Headers;
+};
+
+export type getAiSummaryApiResultsRunsRunIdAiSummaryGetResponse = (getAiSummaryApiResultsRunsRunIdAiSummaryGetResponseSuccess | getAiSummaryApiResultsRunsRunIdAiSummaryGetResponseError)
+
+export const getGetAiSummaryApiResultsRunsRunIdAiSummaryGetUrl = (runId: number,) => {
+
+
+  
+
+  return `/api/results/runs/${runId}/ai-summary`
+}
+
+export const getAiSummaryApiResultsRunsRunIdAiSummaryGet = async (runId: number, options?: RequestInit): Promise<getAiSummaryApiResultsRunsRunIdAiSummaryGetResponse> => {
+  
+  return customInstance<getAiSummaryApiResultsRunsRunIdAiSummaryGetResponse>(getGetAiSummaryApiResultsRunsRunIdAiSummaryGetUrl(runId),
+  {      
+    ...options,
+    method: 'GET'
+    
+    
+  }
+);}
+
+
+
+
+
+export const getGetAiSummaryApiResultsRunsRunIdAiSummaryGetQueryKey = (runId: number,) => {
+    return [
+    `/api/results/runs/${runId}/ai-summary`
+    ] as const;
+    }
+
+    
+export const getGetAiSummaryApiResultsRunsRunIdAiSummaryGetQueryOptions = <TData = Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>, TError = HTTPValidationError>(runId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetAiSummaryApiResultsRunsRunIdAiSummaryGetQueryKey(runId);
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>> = ({ signal }) => getAiSummaryApiResultsRunsRunIdAiSummaryGet(runId, { signal, ...requestOptions });
+
+      
+
+      
+
+   return  { queryKey, queryFn, enabled: !!(runId), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetAiSummaryApiResultsRunsRunIdAiSummaryGetQueryResult = NonNullable<Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>>
+export type GetAiSummaryApiResultsRunsRunIdAiSummaryGetQueryError = HTTPValidationError
+
+
+export function useGetAiSummaryApiResultsRunsRunIdAiSummaryGet<TData = Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>, TError = HTTPValidationError>(
+ runId: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>,
+          TError,
+          Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetAiSummaryApiResultsRunsRunIdAiSummaryGet<TData = Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>, TError = HTTPValidationError>(
+ runId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>,
+          TError,
+          Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetAiSummaryApiResultsRunsRunIdAiSummaryGet<TData = Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>, TError = HTTPValidationError>(
+ runId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get Ai Summary
+ */
+
+export function useGetAiSummaryApiResultsRunsRunIdAiSummaryGet<TData = Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>, TError = HTTPValidationError>(
+ runId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getAiSummaryApiResultsRunsRunIdAiSummaryGet>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetAiSummaryApiResultsRunsRunIdAiSummaryGetQueryOptions(runId,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+/**
+ * (Re)write the plain-language review of a run with the research model.
+ * @summary Create Ai Summary
+ */
+export type createAiSummaryApiResultsRunsRunIdAiSummaryPostResponse200 = {
+  data: AiSummaryResponse
+  status: 200
+}
+
+export type createAiSummaryApiResultsRunsRunIdAiSummaryPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createAiSummaryApiResultsRunsRunIdAiSummaryPostResponseSuccess = (createAiSummaryApiResultsRunsRunIdAiSummaryPostResponse200) & {
+  headers: Headers;
+};
+export type createAiSummaryApiResultsRunsRunIdAiSummaryPostResponseError = (createAiSummaryApiResultsRunsRunIdAiSummaryPostResponse422) & {
+  headers: Headers;
+};
+
+export type createAiSummaryApiResultsRunsRunIdAiSummaryPostResponse = (createAiSummaryApiResultsRunsRunIdAiSummaryPostResponseSuccess | createAiSummaryApiResultsRunsRunIdAiSummaryPostResponseError)
+
+export const getCreateAiSummaryApiResultsRunsRunIdAiSummaryPostUrl = (runId: number,) => {
+
+
+  
+
+  return `/api/results/runs/${runId}/ai-summary`
+}
+
+export const createAiSummaryApiResultsRunsRunIdAiSummaryPost = async (runId: number, options?: RequestInit): Promise<createAiSummaryApiResultsRunsRunIdAiSummaryPostResponse> => {
+  
+  return customInstance<createAiSummaryApiResultsRunsRunIdAiSummaryPostResponse>(getCreateAiSummaryApiResultsRunsRunIdAiSummaryPostUrl(runId),
+  {      
+    ...options,
+    method: 'POST'
+    
+    
+  }
+);}
+
+
+
+
+export const getCreateAiSummaryApiResultsRunsRunIdAiSummaryPostMutationOptions = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createAiSummaryApiResultsRunsRunIdAiSummaryPost>>, TError,{runId: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof createAiSummaryApiResultsRunsRunIdAiSummaryPost>>, TError,{runId: number}, TContext> => {
+
+const mutationKey = ['createAiSummaryApiResultsRunsRunIdAiSummaryPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createAiSummaryApiResultsRunsRunIdAiSummaryPost>>, {runId: number}> = (props) => {
+          const {runId} = props ?? {};
+
+          return  createAiSummaryApiResultsRunsRunIdAiSummaryPost(runId,requestOptions)
+        }
+
+
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateAiSummaryApiResultsRunsRunIdAiSummaryPostMutationResult = NonNullable<Awaited<ReturnType<typeof createAiSummaryApiResultsRunsRunIdAiSummaryPost>>>
+    
+    export type CreateAiSummaryApiResultsRunsRunIdAiSummaryPostMutationError = HTTPValidationError
+
+    /**
+ * @summary Create Ai Summary
+ */
+export const useCreateAiSummaryApiResultsRunsRunIdAiSummaryPost = <TError = HTTPValidationError,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createAiSummaryApiResultsRunsRunIdAiSummaryPost>>, TError,{runId: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof createAiSummaryApiResultsRunsRunIdAiSummaryPost>>,
+        TError,
+        {runId: number},
+        TContext
+      > => {
+      return useMutation(getCreateAiSummaryApiResultsRunsRunIdAiSummaryPostMutationOptions(options), queryClient);
     }
     /**
  * @summary Export Csv
