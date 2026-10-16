@@ -117,7 +117,7 @@ DEFAULT_TRAIN_TEST_SPLIT = 0.8
 def _log_data_catalog_info(symbols: list[str], timeframe: str) -> None:
     """Log data catalog details: available symbols, bar counts, date ranges."""
     try:
-        from vibe_quant.data.catalog import DEFAULT_CATALOG_PATH
+        from vibe_quant.data.catalog import DEFAULT_CATALOG_PATH, instrument_id_str
 
         bar_dir = DEFAULT_CATALOG_PATH / "data" / "bar"
         if not bar_dir.exists():
@@ -125,7 +125,7 @@ def _log_data_catalog_info(symbols: list[str], timeframe: str) -> None:
             return
 
         for sym in symbols:
-            instrument_id = f"{sym}-PERP.BINANCE"
+            instrument_id = instrument_id_str(sym)
             found_dirs = [
                 d.name for d in bar_dir.iterdir()
                 if d.is_dir() and instrument_id in d.name
@@ -152,7 +152,7 @@ def _log_data_catalog_info(symbols: list[str], timeframe: str) -> None:
 def _check_data_available(symbols: list[str]) -> bool:
     """Check if ParquetDataCatalog has data for the given symbols."""
     try:
-        from vibe_quant.data.catalog import DEFAULT_CATALOG_PATH
+        from vibe_quant.data.catalog import DEFAULT_CATALOG_PATH, instrument_id_str
 
         if not DEFAULT_CATALOG_PATH.exists():
             return False
@@ -162,7 +162,7 @@ def _check_data_available(symbols: list[str]) -> bool:
             return False
         # Check for at least one symbol's data
         for sym in symbols:
-            instrument_id = f"{sym}-PERP.BINANCE"
+            instrument_id = instrument_id_str(sym)
             # Look for any bar type directory containing this instrument
             found = False
             for d in bar_dir.iterdir():

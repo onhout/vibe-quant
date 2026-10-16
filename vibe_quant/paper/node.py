@@ -770,9 +770,11 @@ class PaperTradingNode:
             resolved = self._resolve_run_config(module, dsl)
             self._resolved = resolved
 
+        from vibe_quant.data.catalog import instrument_id_str
+
         strategies: list[object] = []
         for idx, symbol in enumerate(resolved.symbols):
-            instrument_id = f"{symbol}-PERP.BINANCE"
+            instrument_id = instrument_id_str(symbol)
             raw_cfg = {
                 **resolved.strategy_params,
                 "instrument_id": instrument_id,
@@ -797,6 +799,22 @@ class PaperTradingNode:
             strategies.append(strategy_cls(config=cfg))
         return strategies
 
+    def _is_alpaca(self) -> bool:
+        """True once the run config is resolved to US stocks (Alpaca)."""
+        return self._resolved is not None and self._venue() == "ALPACA"
+
+    def _venue(self) -> str:
+        """The session's venue from its symbols: "BINANCE" (perps) or "ALPACA" (US stocks)."""
+        from vibe_quant.data.catalog import venue_for_symbols
+
+        resolved = self._resolved
+        if resolved is None:
+            raise ConfigurationError("run config not resolved before choosing the venue")
+        try:
+            return venue_for_symbols(resolved.symbols)
+        except ValueError as e:
+            raise ConfigurationError(str(e)) from e
+
     def _create_live_trading_node(self) -> _TradingNodeLifecycle:
         """Create and build a NautilusTrader TradingNode instance (+ guard actor).
 
@@ -804,6 +822,8 @@ class PaperTradingNode:
             ConfigurationError: If NautilusTrader or Binance adapter
                 dependencies are not installed or incompatible.
         """
+        if self._venue() == "ALPACA":
+            return self._create_alpaca_trading_node()
         try:
             from nautilus_trader.adapters.binance import config as binance_config
             from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
@@ -902,10 +922,74 @@ class PaperTradingNode:
         node.build()
         return node
 
+    def _create_alpaca_trading_node(self) -> _TradingNodeLifecycle:
+        """TradingNode on Alpaca's PAPER account (US stocks) via NautilusTrader's Alpaca adapter.
+
+        Keys come from ``ALPACA_PAPER_API_KEY`` / ``ALPACA_PAPER_API_SECRET``. Live Alpaca
+        trading is not offered here: a session asking for live (``binance.testnet`` false)
+        is refused.
+
+        Raises:
+            ConfigurationError: Live requested, or the Alpaca adapter is not installed.
+        """
+        if not self._config.binance.testnet:
+            raise ConfigurationError("live trading is not enabled for Alpaca: paper sessions only")
+        try:
+            from nautilus_trader.adapters.alpaca import (
+                ALPACA,
+                AlpacaDataClientConfig,
+                AlpacaEnvironment,
+                AlpacaExecClientConfig,
+                AlpacaInstrumentProviderConfig,
+                AlpacaLiveDataClientFactory,
+                AlpacaLiveExecClientFactory,
+            )
+            from nautilus_trader.live.config import TradingNodeConfig
+            from nautilus_trader.live.node import TradingNode
+            from nautilus_trader.model.identifiers import InstrumentId
+        except ImportError as e:
+            raise ConfigurationError(f"NautilusTrader Alpaca adapter not installed: {e}") from e
+
+        from vibe_quant.data.catalog import instrument_id_str
+
+        resolved = self._resolved
+        assert resolved is not None  # checked by _venue()
+        provider = AlpacaInstrumentProviderConfig(
+            load_ids=frozenset(InstrumentId.from_str(instrument_id_str(s)) for s in resolved.symbols)
+        )
+        node_config = TradingNodeConfig(
+            trader_id=self._config.trader_id,
+            data_clients={
+                ALPACA: AlpacaDataClientConfig(
+                    environment=AlpacaEnvironment.PAPER, instrument_provider=provider
+                ),
+            },
+            exec_clients={
+                ALPACA: AlpacaExecClientConfig(
+                    environment=AlpacaEnvironment.PAPER,
+                    live_trading=False,
+                    instrument_provider=provider,
+                ),
+            },
+        )
+        node = TradingNode(node_config)
+        self._guard = self._build_guard(node.kernel.risk_engine)
+        # Same order as the Binance node: the guard actor, then the strategies, then build.
+        node.trader.add_actor(self._guard)
+        for strategy in self._compiled_strategies:
+            node.trader.add_strategy(strategy)
+        node.add_data_client_factory(ALPACA, AlpacaLiveDataClientFactory)
+        node.add_exec_client_factory(ALPACA, AlpacaLiveExecClientFactory)
+        node.build()
+        return node
+
     def _build_guard(self, risk_engine: Any) -> TradingGuard:
         risk = self._config.risk
+        alpaca = self._is_alpaca()
         return TradingGuard(
             TradingGuardConfig(
+                venue="ALPACA" if alpaca else "BINANCE",
+                settlement_currency="USD" if alpaca else "USDT",
                 max_drawdown_pct=risk.max_drawdown_pct,
                 max_daily_loss_pct=risk.max_daily_loss_pct,
                 max_consecutive_losses=risk.max_consecutive_losses,
@@ -1903,7 +1987,8 @@ class PaperTradingNode:
             await self._persistence.start_periodic_checkpointing(self._capture_checkpoint)
 
         self._control_task = asyncio.create_task(self._control_loop())
-        self._start_liquidation_task()
+        if not self._is_alpaca():  # Binance forceOrders: stocks on a cash account are never liquidated
+            self._start_liquidation_task()
 
         # Run Nautilus on our event loop (run_async) instead of in a worker
         # thread — wrapping the blocking ``run()`` in ``asyncio.to_thread``

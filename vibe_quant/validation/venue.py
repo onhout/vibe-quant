@@ -49,8 +49,11 @@ class VenueConfig:
     """Configuration for a simulated trading venue.
 
     Attributes:
-        name: Venue identifier (e.g., "BINANCE").
-        starting_balance_usdt: Starting account balance in USDT.
+        name: Venue identifier ("BINANCE" for USDT-M perps, "ALPACA" for US stocks).
+        starting_balance_usdt: Starting account balance in ``base_currency``.
+        account_type: NT account type: "MARGIN" (perps) or "CASH" (stocks: no
+            leverage, and NT rejects sells that would open a short).
+        base_currency: Account currency ("USDT" on Binance, "USD" on Alpaca).
         default_leverage: Default leverage for all instruments.
         leverages: Per-instrument leverage overrides.
         latency_preset: Latency preset or None for no latency.
@@ -71,6 +74,8 @@ class VenueConfig:
 
     name: str = "BINANCE"
     starting_balance_usdt: int = DEFAULT_STARTING_BALANCE_USDT
+    account_type: str = "MARGIN"
+    base_currency: str = "USDT"
     default_leverage: Decimal = Decimal("10")
     leverages: dict[str, Decimal] = field(default_factory=dict)
 
@@ -108,10 +113,25 @@ class VenueConfig:
 SCREENING_FILL_SEED = 42
 
 
+
+def _account(venue: str, default_leverage: Decimal) -> tuple[str, str, str, Decimal]:
+    """(name, account_type, base_currency, leverage) of a venue.
+
+    Alpaca US stocks run on a USD cash account (no leverage; commission-free, so the
+    default MakerTakerFeeModel reads the Equity instrument's zero fees).
+    """
+    if venue == "ALPACA":
+        return "ALPACA", "CASH", "USD", Decimal("1")
+    if venue != "BINANCE":
+        raise ValueError(f"unknown backtest venue {venue!r}")
+    return "BINANCE", "MARGIN", "USDT", default_leverage
+
+
 def create_venue_config_for_screening(
     starting_balance_usdt: int = DEFAULT_STARTING_BALANCE_USDT,
     default_leverage: Decimal = Decimal("10"),
     leverages: dict[str, Decimal] | None = None,
+    venue: str = "BINANCE",
 ) -> VenueConfig:
     """Create VenueConfig optimized for screening mode.
 
@@ -124,16 +144,20 @@ def create_venue_config_for_screening(
         starting_balance_usdt: Starting balance.
         default_leverage: Default leverage.
         leverages: Per-instrument leverage overrides.
+        venue: "BINANCE" (USDT-M perps) or "ALPACA" (US stocks, USD cash account).
 
     Returns:
         VenueConfig for screening.
     """
+    name, account_type, base_currency, leverage = _account(venue, default_leverage)
     return VenueConfig(
-        name="BINANCE",
         starting_balance_usdt=starting_balance_usdt,
-        default_leverage=default_leverage,
         leverages=leverages or {},
         latency_preset=None,
+        name=name,
+        account_type=account_type,
+        base_currency=base_currency,
+        default_leverage=leverage,
         use_volume_slippage=False,
         fill_config=ScreeningFillModelConfig(
             prob_fill_on_limit=0.8,
@@ -149,6 +173,7 @@ def create_venue_config_for_validation(
     leverages: dict[str, Decimal] | None = None,
     latency_preset: LatencyPreset | str | None = LatencyPreset.CLOUD,
     impact_coefficient: float = 0.1,
+    venue: str = "BINANCE",
 ) -> VenueConfig:
     """Create VenueConfig optimized for validation mode.
 
@@ -168,6 +193,7 @@ def create_venue_config_for_validation(
         leverages: Per-instrument leverage overrides.
         latency_preset: Latency preset for execution delays. None = no latency.
         impact_coefficient: Market impact coefficient for slippage.
+        venue: "BINANCE" (USDT-M perps) or "ALPACA" (US stocks, USD cash account).
 
     Returns:
         VenueConfig for validation.
@@ -185,13 +211,16 @@ def create_venue_config_for_validation(
         prob_best_price_fill = 1.0
         max_adverse_ticks = 1
 
+    name, account_type, base_currency, leverage = _account(venue, default_leverage)
     return VenueConfig(
-        name="BINANCE",
         starting_balance_usdt=starting_balance_usdt,
-        default_leverage=default_leverage,
         leverages=leverages or {},
         latency_preset=latency_preset,
         use_volume_slippage=True,
+        name=name,
+        account_type=account_type,
+        base_currency=base_currency,
+        default_leverage=leverage,
         fill_config=VolumeSlippageFillModelConfig(
             impact_coefficient=impact_coefficient,
             prob_fill_on_limit=prob_fill_on_limit,
@@ -212,7 +241,7 @@ def create_backtest_venue_config(config: VenueConfig) -> BacktestVenueConfig:
         Configured BacktestVenueConfig.
     """
     # Build starting balances list
-    starting_balances = [f"{config.starting_balance_usdt} USDT"]
+    starting_balances = [f"{config.starting_balance_usdt} {config.base_currency}"]
 
     # Build leverages dict with proper string keys
     leverages: dict[str, float] | None = None
@@ -243,7 +272,8 @@ def create_backtest_venue_config(config: VenueConfig) -> BacktestVenueConfig:
     return BacktestVenueConfig(
         name=config.name,
         oms_type="NETTING",
-        account_type="MARGIN",
+        account_type=config.account_type,
+        base_currency=config.base_currency if config.account_type == "CASH" else None,
         starting_balances=starting_balances,
         default_leverage=float(config.default_leverage),
         leverages=leverages,

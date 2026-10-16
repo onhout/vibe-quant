@@ -731,8 +731,10 @@ class DiscoveryPipeline:
         # field) and discovery chromosomes compile to single-timeframe DSLs.
         step, agg = INTERVAL_TO_AGGREGATION[tf]
         catalog = str(Path(DEFAULT_CATALOG_PATH).resolve())
+        from vibe_quant.data.catalog import instrument_id_str
+
         for symbol in fn.symbols:
-            bar_type = f"{symbol}-PERP.BINANCE-{step}-{agg.name}-LAST-EXTERNAL"
+            bar_type = f"{instrument_id_str(symbol)}-{step}-{agg.name}-LAST-EXTERNAL"
             for start, end in windows:
                 nt_runner.require_bars_in_window(catalog, bar_type, start, end)
 
@@ -889,6 +891,14 @@ class DiscoveryPipeline:
         direction_constraint: Direction | None = None
         if cfg.direction:
             direction_constraint = Direction(cfg.direction)
+        else:
+            from vibe_quant.data.catalog import venue_for_symbols
+
+            if cfg.symbols and venue_for_symbols(cfg.symbols) == "ALPACA":
+                # Stocks run on a cash account, which cannot short: evolve long-only genomes
+                # unless a direction was asked for explicitly.
+                direction_constraint = Direction.LONG
+                logger.info("Alpaca stocks %s: long-only genomes (cash account)", cfg.symbols)
         self._direction_constraint = direction_constraint
 
         population = initialize_population(

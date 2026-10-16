@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 # Environment variable names
 ENV_BINANCE_API_KEY = "BINANCE_API_KEY"
 ENV_BINANCE_API_SECRET = "BINANCE_API_SECRET"
+# Alpaca paper account (US stocks), read by NautilusTrader's Alpaca adapter.
+ENV_ALPACA_PAPER_API_KEY = "ALPACA_PAPER_API_KEY"
+ENV_ALPACA_PAPER_API_SECRET = "ALPACA_PAPER_API_SECRET"
 ENV_BINANCE_TESTNET_API_KEY = "BINANCE_TESTNET_API_KEY"
 ENV_BINANCE_TESTNET_API_SECRET = "BINANCE_TESTNET_API_SECRET"
 
@@ -260,7 +263,18 @@ class PaperTradingConfig:
         if self.risk.max_position_count < 1:
             errors.append("max_position_count must be >= 1")
 
-        if not self.binance.api_key or not self.binance.api_secret:
+        from vibe_quant.data.catalog import is_equity_symbol
+
+        if self.symbols and all(is_equity_symbol(s) for s in self.symbols):
+            # US stocks trade on Alpaca's paper account (never live from here)
+            if not self.binance.testnet:
+                errors.append("live trading is not enabled for Alpaca: paper sessions only")
+            if not os.getenv(ENV_ALPACA_PAPER_API_KEY) or not os.getenv(ENV_ALPACA_PAPER_API_SECRET):
+                errors.append(
+                    f"Alpaca credentials missing: set {ENV_ALPACA_PAPER_API_KEY} and "
+                    f"{ENV_ALPACA_PAPER_API_SECRET}"
+                )
+        elif not self.binance.api_key or not self.binance.api_secret:
             key_var, secret_var = credential_env_names(self.binance.testnet)
             errors.append(f"Binance credentials missing: set {key_var} and {secret_var}")
 

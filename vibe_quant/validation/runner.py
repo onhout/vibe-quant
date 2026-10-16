@@ -191,7 +191,7 @@ class ValidationRunner:
 
         logger.info(
             "Run %d setup: strategy=%s (id=%d) timeframe=%s latency=%s detail=%s "
-            "leverage=%sx balance=%s USDT",
+            "leverage=%sx balance=%s %s",
             run_id,
             strategy_name,
             strategy_id,
@@ -202,6 +202,7 @@ class ValidationRunner:
             effective_detail or "none",
             venue_config.default_leverage,
             venue_config.starting_balance_usdt,
+            venue_config.base_currency,
         )
 
         try:
@@ -856,10 +857,21 @@ class ValidationRunner:
             liquidation_settings = self._resolve_liquidation_mode(run_config)
         default_leverage = Decimal(str(liquidation_settings.leverage))
 
+        # One venue per run: Binance perps, or Alpaca stocks (USD cash account,
+        # commission-free: no leverage, liquidation or Binance fee tiers apply).
+        from vibe_quant.data.catalog import venue_for_symbols
+
+        try:
+            venue = venue_for_symbols(self._parse_symbols(run_config))
+        except ValueError as exc:
+            raise ValidationRunnerError(str(exc)) from exc
+        if venue == "ALPACA" and liquidation_settings.mode != "off":
+            raise ValidationRunnerError("liquidation_mode applies to Binance perpetuals, not Alpaca stocks")
+
         # Fee schedule (VIP tier + optional BNB discount) is venue-level. A bad
         # value fails the run with a clear error instead of silently defaulting.
         try:
-            fee_schedule = FeeSchedule.from_params(launch_params)
+            fee_schedule = FeeSchedule.from_params(launch_params) if venue == "BINANCE" else FeeSchedule()
         except ValueError as exc:
             raise ValidationRunnerError(f"invalid fee schedule parameters: {exc}") from exc
 
@@ -878,6 +890,7 @@ class ValidationRunner:
                     starting_balance_usdt=starting_balance,
                     default_leverage=default_leverage,
                     latency_preset=None,
+                    venue=venue,
                 ),
                 fee_schedule=fee_schedule,
             )
@@ -887,6 +900,7 @@ class ValidationRunner:
                 starting_balance_usdt=starting_balance,
                 default_leverage=default_leverage,
                 latency_preset=latency_preset or LatencyPreset.CLOUD,
+                venue=venue,
             ),
             fee_schedule=fee_schedule,
         )
@@ -963,6 +977,8 @@ class ValidationRunner:
             INTERVAL_TO_AGGREGATION,
             CatalogManager,
             create_instrument,
+            instrument_id_str,
+            is_equity_symbol,
         )
         from vibe_quant.validation.extraction import finest_timeframe, maker_entry_stats
 
@@ -991,7 +1007,7 @@ class ValidationRunner:
             [c.type for c in dsl.indicators.values()], symbols, start_date, end_date
         )
         for symbol in symbols:
-            if symbol in INSTRUMENT_CONFIGS:
+            if symbol in INSTRUMENT_CONFIGS or is_equity_symbol(symbol):
                 instrument = create_instrument(symbol)
                 catalog_mgr.write_instrument(instrument)
 
@@ -1054,7 +1070,7 @@ class ValidationRunner:
         # strategy releases its queued commands on its OWN detail bar.
         strategy_configs: list[ImportableStrategyConfig] = []
         for symbol in symbols:
-            instrument_id = f"{symbol}-PERP.BINANCE"
+            instrument_id = instrument_id_str(symbol)
             config_dict = {"instrument_id": instrument_id, **strategy_params}
             if detail_timeframe:
                 release_step, release_agg = INTERVAL_TO_AGGREGATION[detail_timeframe]
@@ -1073,7 +1089,7 @@ class ValidationRunner:
         # Build data configs (one per symbol per timeframe)
         data_configs: list[BacktestDataConfig] = []
         for symbol in symbols:
-            instrument_id = f"{symbol}-PERP.BINANCE"
+            instrument_id = instrument_id_str(symbol)
             for tf in sorted(all_timeframes):
                 if tf not in INTERVAL_TO_AGGREGATION:
                     logger.warning("Unknown timeframe %s, skipping", tf)
@@ -1579,6 +1595,7 @@ class ValidationRunner:
             DEFAULT_CATALOG_PATH,
             INTERVAL_TO_AGGREGATION,
             CatalogManager,
+            is_equity_symbol,
         )
 
         run_start = run_config.get("start_date")
@@ -1604,12 +1621,18 @@ class ValidationRunner:
                 )
                 raise ValidationRunnerError(msg)
             first_open, last_open = date_range
-            # Whole UTC days covered: from the first midnight at/after the first
-            # bar's open to the midnight at/before the last bar's close.
-            first_day = first_open.date()
-            if (first_open.hour, first_open.minute, first_open.second) != (0, 0, 0):
-                first_day += timedelta(days=1)
-            last_day = (last_open + timedelta(seconds=bar_seconds)).date()
+            if is_equity_symbol(symbol):
+                # Stocks trade in sessions, not from midnight: the first and last
+                # sessions on record are whole days of data.
+                first_day = first_open.date()
+                last_day = last_open.date() + timedelta(days=1)
+            else:
+                # Whole UTC days covered: from the first midnight at/after the first
+                # bar's open to the midnight at/before the last bar's close.
+                first_day = first_open.date()
+                if (first_open.hour, first_open.minute, first_open.second) != (0, 0, 0):
+                    first_day += timedelta(days=1)
+                last_day = (last_open + timedelta(seconds=bar_seconds)).date()
             covered_from = first_day if covered_from is None else max(covered_from, first_day)
             covered_to = last_day if covered_to is None else min(covered_to, last_day)
 

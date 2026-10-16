@@ -178,6 +178,8 @@ class NTPurgedKFoldRunner:
         """
         import pandas as pd
 
+        from vibe_quant.data.catalog import instrument_id_str
+
         suffix = _TIMEFRAME_TO_DIR_SUFFIX.get(self._timeframe)
         if suffix is None:
             msg = (
@@ -192,7 +194,7 @@ class NTPurgedKFoldRunner:
             catalog_root
             / "data"
             / "bar"
-            / f"{first_symbol}-PERP.BINANCE-{suffix}-LAST-EXTERNAL"
+            / f"{instrument_id_str(first_symbol)}-{suffix}-LAST-EXTERNAL"
         )
         files = sorted(glob.glob(str(bar_dir / "*.parquet")))
         if not files:

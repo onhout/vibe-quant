@@ -355,6 +355,12 @@ class NTScreeningRunner:
         self.last_days: int = 0
         self._dsl_dict = dsl_dict
         self._symbols = sorted(symbols)
+        # One venue per run: Binance perps (MARGIN, USDT) or Alpaca stocks (CASH, USD).
+        from vibe_quant.data.catalog import venue_for_symbols
+
+        self._venue = venue_for_symbols(self._symbols)
+        if self._venue == "ALPACA" and self._liquidation_mode != "off":
+            raise ValueError("liquidation_mode applies to Binance perpetuals, not Alpaca stocks")
         self._fill_ticks = fill_ticks
         self._start_date = start_date
         self._end_date = end_date
@@ -573,7 +579,7 @@ class NTScreeningRunner:
         )
         from nautilus_trader.model.data import Bar, TradeTick
 
-        from vibe_quant.data.catalog import INTERVAL_TO_AGGREGATION
+        from vibe_quant.data.catalog import INTERVAL_TO_AGGREGATION, instrument_id_str
         from vibe_quant.validation.venue import create_backtest_venue_config
 
         # Compile DSL once per worker process
@@ -593,7 +599,7 @@ class NTScreeningRunner:
         # Data configs
         data_configs: list[BacktestDataConfig] = []
         for symbol in self._symbols:
-            instrument_id = f"{symbol}-PERP.BINANCE"
+            instrument_id = instrument_id_str(symbol)
             for tf in sorted(self._all_timeframes):
                 if tf not in INTERVAL_TO_AGGREGATION:
                     continue
@@ -634,7 +640,7 @@ class NTScreeningRunner:
                     BacktestDataConfig(
                         catalog_path=ticks.paths[symbol],
                         data_cls=TradeTick,
-                        instrument_id=f"{symbol}-PERP.BINANCE",
+                        instrument_id=instrument_id_str(symbol),
                         start_time=self._start_date,
                         end_time=self._end_date,
                     )
@@ -643,7 +649,7 @@ class NTScreeningRunner:
         # Strategy configs (with parameter overrides)
         strategy_configs: list[ImportableStrategyConfig] = []
         for symbol in self._symbols:
-            instrument_id = f"{symbol}-PERP.BINANCE"
+            instrument_id = instrument_id_str(symbol)
             config_dict: dict[str, Any] = {"instrument_id": instrument_id, **strategy_params}
             config_dict["execution_delay_probability"] = mode.execution_delay_probability
             if mode.command_release:
@@ -695,6 +701,10 @@ class NTScreeningRunner:
 
         from vibe_quant.validation.venue import create_venue_config_for_screening
 
+        if self._venue == "ALPACA":  # stocks: USD cash account, no leverage, zero commission
+            return create_venue_config_for_screening(
+                starting_balance_usdt=self._starting_balance, venue="ALPACA"
+            )
         config = replace(
             create_venue_config_for_screening(starting_balance_usdt=self._starting_balance),
             fee_schedule=self._fee_schedule,
@@ -988,7 +998,8 @@ class NTScreeningRunner:
                     catalog_path=catalog_path,
                     start_ns=start_ns,
                     end_ns=end_ns,
-                    taker_fee=self._fee_schedule.taker_rate,
+                    # Alpaca stocks are commission-free: no estimated exit fee
+                    taker_fee=0.0 if self._venue == "ALPACA" else self._fee_schedule.taker_rate,
                 )
             trade_inputs: list[tuple[Any, OpenPositionMark | None]] = [
                 (p, None) for p in closed
@@ -1081,6 +1092,11 @@ class NTScreeningRunner:
             )
         # NT's total return covers realized PnL only: add the open marks
         extra_costs = total_funding - unrealized_at_end
+        if self._venue == "ALPACA":
+            # Cash account: NT's PnL% books a still-open stock's purchase cost as spent cash
+            from vibe_quant.validation.extraction import cash_account_open_cost
+
+            extra_costs -= cash_account_open_cost(still_open)
         if liquidated is not None:
             # final equity of the truncated ledgers, not NT's untruncated PnL%
             if starting_balance > 0:
@@ -1301,9 +1317,11 @@ class NTScreeningRunner:
             )
         bars_1m: dict[str, Any] = {}
         for symbol, spans in windows.items():
+            from vibe_quant.data.catalog import instrument_id_str
+
             series = load_bar_windows(
                 catalog_path,
-                f"{symbol}-PERP.BINANCE-{step}-{agg.name}-LAST-EXTERNAL",
+                f"{instrument_id_str(symbol)}-{step}-{agg.name}-LAST-EXTERNAL",
                 spans,
             )
             if series is not None:

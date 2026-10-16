@@ -9,7 +9,12 @@ opening at T and of the 1m bar opening at T+1m, each stamped at that bar's
 
 Sets live in immutable directories
 ``<catalog.parent>/fill_ticks/<FILL_TICK_VERSION>/<tf>/<symbol>/<fingerprint>/``
-(a ParquetDataCatalog root + ``meta.json``). The fingerprint hashes the 1m bar
+(a ParquetDataCatalog root + ``meta.json``).
+
+US stocks (Alpaca) have no 1m bar at most UTC boundaries (nights, weekends), so
+their boundaries are the starts of the New York session periods the strategy
+bars are aggregated on (``catalog.equity_period_key``): the first two 1m bars
+of each period, i.e. the first minutes after the previous strategy bar closed. The fingerprint hashes the 1m bar
 and instrument parquet file names, sizes and mtimes, so refreshed 1m data or a
 changed instrument (copied into the dir) builds a NEW dir; an
 existing dir is never rewritten (builders run under an fcntl lock into a tmp
@@ -35,7 +40,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from nautilus_trader.model.data import TradeTick
-    from nautilus_trader.model.instruments import CryptoPerpetual
+    from nautilus_trader.model.instruments import CryptoPerpetual, Equity
 
 # Bump when the tick construction changes (new dir tree, old sets ignored).
 FILL_TICK_VERSION = "v3"
@@ -47,6 +52,8 @@ FILL_TICK_SIZE = 1_000_000
 _MINUTE_NS = 60_000_000_000
 # 1m bar ts_init = open + 59.999s
 _BAR_INIT_OFFSET_NS = 59_999_000_000
+# Longest US market break (e.g. a holiday Friday + weekend + Monday) a stock window may begin or end in.
+_EQUITY_EDGE_NS = 5 * 86_400 * 1_000_000_000
 _TF_NS: dict[str, int] = {
     "5m": 300 * 1_000_000_000,
     "15m": 900 * 1_000_000_000,
@@ -102,8 +109,25 @@ def _scan(bars_1m: Any, step: int) -> tuple[np.ndarray, int, int]:
     return idx, n_boundaries, n_boundaries - int(have.size)
 
 
+def _scan_equity(bars_1m: Any, step: int) -> np.ndarray:
+    """Equity tick selection: the first two 1m bars of each New York session period."""
+    from vibe_quant.data.catalog import equity_period_key
+
+    ts = np.asarray(bars_1m.ts, dtype=np.int64)
+    if ts.size == 0:
+        return np.empty(0, dtype=np.int64)
+    keys = np.fromiter(
+        (equity_period_key(int(t) - _BAR_INIT_OFFSET_NS, step) for t in ts), dtype=np.int64, count=ts.size
+    )
+    first = np.flatnonzero(np.concatenate(([True], keys[1:] != keys[:-1])))
+    second = first + 1
+    second = second[(second < ts.size)]
+    second = second[keys[second] == keys[second - 1]]
+    return np.sort(np.concatenate((first, second)))
+
+
 def build_fill_ticks(
-    bars_1m: Any, timeframe: str, instrument: CryptoPerpetual
+    bars_1m: Any, timeframe: str, instrument: CryptoPerpetual | Equity
 ) -> tuple[list[TradeTick], int]:
     """Up to two ticks per strategy-bar boundary from decoded 1m bars.
 
@@ -120,8 +144,13 @@ def build_fill_ticks(
     from nautilus_trader.model.enums import AggressorSide
     from nautilus_trader.model.identifiers import TradeId
 
+    from vibe_quant.data.catalog import ALPACA_VENUE
+
     step = _timeframe_ns(timeframe)
-    idx, _, gaps = _scan(bars_1m, step)
+    if instrument.id.venue == ALPACA_VENUE:
+        idx, gaps = _scan_equity(bars_1m, step), 0  # no UTC grid: session holes are not gaps
+    else:
+        idx, _, gaps = _scan(bars_1m, step)
     size = instrument.make_qty(FILL_TICK_SIZE)
     ts = bars_1m.ts
     close = bars_1m.close
@@ -164,7 +193,7 @@ def _build_one(symbol: str, timeframe: str, catalog_path: Path, root: Path) -> P
     """Return the immutable dir for the symbol's current 1m data, building if absent."""
     from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
-    from vibe_quant.data.catalog import get_bar_type
+    from vibe_quant.data.catalog import get_bar_type, instrument_kind_dir
     from vibe_quant.screening.nt_runner import MissingBarDataError
     from vibe_quant.validation.extraction import load_catalog_bars
 
@@ -178,7 +207,7 @@ def _build_one(symbol: str, timeframe: str, catalog_path: Path, root: Path) -> P
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             instrument_id = bar_type.rsplit("-", 4)[0]
-            instrument_dir = catalog_path / "data" / "crypto_perpetual" / instrument_id
+            instrument_dir = catalog_path / "data" / instrument_kind_dir(symbol) / instrument_id
             final = sym_dir / _fingerprint(bar_dir, instrument_dir)
             if (final / "meta.json").is_file():
                 return final
@@ -263,6 +292,7 @@ def resolve_fill_ticks(
             [start, end] (first tick > start+tf, last tick < end-tf, no tick inside
             the window, or ticks on disk disagree with the build's count).
     """
+    from vibe_quant.data.catalog import is_equity_symbol
     from vibe_quant.screening.nt_runner import MissingBarDataError
 
     tf_ns = _timeframe_ns(timeframe)
@@ -275,20 +305,27 @@ def resolve_fill_ticks(
         path = _build_one(symbol, timeframe, cat, root)
         meta = json.loads((path / "meta.json").read_text())
         ts = _tick_timestamps(path)
+        equity = is_equity_symbol(symbol)
+        # Stocks: a window may start/end on a weekend or holiday (up to a 4-day break).
+        edge_ns = max(tf_ns, _EQUITY_EDGE_NS) if equity else tf_ns
         in_win = ts[(ts >= start_ns) & (ts <= end_ns)]
         problem = None
         if ts.size != meta["n_ticks"]:
             problem = f"{ts.size} ticks on disk != {meta['n_ticks']} built"
         elif ts.size == 0 or in_win.size == 0:
             problem = "no ticks in the window"
-        elif int(ts[0]) > start_ns + tf_ns:
+        elif int(ts[0]) > start_ns + edge_ns:
             problem = f"first tick {int(ts[0])} > start+tf"
-        elif int(ts[-1]) < end_ns - tf_ns:
+        elif int(ts[-1]) < end_ns - edge_ns:
             problem = f"last tick {int(ts[-1])} < end-tf"
         if problem:
             raise MissingBarDataError(
                 f"fill ticks for {symbol} {timeframe} do not cover the run window: {problem}"
             )
+        if equity:  # no UTC boundary grid to count holes against (see module docstring)
+            paths[symbol] = str(path)
+            missing[symbol] = 0
+            continue
         # boundaries T in [start, end) with no tick (1m holes inside the window)
         lo = -(-start_ns // tf_ns) * tf_ns
         hi = ((end_ns - 1) // tf_ns) * tf_ns

@@ -31,7 +31,7 @@ from vibe_quant.validation.fill_model import SlippageEstimator
 from vibe_quant.validation.results import TradeRecord, ValidationResult
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
     from decimal import Decimal
     from pathlib import Path
 
@@ -218,6 +218,22 @@ def accrue_position_funding(
         entry_ns=int(pos.ts_opened),
         exit_ns=close_ns,
     )
+
+
+def cash_account_open_cost(still_open: Sequence[Any]) -> float:
+    """Purchase cost of positions still open at the run end (signed qty x avg open x multiplier).
+
+    On a CASH account (Alpaca stocks) buying a stock spends its full price, so NT's
+    ``PnL% (total)`` counts the cost of a still-open position as lost cash. Adding it back
+    gives the realized view the headline return uses on a margin account; the open mark
+    (unrealized PnL) is then charged as usual.
+    """
+    total = 0.0
+    for pos in still_open:
+        sign = 1.0 if position_direction(pos) == "LONG" else -1.0
+        multiplier = float(getattr(pos, "multiplier", 1) or 1)
+        total += sign * float(pos.quantity) * float(pos.avg_px_open) * multiplier
+    return total
 
 
 def date_to_ns(value: str | None) -> int | None:
@@ -1410,6 +1426,10 @@ def extract_trades(
         if fee_schedule is not None
         else getattr(venue_config, "taker_fee", None)
     )
+    # A CASH account is Alpaca stocks: commission-free, and NT's PnL% books open cost as spent.
+    cash_account = getattr(venue_config, "account_type", "MARGIN") == "CASH"
+    if cash_account:
+        open_taker_fee = 0.0
     liquidating = liquidation_mode != "off"
     default_leverage = int(venue_config.default_leverage)
     slip = _SlippageModel(engine, venue_config, primary_timeframe)
@@ -1732,6 +1752,8 @@ def extract_trades(
         # consistent with the per-trade net PnL (NT's stats know nothing of
         # either post-fill cost).
         extra_costs = total_slippage + total_funding - unrealized_at_end
+        if cash_account:
+            extra_costs -= cash_account_open_cost(still_open)
         if extra_costs != 0.0 and result.starting_balance > 0:
             result.total_return -= extra_costs / result.starting_balance
 
