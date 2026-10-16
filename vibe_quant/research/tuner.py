@@ -453,7 +453,11 @@ def suggest_parameters(
         results=json.dumps(results, indent=1, default=str),
         history=json.dumps(history[-6:], indent=1, default=str) if history else "none",
     )
-    ask = chat or (lambda p: chat_completion(p, config=config_from_env(), timeout_seconds=300))
+    ask = chat or (
+        lambda p: chat_completion(
+            p, config=config_from_env(), timeout_seconds=300, json_object=True
+        )
+    )
     last_error = ""
     for _ in range(2):
         reply = ask(

@@ -75,22 +75,30 @@ def chat_completion(
     config: OpenAIConfig,
     timeout_seconds: float,
     image_paths: list[str] | None = None,
+    json_object: bool = False,
 ) -> str:
     """Send one user message (plus optional local images) and return the reply text.
 
     Images are sent as base64 data URLs; if the endpoint rejects them (a
-    text-only model) the call is retried once without them.
+    text-only model) the call is retried once without them. ``json_object`` asks for
+    JSON mode (``response_format: json_object``; deepseek-flash has no ``json_schema``),
+    dropped again if the endpoint refuses it.
     """
     headers = {"Content-Type": "application/json"}
     if config.api_key:
         headers["Authorization"] = f"Bearer {config.api_key}"
     images = [p for p in (image_paths or []) if Path(p).is_file()]
 
-    def _post(with_images: bool) -> httpx.Response:
+    def _post(with_images: bool, json_mode: bool = json_object) -> httpx.Response:
         content: str | list[dict[str, Any]] = prompt
         if with_images:
             content = [{"type": "text", "text": prompt}, *(_image_part(p) for p in images)]
-        body = {"model": config.model, "messages": [{"role": "user", "content": content}]}
+        body: dict[str, Any] = {
+            "model": config.model,
+            "messages": [{"role": "user", "content": content}],
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
         return httpx.post(
             f"{config.base_url}/chat/completions",
             json=body,
@@ -102,6 +110,8 @@ def chat_completion(
         response = _post(bool(images))
         if images and response.status_code in (400, 415, 422):
             response = _post(False)
+        if json_object and response.status_code in (400, 422):
+            response = _post(False, json_mode=False)
     except httpx.TimeoutException as e:
         raise ChatCompletionError(f"timeout after {timeout_seconds}s") from e
     except httpx.HTTPError as e:
