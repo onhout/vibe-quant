@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { useListSymbolsApiDataSymbolsGet } from "@/api/generated/data/data";
 import type { DiscoveryLaunchRequest } from "@/api/generated/models";
 import {
   getListDiscoveryJobsApiDiscoveryJobsGetQueryKey,
@@ -32,6 +33,7 @@ import {
   MIN_LEVERAGE,
   type LiquidationMode,
 } from "@/lib/liquidation";
+import { defaultCatalogSymbol } from "@/lib/venue";
 import { formatApiErrorDetail } from "./apiErrorDetail";
 
 export interface DiscoveryConvergenceConfig {
@@ -55,7 +57,7 @@ export function DiscoveryConfig({ onConvergenceChange }: DiscoveryConfigProps) {
   const [convergenceThreshold, setConvergenceThreshold] = useState(0.001);
 
   // Target config
-  const [symbols, setSymbols] = useState("BTCUSDT");
+  const [symbols, setSymbols] = useState("");
   const [timeframe, setTimeframe] = useState("4h");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -125,6 +127,15 @@ export function DiscoveryConfig({ onConvergenceChange }: DiscoveryConfigProps) {
   const selectedSeedJob = completedJobs.find(
     (j) => String(j.run_id) === seedRunId,
   );
+
+  // Default the symbols to one the catalog has (BTCUSDT when present), as the Data Browser does.
+  const catalogSymbolsQuery = useListSymbolsApiDataSymbolsGet();
+  const catalogSymbols =
+    catalogSymbolsQuery.data?.status === 200 ? catalogSymbolsQuery.data.data : [];
+  useEffect(() => {
+    const first = defaultCatalogSymbol(catalogSymbols);
+    if (!symbols && first) setSymbols(first);
+  }, [catalogSymbols, symbols]);
 
   // Auto-populate dates: default to last 3 months of available data
   useEffect(() => {

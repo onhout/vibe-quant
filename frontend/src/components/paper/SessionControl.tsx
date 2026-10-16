@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { isApiError } from "@/api/client";
+import { useListSymbolsApiDataSymbolsGet } from "@/api/generated/data/data";
 import type { PaperStartRequest } from "@/api/generated/models";
 import {
   useCloseAllPositionsApiPaperCloseAllPositionsPost,
@@ -33,6 +34,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { defaultCatalogSymbol, isStockRun } from "@/lib/venue";
 
 const STATE_BADGE: Record<string, string> = {
   running: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
@@ -49,7 +51,11 @@ const NO_RUN = "none";
 const TRADER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_]*(-[A-Za-z0-9_]+)+$/;
 
 function newTraderId(): string {
-  return `PAPER-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  // getRandomValues, not randomUUID: the dashboard is often opened over plain http on
+  // a LAN address, where browsers only expose randomUUID to secure contexts.
+  const bytes = crypto.getRandomValues(new Uint8Array(4));
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `PAPER-${hex.toUpperCase()}`;
 }
 
 /** Percent input ("" = not set) -> fraction for the API, or null. */
@@ -81,7 +87,7 @@ export function SessionControl() {
   const [traderId, setTraderId] = useState(newTraderId);
   const [strategyId, setStrategyId] = useState("");
   const [validationRunId, setValidationRunId] = useState(NO_RUN);
-  const [symbolsText, setSymbolsText] = useState("BTCUSDT");
+  const [symbolsText, setSymbolsText] = useState("");
   const [testnet, setTestnet] = useState(true);
   const [confirmLive, setConfirmLive] = useState(false);
   // Sizing overrides: blank = keep what the validation run used.
@@ -98,6 +104,9 @@ export function SessionControl() {
   const [validatedOnly, setValidatedOnly] = useState(true);
 
   const strategiesQuery = useListStrategiesApiStrategiesGet();
+  const catalogSymbolsQuery = useListSymbolsApiDataSymbolsGet();
+  const catalogSymbols =
+    catalogSymbolsQuery.data?.status === 200 ? catalogSymbolsQuery.data.data : [];
   const statusQuery = useGetStatusApiPaperStatusGet({
     query: { refetchInterval: 5_000 },
   });
@@ -129,6 +138,27 @@ export function SessionControl() {
     : allStrategies;
   const runsForStrategy = validationRuns.filter((run) => run.strategy_id === Number(strategyId));
   const selectedRun = runsForStrategy.find((run) => String(run.id) === validationRunId);
+
+  // Default the symbols to one the catalog has (BTCUSDT when present), as the Data Browser does.
+  useEffect(() => {
+    const first = defaultCatalogSymbol(catalogSymbols);
+    if (!symbolsText && first) setSymbolsText(first);
+  }, [catalogSymbols, symbolsText]);
+
+  // Stocks trade on Alpaca's paper account (live Alpaca isn't offered); perps on Binance.
+  const sessionSymbols = selectedRun
+    ? selectedRun.symbols
+    : symbolsText
+        .split(",")
+        .map((s) => s.trim().toUpperCase())
+        .filter((s) => s.length > 0);
+  const stocks = isStockRun(sessionSymbols);
+  useEffect(() => {
+    if (stocks) {
+      setTestnet(true);
+      setConfirmLive(false);
+    }
+  }, [stocks]);
 
   const status = statusQuery.data?.status === 200 ? statusQuery.data.data : null;
   const currentState = status?.state?.toLowerCase() ?? "unknown";
@@ -183,7 +213,11 @@ export function SessionControl() {
         onSuccess: (resp) => {
           if (resp.status === 201) {
             toast.success(`Paper trading starting (${resp.data.trader_id ?? traderId})`, {
-              description: testnet ? "Binance testnet" : "LIVE trading",
+              description: stocks
+                ? "Alpaca paper account"
+                : testnet
+                  ? "Binance testnet"
+                  : "LIVE trading",
             });
             setTraderId(newTraderId());
           }
@@ -460,12 +494,17 @@ export function SessionControl() {
             <Label className="flex items-center gap-2">
               <Checkbox
                 checked={testnet}
+                disabled={stocks}
                 onCheckedChange={(v) => {
                   setTestnet(v === true);
                   setConfirmLive(false);
                 }}
               />
-              <span className="text-sm">Binance testnet (uses BINANCE_TESTNET_* keys)</span>
+              <span className="text-sm">
+                {stocks
+                  ? "Alpaca paper account (uses ALPACA_PAPER_* keys; live Alpaca is not offered)"
+                  : "Binance testnet (uses BINANCE_TESTNET_* keys)"}
+              </span>
             </Label>
             {!testnet && (
               <div className="rounded-md border border-destructive bg-destructive/10 p-3">
@@ -596,9 +635,11 @@ export function SessionControl() {
           >
             {startMutation.isPending
               ? "Starting..."
-              : testnet
-                ? "Start Paper Trading (testnet)"
-                : "Start LIVE Trading"}
+              : stocks
+                ? "Start Paper Trading (Alpaca paper)"
+                : testnet
+                  ? "Start Paper Trading (testnet)"
+                  : "Start LIVE Trading"}
           </Button>
         </div>
       )}
