@@ -4364,6 +4364,727 @@
         }
       }
     },
+    "/api/alpaca/account": {
+      "get": {
+        "tags": [
+          "alpaca"
+        ],
+        "summary": "Get Account",
+        "operationId": "get_account_api_alpaca_account_get",
+        "parameters": [
+          {
+            "name": "account",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "paper",
+                "live"
+              ],
+              "type": "string",
+              "default": "paper",
+              "title": "Account"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlpacaAccountResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alpaca/positions": {
+      "get": {
+        "tags": [
+          "alpaca"
+        ],
+        "summary": "Get Positions",
+        "operationId": "get_positions_api_alpaca_positions_get",
+        "parameters": [
+          {
+            "name": "account",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "paper",
+                "live"
+              ],
+              "type": "string",
+              "default": "paper",
+              "title": "Account"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AlpacaPositionResponse"
+                  },
+                  "title": "Response Get Positions Api Alpaca Positions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alpaca/orders": {
+      "get": {
+        "tags": [
+          "alpaca"
+        ],
+        "summary": "Get Orders",
+        "operationId": "get_orders_api_alpaca_orders_get",
+        "parameters": [
+          {
+            "name": "account",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "paper",
+                "live"
+              ],
+              "type": "string",
+              "default": "paper",
+              "title": "Account"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(open|closed|all)$",
+              "default": "all",
+              "title": "Status"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 90,
+              "minimum": 1,
+              "default": 14,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AlpacaOrderResponse"
+                  },
+                  "title": "Response Get Orders Api Alpaca Orders Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alpaca/fills": {
+      "get": {
+        "tags": [
+          "alpaca"
+        ],
+        "summary": "Get Fills",
+        "operationId": "get_fills_api_alpaca_fills_get",
+        "parameters": [
+          {
+            "name": "account",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "paper",
+                "live"
+              ],
+              "type": "string",
+              "default": "paper",
+              "title": "Account"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 90,
+              "minimum": 1,
+              "default": 14,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AlpacaFillResponse"
+                  },
+                  "title": "Response Get Fills Api Alpaca Fills Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/status": {
+      "get": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "Get Bot Status",
+        "operationId": "get_bot_status_api_options_bot_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/service/{action}": {
+      "post": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "Control Bot Service",
+        "description": "Start/stop also enable/disable the service, so the bot comes back (or stays off) after a reboot.",
+        "operationId": "control_bot_service_api_options_bot_service__action__post",
+        "parameters": [
+          {
+            "name": "action",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "start",
+                "stop",
+                "restart"
+              ],
+              "type": "string",
+              "title": "Action"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotServiceState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/settings": {
+      "get": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "Get Bot Settings",
+        "operationId": "get_bot_settings_api_options_bot_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotSettings"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "Update Bot Settings",
+        "operationId": "update_bot_settings_api_options_bot_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BotSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/commands": {
+      "post": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "Submit Bot Command",
+        "operationId": "submit_bot_command_api_options_bot_commands_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BotCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotCommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/commands/{command_id}": {
+      "get": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "Get Bot Command",
+        "operationId": "get_bot_command_api_options_bot_commands__command_id__get",
+        "parameters": [
+          {
+            "name": "command_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Command Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotCommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/logs": {
+      "get": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "Get Bot Logs",
+        "operationId": "get_bot_logs_api_options_bot_logs_get",
+        "parameters": [
+          {
+            "name": "lines",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 3000,
+              "minimum": 10,
+              "default": 300,
+              "title": "Lines"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotLogsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/proposals": {
+      "get": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "List Proposals",
+        "operationId": "list_proposals_api_options_bot_proposals_get",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/proposals/dates": {
+      "get": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "List Proposal Dates",
+        "operationId": "list_proposal_dates_api_options_bot_proposals_dates_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProposalDate"
+                  },
+                  "type": "array",
+                  "title": "Response List Proposal Dates Api Options Bot Proposals Dates Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/proposal": {
+      "get": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "Get Proposal",
+        "operationId": "get_proposal_api_options_bot_proposal_get",
+        "parameters": [
+          {
+            "name": "proposal_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Proposal Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/history": {
+      "get": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "Get Proposal History",
+        "operationId": "get_proposal_history_api_options_bot_history_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 2000,
+              "minimum": 1,
+              "default": 300,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/reports": {
+      "get": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "List Bot Reports",
+        "operationId": "list_bot_reports_api_options_bot_reports_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response List Bot Reports Api Options Bot Reports Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/options-bot/reports/{report_date}": {
+      "get": {
+        "tags": [
+          "options-bot"
+        ],
+        "summary": "Get Bot Report",
+        "operationId": "get_bot_report_api_options_bot_reports__report_date__get",
+        "parameters": [
+          {
+            "name": "report_date",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Report Date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotReportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/backtest/jobs/{run_id}/progress": {
       "get": {
         "tags": [
@@ -4469,6 +5190,387 @@
   },
   "components": {
     "schemas": {
+      "AlpacaAccountResponse": {
+        "properties": {
+          "account": {
+            "type": "string",
+            "enum": [
+              "paper",
+              "live"
+            ],
+            "title": "Account"
+          },
+          "account_number": {
+            "type": "string",
+            "title": "Account Number"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency"
+          },
+          "equity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Equity"
+          },
+          "portfolio_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Value"
+          },
+          "cash": {
+            "type": "number",
+            "title": "Cash"
+          },
+          "buying_power": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buying Power"
+          },
+          "options_buying_power": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Options Buying Power"
+          },
+          "options_trading_level": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Options Trading Level"
+          },
+          "pattern_day_trader": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pattern Day Trader"
+          },
+          "trading_blocked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trading Blocked"
+          }
+        },
+        "type": "object",
+        "required": [
+          "account",
+          "account_number",
+          "status",
+          "currency",
+          "cash"
+        ],
+        "title": "AlpacaAccountResponse"
+      },
+      "AlpacaFillResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "symbol": {
+            "type": "string",
+            "title": "Symbol"
+          },
+          "side": {
+            "type": "string",
+            "title": "Side"
+          },
+          "qty": {
+            "type": "number",
+            "title": "Qty"
+          },
+          "price": {
+            "type": "number",
+            "title": "Price"
+          },
+          "transaction_time": {
+            "type": "string",
+            "title": "Transaction Time"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "order_id",
+          "symbol",
+          "side",
+          "qty",
+          "price",
+          "transaction_time"
+        ],
+        "title": "AlpacaFillResponse"
+      },
+      "AlpacaOrderResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "client_order_id": {
+            "type": "string",
+            "title": "Client Order Id"
+          },
+          "symbol": {
+            "type": "string",
+            "title": "Symbol"
+          },
+          "asset_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Class"
+          },
+          "side": {
+            "type": "string",
+            "title": "Side"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "time_in_force": {
+            "type": "string",
+            "title": "Time In Force"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "qty": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qty"
+          },
+          "filled_qty": {
+            "type": "number",
+            "title": "Filled Qty"
+          },
+          "filled_avg_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filled Avg Price"
+          },
+          "limit_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit Price"
+          },
+          "stop_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Price"
+          },
+          "position_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Intent"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "filled_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filled At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "client_order_id",
+          "symbol",
+          "side",
+          "type",
+          "time_in_force",
+          "status",
+          "filled_qty",
+          "created_at"
+        ],
+        "title": "AlpacaOrderResponse"
+      },
+      "AlpacaPositionResponse": {
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "title": "Symbol"
+          },
+          "asset_class": {
+            "type": "string",
+            "title": "Asset Class"
+          },
+          "side": {
+            "type": "string",
+            "title": "Side"
+          },
+          "qty": {
+            "type": "number",
+            "title": "Qty"
+          },
+          "avg_entry_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Entry Price"
+          },
+          "current_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Price"
+          },
+          "market_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Value"
+          },
+          "cost_basis": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Basis"
+          },
+          "unrealized_pl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unrealized Pl"
+          },
+          "unrealized_pl_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unrealized Pl Pct"
+          }
+        },
+        "type": "object",
+        "required": [
+          "symbol",
+          "asset_class",
+          "side",
+          "qty"
+        ],
+        "title": "AlpacaPositionResponse"
+      },
       "BacktestLaunchRequest": {
         "properties": {
           "strategy_id": {
@@ -5217,6 +6319,330 @@
           "created_at"
         ],
         "title": "BacktestRunResponse"
+      },
+      "BotCommandRequest": {
+        "properties": {
+          "command": {
+            "type": "string",
+            "enum": [
+              "research_now",
+              "trade",
+              "skip",
+              "close",
+              "report"
+            ],
+            "title": "Command"
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "title": "BotCommandRequest",
+        "description": "A command for the running bot; trade/skip/close need ``proposal_id``."
+      },
+      "BotCommandResponse": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command"
+          },
+          "args": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Args"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "done_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Done At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "BotCommandResponse"
+      },
+      "BotLogsResponse": {
+        "properties": {
+          "unit": {
+            "type": "string",
+            "title": "Unit"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "unit",
+          "text"
+        ],
+        "title": "BotLogsResponse"
+      },
+      "BotReportResponse": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "title": "Date"
+          },
+          "markdown": {
+            "type": "string",
+            "title": "Markdown"
+          }
+        },
+        "type": "object",
+        "required": [
+          "date",
+          "markdown"
+        ],
+        "title": "BotReportResponse"
+      },
+      "BotServiceState": {
+        "properties": {
+          "installed": {
+            "type": "boolean",
+            "title": "Installed"
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "sub_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sub State"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "installed"
+        ],
+        "title": "BotServiceState"
+      },
+      "BotSettings": {
+        "properties": {
+          "approval_mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "manual"
+            ],
+            "title": "Approval Mode"
+          },
+          "trading_mode": {
+            "type": "string",
+            "enum": [
+              "paper",
+              "live"
+            ],
+            "title": "Trading Mode"
+          }
+        },
+        "type": "object",
+        "required": [
+          "approval_mode",
+          "trading_mode"
+        ],
+        "title": "BotSettings"
+      },
+      "BotSettingsUpdate": {
+        "properties": {
+          "approval_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "manual"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Mode"
+          },
+          "trading_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "paper",
+                  "live"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trading Mode"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "BotSettingsUpdate",
+        "description": "Partial settings update. Switching ``trading_mode`` restarts a running bot."
+      },
+      "BotStatusResponse": {
+        "properties": {
+          "service": {
+            "$ref": "#/components/schemas/BotServiceState"
+          },
+          "bot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bot"
+          },
+          "bot_stale": {
+            "type": "boolean",
+            "title": "Bot Stale"
+          },
+          "bot_age_secs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bot Age Secs"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/BotSettings"
+          },
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/BotCommandResponse"
+            },
+            "type": "array",
+            "title": "Commands"
+          },
+          "week_new_positions": {
+            "type": "integer",
+            "title": "Week New Positions"
+          },
+          "max_new_positions_per_week": {
+            "type": "integer",
+            "title": "Max New Positions Per Week",
+            "default": 1
+          },
+          "today": {
+            "type": "string",
+            "title": "Today"
+          }
+        },
+        "type": "object",
+        "required": [
+          "service",
+          "bot_stale",
+          "settings",
+          "commands",
+          "week_new_positions",
+          "today"
+        ],
+        "title": "BotStatusResponse"
       },
       "BrowseDataResponse": {
         "properties": {
@@ -7521,6 +8947,51 @@
         ],
         "title": "OhlcError"
       },
+      "OutcomeStats": {
+        "properties": {
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "wins": {
+            "type": "integer",
+            "title": "Wins"
+          },
+          "win_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Win Rate Pct"
+          },
+          "avg_return_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Return Pct"
+          },
+          "total_pnl": {
+            "type": "number",
+            "title": "Total Pnl"
+          }
+        },
+        "type": "object",
+        "required": [
+          "count",
+          "wins",
+          "total_pnl"
+        ],
+        "title": "OutcomeStats"
+      },
       "PairedTrade": {
         "properties": {
           "paper": {
@@ -8033,6 +9504,464 @@
         ],
         "title": "PromoteIndicatorResponse",
         "description": "Response from POST /api/research/indicators/{name}/promote.\n\nOnly the success path returns this body (``status`` is always\n``ok``). Failures now map to real HTTP codes \u2014 invalid name \u2192 400,\nno proposed file \u2192 404, collision \u2192 409, write/commit failure \u2192 500\n\u2014 surfaced via the standard ``{\"detail\": ...}`` error body, not this\nmodel. ``bd remember`` failures stay non-fatal: the promote still\nsucceeds (200) and the outcome is reported in ``bd_remember_ok``."
+      },
+      "ProposalDate": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "title": "Date"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "date",
+          "count"
+        ],
+        "title": "ProposalDate"
+      },
+      "ProposalDetailResponse": {
+        "properties": {
+          "proposal": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Proposal"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/ProposalEvent"
+            },
+            "type": "array",
+            "title": "Events"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Evidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal",
+          "events",
+          "evidence"
+        ],
+        "title": "ProposalDetailResponse"
+      },
+      "ProposalEvent": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "at": {
+            "type": "string",
+            "title": "At"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "type",
+          "payload"
+        ],
+        "title": "ProposalEvent"
+      },
+      "ProposalHistoryResponse": {
+        "properties": {
+          "trades": {
+            "$ref": "#/components/schemas/OutcomeStats"
+          },
+          "shadows": {
+            "$ref": "#/components/schemas/OutcomeStats"
+          },
+          "proposals": {
+            "type": "integer",
+            "title": "Proposals"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ProposalSummary"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "trades",
+          "shadows",
+          "proposals",
+          "rows"
+        ],
+        "title": "ProposalHistoryResponse"
+      },
+      "ProposalListResponse": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "title": "Date"
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/ProposalSummary"
+            },
+            "type": "array",
+            "title": "Proposals"
+          }
+        },
+        "type": "object",
+        "required": [
+          "date",
+          "proposals"
+        ],
+        "title": "ProposalListResponse"
+      },
+      "ProposalSummary": {
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id"
+          },
+          "trading_date": {
+            "type": "string",
+            "title": "Trading Date"
+          },
+          "proposed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed At"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "ticker": {
+            "type": "string",
+            "title": "Ticker"
+          },
+          "thesis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thesis"
+          },
+          "thesis_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thesis Source"
+          },
+          "contract": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract"
+          },
+          "expiration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiration"
+          },
+          "strike": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strike"
+          },
+          "option_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option Type"
+          },
+          "dte": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dte"
+          },
+          "proposed_quantity": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Quantity"
+          },
+          "proposed_limit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Limit"
+          },
+          "maximum_debit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum Debit"
+          },
+          "underlying_at_proposal": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Underlying At Proposal"
+          },
+          "option_bid_at_proposal": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option Bid At Proposal"
+          },
+          "option_ask_at_proposal": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option Ask At Proposal"
+          },
+          "option_delta_at_proposal": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option Delta At Proposal"
+          },
+          "selected_setup": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Setup"
+          },
+          "combined_setup_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Combined Setup Score"
+          },
+          "social_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Social Score"
+          },
+          "entry_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Score"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "fatal_flags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fatal Flags"
+          },
+          "missing_fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Missing Fields"
+          },
+          "entry_eligible": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Eligible"
+          },
+          "trade_eligible": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Eligible"
+          },
+          "ai_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Summary"
+          },
+          "trade": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade"
+          },
+          "shadow": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shadow"
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id",
+          "trading_date",
+          "status",
+          "ticker"
+        ],
+        "title": "ProposalSummary"
       },
       "ReconciliationResponse": {
         "properties": {

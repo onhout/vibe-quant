@@ -30,6 +30,14 @@ const routeMeta: Record<string, { title: string; description?: string }> = {
     title: "Paper Trading",
     description: "Trade live markets with simulated money",
   },
+  "/options-bot": {
+    title: "Options Bot",
+    description: "Reddit options bot on Alpaca: proposals, trades and controls",
+  },
+  "/account": {
+    title: "Alpaca Account",
+    description: "Balances, positions, orders and fills at Alpaca",
+  },
   "/browser": {
     title: "Data Browser",
     description: "Inspect candles and indicators in the catalog",

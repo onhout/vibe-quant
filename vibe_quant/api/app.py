@@ -14,11 +14,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from vibe_quant import __version__
+from vibe_quant.api.routers.alpaca import router as alpaca_router
 from vibe_quant.api.routers.backtest import router as backtest_router
 from vibe_quant.api.routers.data import router as data_router
 from vibe_quant.api.routers.discovery import router as discovery_router
 from vibe_quant.api.routers.indicators import router as indicators_router
 from vibe_quant.api.routers.internal import router as internal_router
+from vibe_quant.api.routers.options_bot import router as options_bot_router
 from vibe_quant.api.routers.paper_trading import router as paper_trading_router
 from vibe_quant.api.routers.reconciliation import router as reconciliation_router
 from vibe_quant.api.routers.research import router as research_router
@@ -181,6 +183,8 @@ def create_app() -> FastAPI:
     app.include_router(settings_router)
     app.include_router(strategies_router)
     app.include_router(system_router)
+    app.include_router(alpaca_router)
+    app.include_router(options_bot_router)
     app.include_router(sse_progress_router)
     app.include_router(ws_discovery_router)
     app.include_router(ws_jobs_router)

@@ -33,6 +33,12 @@ const DiscoveryResultsPage = lazy(() =>
 const PaperTradingPage = lazy(() =>
   import("./routes/paper-trading").then((m) => ({ default: m.PaperTradingPage })),
 );
+const OptionsBotPage = lazy(() =>
+  import("./routes/options-bot").then((m) => ({ default: m.OptionsBotPage })),
+);
+const AccountPage = lazy(() =>
+  import("./routes/account").then((m) => ({ default: m.AccountPage })),
+);
 const SettingsPage = lazy(() =>
   import("./routes/settings").then((m) => ({ default: m.SettingsPage })),
 );
@@ -58,7 +64,7 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   beforeLoad: () => {
-    throw redirect({ to: "/strategies" });
+    throw redirect({ to: "/options-bot" });
   },
 });
 
@@ -155,6 +161,30 @@ const paperTradingRoute = createRoute({
     return (
       <SuspensePage>
         <PaperTradingPage />
+      </SuspensePage>
+    );
+  },
+});
+
+const optionsBotRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/options-bot",
+  component: function OptionsBotRouteComponent() {
+    return (
+      <SuspensePage>
+        <OptionsBotPage />
+      </SuspensePage>
+    );
+  },
+});
+
+const accountRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/account",
+  component: function AccountRouteComponent() {
+    return (
+      <SuspensePage>
+        <AccountPage />
       </SuspensePage>
     );
   },
@@ -273,6 +303,8 @@ const routeTree = rootRoute.addChildren([
   resultsRoute,
   resultsDetailRoute,
   paperTradingRoute,
+  optionsBotRoute,
+  accountRoute,
   browserRoute,
   dataRoute,
   settingsRoute,
