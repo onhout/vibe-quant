@@ -85,15 +85,24 @@ def _trader_id_for_run(state: StateManager, run_id: int) -> str:
     return str(trader_id) if trader_id else default_paper_trader_id(run_id)
 
 
-def _require_credentials(testnet: bool) -> None:
-    key_var, secret_var = credential_env_names(testnet)
-    missing = [v for v in (key_var, secret_var) if not os.environ.get(v)]
+def _require_credentials(testnet: bool, symbols: list[str] | None = None) -> None:
+    from vibe_quant.data.catalog import is_equity_symbol
+
+    if symbols and all(is_equity_symbol(s) for s in symbols):
+        # US stocks trade on Alpaca's paper account (live is not offered for Alpaca)
+        if not testnet:
+            raise HTTPException(status_code=400, detail="Alpaca sessions are paper only")
+        names = ("ALPACA_PAPER_API_KEY", "ALPACA_PAPER_API_SECRET")
+        venue, env = "Alpaca", "paper"
+    else:
+        names = credential_env_names(testnet)
+        venue, env = "Binance", "testnet" if testnet else "LIVE"
+    missing = [v for v in names if not os.environ.get(v)]
     if missing:
-        env = "testnet" if testnet else "LIVE"
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Binance {env} credentials missing: set {', '.join(missing)} in the "
+                f"{venue} {env} credentials missing: set {', '.join(missing)} in the "
                 "backend environment (keys are never accepted through the API)"
             ),
         )
@@ -221,7 +230,7 @@ async def start_paper(
     if not symbols:
         raise HTTPException(400, "No symbols to trade")
 
-    _require_credentials(body.testnet)
+    _require_credentials(body.testnet, symbols)
 
     sizing: dict[str, object] = {}
     if body.sizing_method is not None:
@@ -370,10 +379,9 @@ async def restore_paper(
             status_code=400,
             detail="This trader_id traded LIVE: set confirm_live=true to restore it",
         )
-    _require_credentials(testnet)
-
     raw_symbols = prior_config.get("symbols")
     symbols = [str(s) for s in raw_symbols] if isinstance(raw_symbols, list) else []
+    _require_credentials(testnet, symbols)
     params: dict[str, object] = {
         "trader_id": body.trader_id,
         "testnet": testnet,
