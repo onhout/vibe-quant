@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when adding new migrations to _migrate_add_columns. One-time data
 # migrations are additionally gated by ``PRAGMA user_version`` markers.
-SCHEMA_VERSION: int = 21
+SCHEMA_VERSION: int = 22
 
 SCHEMA_SQL = """
 -- Strategy definitions (DSL configs)
@@ -331,7 +331,37 @@ CREATE TABLE IF NOT EXISTS research_scrape_runs (
     config_json TEXT
 );
 
+-- Market tags of a research item (asset classes, tickers, direction), written by
+-- vibe_quant.research.market_tags. status: 'prepass' (deterministic tags only, the
+-- model call is still due) | 'tagged' (model-confirmed) | 'failed' (model gave up
+-- after max attempts; the deterministic tags stand).
+CREATE TABLE IF NOT EXISTS research_item_tags (
+    research_item_id INTEGER PRIMARY KEY REFERENCES research_items(id),
+    status TEXT NOT NULL CHECK (status IN ('prepass', 'tagged', 'failed')),
+    markets_json TEXT NOT NULL DEFAULT '[]',
+    tickers_json TEXT NOT NULL DEFAULT '[]',
+    primary_ticker TEXT,
+    direction TEXT CHECK (direction IS NULL OR
+        direction IN ('bullish', 'bearish', 'neutral', 'mixed')),
+    model TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    tagged_at TEXT DEFAULT (datetime('now'))
+);
+
+-- One row per (item, market) and (item, ticker): the indexed side of the tags,
+-- used by the research list's market/ticker filters.
+CREATE TABLE IF NOT EXISTS research_item_tag_values (
+    research_item_id INTEGER NOT NULL REFERENCES research_items(id),
+    kind TEXT NOT NULL CHECK (kind IN ('market', 'ticker')),
+    value TEXT NOT NULL,
+    PRIMARY KEY (research_item_id, kind, value)
+);
+
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_research_item_tag_values_kind_value
+    ON research_item_tag_values(kind, value);
+CREATE INDEX IF NOT EXISTS idx_research_item_tags_status ON research_item_tags(status);
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy ON backtest_runs(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_status ON backtest_runs(status);
 CREATE INDEX IF NOT EXISTS idx_backtest_results_run ON backtest_results(run_id);

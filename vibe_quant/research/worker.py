@@ -216,6 +216,27 @@ def _run_extraction(
     persist_extractions(sm, item_id, batch.results, prompt=batch.prompt)
 
 
+# Items market-tagged per idle poll (see vibe_quant.research.market_tags).
+TAG_BATCH = 5
+_TAGGERS: dict[int, Any] = {}
+
+
+def _openai_backend() -> bool:
+    from vibe_quant.research.openai_chat import use_openai
+
+    return use_openai()
+
+
+def _tagger(sm: StateManager) -> Any:
+    """One MarketTagger per StateManager (keeps its model circuit breaker across polls)."""
+    from vibe_quant.research.market_tags import MarketTagger
+
+    key = id(sm)
+    if key not in _TAGGERS:
+        _TAGGERS[key] = MarketTagger(sm)
+    return _TAGGERS[key]
+
+
 def _drain_loop(
     sm: StateManager,
     *,
@@ -242,7 +263,23 @@ def _drain_loop(
                 continue
 
             if job is None:
-                stop.wait(poll_interval)
+                # Idle: give untagged / pre-pass-only items their market tags (one
+                # thread does it so concurrent drains don't tag the same item).
+                tagged = 0
+                if worker_idx == 0:
+                    try:
+                        # The model is only called in the background with the HTTP
+                        # endpoint (VQ_EXTRACTOR=openai); the claude CLI path tags at
+                        # scrape time and via `python -m vibe_quant.research tag`.
+                        tagged = _tagger(sm).tag_backlog(
+                            limit=TAG_BATCH,
+                            use_model=_openai_backend(),
+                            should_stop=stop.is_set,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception("extraction-worker: market tagging failed")
+                if not tagged:
+                    stop.wait(poll_interval)
                 continue
 
             current_job_id = int(job["id"])

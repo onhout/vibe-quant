@@ -28,6 +28,8 @@ def test_schema_creates_all_research_tables(sm: StateManager) -> None:
     names = {r["name"] for r in rows}
     assert names == {
         "research_items",
+        "research_item_tags",
+        "research_item_tag_values",
         "research_extractions",
         "research_extraction_jobs",
         "research_indicator_scaffolds",

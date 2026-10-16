@@ -2,10 +2,12 @@ import { Link } from "@tanstack/react-router";
 import { memo } from "react";
 import type { ResearchItemResponse } from "@/api/generated/models";
 import { ConfidenceBar } from "@/components/research/ConfidenceBar";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+import { MarketTags } from "@/components/research/MarketTags";
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { formatRelative } from "@/lib/time";
+import { useResearchStore } from "@/stores/researchStore";
 
 function getConfidence(extras: { [k: string]: unknown } | null | undefined): number | null {
   if (!extras) return null;
@@ -26,6 +28,8 @@ interface Props {
 function ItemRowImpl({ item }: Props) {
   const confidence = getConfidence(item.extras);
   const numComments = getNumComments(item.extras);
+  const setMarket = useResearchStore((s) => s.setMarket);
+  const setTicker = useResearchStore((s) => s.setTicker);
   const showConfidence =
     item.extraction_status === "extracted" || item.extraction_status === "parsed";
 
@@ -43,6 +47,14 @@ function ItemRowImpl({ item }: Props) {
         >
           {item.title || "(untitled)"}
         </Link>
+      </TableCell>
+      <TableCell className="w-72 py-1.5">
+        <MarketTags
+          tags={item.market_tags}
+          maxTickers={4}
+          onMarketClick={setMarket}
+          onTickerClick={setTicker}
+        />
       </TableCell>
       <TableCell>
         <Badge variant="outline" className="font-mono text-[10px] text-muted-foreground">

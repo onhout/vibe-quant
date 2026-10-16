@@ -776,6 +776,9 @@ TESTS_DIR: Path = (
 )
 
 PYTEST_TIMEOUT_SECONDS = 30
+# Set to 0/false/no/off to write and test scaffolded/promoted plugins without
+# committing them (the files stay in the working tree for the user to commit).
+ENV_SCAFFOLD_COMMIT = "VQ_SCAFFOLD_COMMIT"
 COMMIT_MESSAGE_TEMPLATE = "chore: scaffold proposed indicator {name} (bd-3p1k)"
 CO_AUTHOR_TRAILER = "Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
@@ -991,6 +994,13 @@ def _git(*args: str, cwd: Path | None = None) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
+def auto_commit_enabled() -> bool:
+    """False when ``VQ_SCAFFOLD_COMMIT`` turns the scaffold/promote commits off."""
+    import os
+
+    return os.getenv(ENV_SCAFFOLD_COMMIT, "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def git_commit_scaffold(
     plugin_path: Path,
     test_path: Path,
@@ -1003,8 +1013,11 @@ def git_commit_scaffold(
     Raises ``ScaffoldError("commit_failed", output)`` if any git step
     fails — the caller treats this identically to a test failure
     (delete both files, surface the output). NEVER pushes; the user
-    decides when to publish.
+    decides when to publish. Returns ``""`` without touching git when
+    ``VQ_SCAFFOLD_COMMIT`` is off.
     """
+    if not auto_commit_enabled():
+        return ""
     rc, _, err = _git("add", str(plugin_path), str(test_path), cwd=repo_root)
     if rc != 0:
         raise ScaffoldError("commit_failed", f"git add failed: {err}")
@@ -1175,7 +1188,10 @@ def git_commit_promotion(
 
     ``git add -A`` on both paths captures both the deletion of the proposed
     file and the addition of the promoted one in a single index update.
+    Returns ``""`` without touching git when ``VQ_SCAFFOLD_COMMIT`` is off.
     """
+    if not auto_commit_enabled():
+        return ""
     rc, _, err = _git("add", "-A", str(old_path), str(new_path), cwd=repo_root)
     if rc != 0:
         raise PromoteError("commit_failed", f"git add failed: {err}")

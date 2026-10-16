@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from vibe_quant.db.state_manager import StateManager
+    from vibe_quant.research.market_tags import MarketTagger
     from vibe_quant.research.schema import ExtractionBatch, ExtractionResult, RawItem
 
     ExtractFn = Callable[[RawItem, int], ExtractionBatch]
@@ -59,6 +60,57 @@ def _build_source(
         if saved and "subreddits" not in kwargs:
             kwargs["subreddits"] = saved
     return cls(**kwargs)  # each source supplies its own env-driven defaults
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # someone else's process: assume it's ours, don't reap
+    return True
+
+
+def reap_orphan_scrape_runs(sm: StateManager) -> list[int]:
+    """Mark 'running' scrape runs whose process is gone as killed; return their ids.
+
+    A run's process can die without finalizing its row (service restart,
+    crash, SIGKILL), which would block new scrapes of that source with a 409
+    forever.
+    """
+    from datetime import UTC, datetime
+
+    reaped: list[int] = []
+    now = datetime.now(tz=UTC)
+    for row in sm.list_active_scrape_runs():
+        # Live runs heartbeat every HEARTBEAT_INTERVAL_SECONDS: only a run whose
+        # heartbeat stopped AND whose process is gone (or never recorded) is an orphan.
+        stamp = row.get("heartbeat_at") or row.get("started_at")
+        try:
+            last = datetime.fromisoformat(str(stamp)).replace(tzinfo=UTC)
+        except ValueError:
+            last = now
+        if (now - last).total_seconds() < 4 * HEARTBEAT_INTERVAL_SECONDS:
+            continue
+        pid = row.get("pid")
+        if isinstance(pid, int) and pid > 0 and _pid_alive(pid):
+            continue
+        sm.complete_scrape_run(int(row["id"]), status="killed", error_message="process gone (reaped)")
+        reaped.append(int(row["id"]))
+    if reaped:
+        logger.warning("reaped %d orphan scrape run(s): %s", len(reaped), reaped)
+    return reaped
+
+
+def _market_tagger(sm: StateManager) -> MarketTagger | None:
+    from vibe_quant.research.market_tags import MarketTagger
+
+    try:
+        return MarketTagger(sm)
+    except Exception:  # noqa: BLE001
+        logger.exception("market tagger unavailable; items stay untagged until the worker runs")
+        return None
 
 
 def run_scrape(
@@ -133,6 +185,7 @@ def run_scrape(
     fetched = new = extracted = failed = skipped = 0
     error_message: str | None = None
     final_status = "completed"
+    tagger = _market_tagger(sm)
 
     try:
         for item in source.fetch(since=None, limit=limit):  # type: ignore[attr-defined]
@@ -159,6 +212,13 @@ def run_scrape(
             )
             if was_new:
                 new += 1
+                if tagger is not None and item_id is not None:
+                    # Market tags for every new item (before extraction so auto-screen
+                    # can use its tickers). Never sinks the item: the worker retries.
+                    try:
+                        tagger.tag(item_id, item)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("market tagging failed for item_id=%s", item_id)
                 if extract_fn is not None and item_id is not None:
                     try:
                         batch: ExtractionBatch = extract_fn(item, item_id)

@@ -1,7 +1,11 @@
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
-import { useGetSourcesApiResearchSourcesGet } from "@/api/generated/research/research";
+import {
+  useGetSourcesApiResearchSourcesGet,
+  useGetTagFacetsApiResearchTagsFacetsGet,
+} from "@/api/generated/research/research";
 import { ItemList } from "@/components/research/ItemList";
+import { MARKET_ORDER, marketLabel } from "@/components/research/MarketTags";
 import { ScrapeButton } from "@/components/research/ScrapeButton";
 import { ScrapeRunBanner } from "@/components/research/ScrapeRunBanner";
 import {
@@ -56,12 +60,18 @@ export function ResearchPage() {
   const setSort = useResearchStore((s) => s.setSort);
   const setHideLowTrade = useResearchStore((s) => s.setHideLowTrade);
   const setQ = useResearchStore((s) => s.setQ);
+  const market = useResearchStore((s) => s.market);
+  const ticker = useResearchStore((s) => s.ticker);
+  const setMarket = useResearchStore((s) => s.setMarket);
+  const setTicker = useResearchStore((s) => s.setTicker);
 
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as {
     sort?: string;
     hide_low_trade?: boolean;
     q?: string;
+    market?: string;
+    ticker?: string;
   };
 
   // On mount, hydrate store from URL (URL wins for shareable links).
@@ -78,7 +88,24 @@ export function ResearchPage() {
     if (typeof search.q === "string" && search.q.length > 0) {
       setQ(search.q);
     }
-  }, [search.sort, search.hide_low_trade, search.q, setSort, setHideLowTrade, setQ]);
+    if (typeof search.market === "string" && MARKET_ORDER.includes(search.market)) {
+      setMarket(search.market);
+    }
+    if (typeof search.ticker === "string" && search.ticker.length > 0) {
+      setTicker(search.ticker);
+    }
+  }, [
+    search.sort,
+    search.hide_low_trade,
+    search.q,
+    search.market,
+    search.ticker,
+    setSort,
+    setHideLowTrade,
+    setQ,
+    setMarket,
+    setTicker,
+  ]);
 
   // After hydration, mirror store back to URL.
   useEffect(() => {
@@ -90,10 +117,16 @@ export function ResearchPage() {
         sort: sort === "newest_scraped" ? undefined : sort,
         hide_low_trade: hideLowTrade ? true : undefined,
         q: q ? q : undefined,
+        market: market ? market : undefined,
+        ticker: ticker ? ticker : undefined,
       }),
       replace: true,
     });
-  }, [sort, hideLowTrade, q, navigate]);
+  }, [sort, hideLowTrade, q, market, ticker, navigate]);
+
+  const { data: facetsData } = useGetTagFacetsApiResearchTagsFacetsGet({ source });
+  const facets = facetsData && facetsData.status === 200 ? facetsData.data : null;
+  const marketCounts = new Map((facets?.markets ?? []).map((f) => [f.value, f.count]));
 
   const { data: sourcesData } = useGetSourcesApiResearchSourcesGet();
   const sources = sourcesData && sourcesData.status === 200 ? sourcesData.data.sources : ["reddit"];
@@ -131,6 +164,46 @@ export function ResearchPage() {
               ))}
             </SelectContent>
           </Select>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">Market</span>
+          <Select value={market || "all"} onValueChange={(v) => setMarket(v === "all" ? "" : v)}>
+            <SelectTrigger size="sm" className="h-8 text-xs w-36" aria-label="Market filter">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all" className="text-xs">
+                All markets
+              </SelectItem>
+              {MARKET_ORDER.map((m) => (
+                <SelectItem key={m} value={m} className="text-xs">
+                  {marketLabel(m)}
+                  {marketCounts.has(m) ? ` (${marketCounts.get(m)})` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">Ticker</span>
+          <input
+            type="search"
+            list="research-ticker-options"
+            value={ticker}
+            onChange={(e) => setTicker(e.target.value)}
+            placeholder="e.g. NVDA"
+            aria-label="Ticker filter"
+            className="h-8 w-28 rounded-md border border-border/60 bg-background px-2 font-mono text-xs uppercase text-foreground placeholder:normal-case placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-primary/60"
+          />
+          <datalist id="research-ticker-options">
+            {(facets?.tickers ?? []).map((f) => (
+              <option key={f.value} value={f.value}>
+                {`${f.count} item${f.count === 1 ? "" : "s"}`}
+              </option>
+            ))}
+          </datalist>
         </div>
 
         <div className="flex items-center gap-1.5">

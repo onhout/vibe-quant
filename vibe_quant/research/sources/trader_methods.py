@@ -11,12 +11,9 @@ CLI). The text is model-written: items carry ``extras.model_written = True``.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
-import shutil
 import subprocess
-import tempfile
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
@@ -62,25 +59,7 @@ def methods_from_env() -> list[str]:
 
 
 def _write_up(method: str) -> str:
-    prompt = PROMPT.format(method=method)
-    if openai_chat.use_openai():
-        return openai_chat.chat_completion(
-            prompt, config=openai_chat.config_from_env(), timeout_seconds=TIMEOUT_SECONDS
-        )
-    claude = shutil.which("claude")
-    if claude is None:
-        raise FileNotFoundError("no research LLM: set VQ_EXTRACTOR=openai or install the claude CLI")
-    proc = subprocess.run(  # noqa: S603
-        [claude, "-p", "--output-format", "json", prompt],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=TIMEOUT_SECONDS,
-        cwd=tempfile.gettempdir(),
-    )
-    if proc.returncode != 0:
-        raise ValueError(f"claude exited {proc.returncode}: {proc.stderr[:300]}")
-    return str(json.loads(proc.stdout).get("result") or "")
+    return openai_chat.research_completion(PROMPT.format(method=method), timeout_seconds=TIMEOUT_SECONDS)
 
 
 @register_source("trader_methods")

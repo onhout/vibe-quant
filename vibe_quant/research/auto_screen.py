@@ -44,6 +44,36 @@ def screen_symbols() -> list[str]:
     return symbols or list(DEFAULT_SYMBOLS)
 
 
+# Tagged tickers (market_tags) a stock/option post adds to its screen, at most.
+MAX_TAGGED_SYMBOLS = 3
+_STOCK_MARKETS = frozenset({"us_stocks", "options", "etf_index"})
+
+
+def symbols_for_extraction(sm: StateManager, extraction_id: int, timeframe: str) -> list[str] | None:
+    """Screen symbols for an extraction: its post's tagged tickers (with catalog data) first,
+    then the configured ``screen_symbols()``.
+
+    Only for the US-stock pipeline (``VQ_RESEARCH_MARKET=us_stocks``); returns None for a
+    crypto-only post there (nothing to screen on the stock universe).
+    """
+    base = screen_symbols()
+    if os.getenv("VQ_RESEARCH_MARKET", "").strip().lower() != "us_stocks":
+        return base
+    extraction = sm.get_extraction(extraction_id)
+    tags = sm.get_research_item_tags(int(extraction["research_item_id"])) if extraction else None
+    if not tags:
+        return base
+    markets = set(tags.get("markets") or [])
+    if markets and markets <= {"crypto"}:
+        return None
+    if not markets & _STOCK_MARKETS:
+        return base
+    from vibe_quant.research.loop import catalog_symbols
+
+    tagged = catalog_symbols([t for t in tags.get("tickers") or [] if t not in base], timeframe)
+    return tagged[:MAX_TAGGED_SYMBOLS] + base
+
+
 def screen_lookback_days() -> int:
     raw = os.getenv(ENV_LOOKBACK_DAYS, "").strip()
     try:
@@ -57,7 +87,7 @@ class _ScreenTimeout(Exception):
     """Raised when a single screening run exceeds DEFAULT_TIMEOUT_SECONDS."""
 
 
-def _default_window(timeframe: str) -> tuple[str, str] | None:
+def _default_window(timeframe: str, symbol: str | None = None) -> tuple[str, str] | None:
     """Lookback window clamped to catalog coverage.
 
     A wall-clock window silently runs past the end of downloaded data
@@ -70,7 +100,7 @@ def _default_window(timeframe: str) -> tuple[str, str] | None:
         from vibe_quant.data.catalog import DEFAULT_CATALOG_PATH, CatalogManager
 
         date_range = CatalogManager(DEFAULT_CATALOG_PATH).get_bar_date_range(
-            screen_symbols()[0], timeframe
+            symbol or screen_symbols()[0], timeframe
         )
         if date_range is None:
             return None
@@ -117,9 +147,22 @@ def auto_screen_extraction(
     tf_value = dsl_dict.get("timeframe", DEFAULT_TIMEFRAME)
     timeframe = str(tf_value) if tf_value is not None else DEFAULT_TIMEFRAME
 
-    window = _default_window(timeframe)
+    symbols = symbols_for_extraction(sm, extraction_id, timeframe)
+    if symbols is None:
+        logger.info("auto_screen: extraction %s is from a crypto-only post; skipped", extraction_id)
+        sm.update_extraction_screen_results(
+            extraction_id,
+            screen_sharpe=None,
+            screen_status="skipped",
+            screen_run_id=None,
+            screen_error="crypto-only post: not screened on the US-stock universe",
+            screen_completed_at=_now_iso(),
+        )
+        return
+
+    window = _default_window(timeframe, symbols[0])
     if window is None:
-        msg = f"no {timeframe} catalog data for {screen_symbols()[0]}"
+        msg = f"no {timeframe} catalog data for {symbols[0]}"
         logger.warning("auto_screen: %s (extraction %s)", msg, extraction_id)
         sm.update_extraction_screen_results(
             extraction_id,
@@ -135,7 +178,7 @@ def auto_screen_extraction(
     run_id = sm.create_backtest_run(
         strategy_id=None,
         run_mode="screening",
-        symbols=screen_symbols(),
+        symbols=symbols,
         timeframe=timeframe,
         start_date=start_date,
         end_date=end_date,
@@ -143,7 +186,7 @@ def auto_screen_extraction(
     )
 
     try:
-        metrics = _run_single_metrics(dsl_dict, start_date, end_date)
+        metrics = _run_single_metrics(dsl_dict, start_date, end_date, symbols)
     except _ScreenTimeout:
         logger.warning(
             "auto_screen: timeout for extraction %s (run %d)", extraction_id, run_id
@@ -210,7 +253,10 @@ def _normalize_dsl(parsed_dsl_json: str) -> dict[str, object]:
 
 
 def _run_single_metrics(
-    dsl_dict: dict[str, object], start_date: str, end_date: str
+    dsl_dict: dict[str, object],
+    start_date: str,
+    end_date: str,
+    symbols: list[str] | None = None,
 ) -> BacktestMetrics:
     """Instantiate NTScreeningRunner and run one backtest with default params.
 
@@ -220,7 +266,7 @@ def _run_single_metrics(
     from vibe_quant.screening.nt_runner import NTScreeningRunner
     from vibe_quant.screening.pipeline import resolve_parent_fill_ticks
 
-    symbols = screen_symbols()
+    symbols = symbols or screen_symbols()
     runner = NTScreeningRunner(
         dsl_dict=dsl_dict,
         symbols=symbols,

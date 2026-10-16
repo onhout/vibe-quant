@@ -5,13 +5,14 @@ import { useState } from "react";
 import { toast } from "sonner";
 import type { ExtractionJobResponse } from "@/api/generated/models";
 import {
-  getListExtractionQueueApiResearchExtractionQueueGetQueryKey,
   getExtractionQueueStatusApiResearchExtractionQueueStatusGetQueryKey,
+  getListExtractionQueueApiResearchExtractionQueueGetQueryKey,
   useCancelExtractionJobApiResearchExtractionJobsJobIdCancelPost,
   useListExtractionQueueApiResearchExtractionQueueGet,
 } from "@/api/generated/research/research";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+import { MarketTags } from "@/components/research/MarketTags";
 import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import { formatRelative } from "@/lib/time";
 
 export function ResearchQueuePage() {
@@ -130,6 +131,7 @@ export function ResearchQueuePage() {
                       >
                         {job.item_title ?? `Item #${job.research_item_id}`}
                       </Link>
+                      <MarketTags tags={job.item_market_tags} maxTickers={4} className="mt-1" />
                       {job.last_error && (
                         <div
                           className="mt-1 truncate text-[10px] text-destructive/80"

@@ -10,8 +10,12 @@ and the ``trader_methods`` source all go through :func:`chat_completion`.
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import os
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -112,3 +116,24 @@ def chat_completion(
     if not isinstance(content, str) or not content.strip():
         raise ChatCompletionError("empty chat response")
     return content
+
+
+def research_completion(prompt: str, *, timeout_seconds: float) -> str:
+    """One prompt to the research LLM: the OpenAI-compatible endpoint when
+    ``VQ_EXTRACTOR=openai``, else the ``claude`` CLI. Raises on any failure."""
+    if use_openai():
+        return chat_completion(prompt, config=config_from_env(), timeout_seconds=timeout_seconds)
+    claude = shutil.which("claude")
+    if claude is None:
+        raise FileNotFoundError("no research LLM: set VQ_EXTRACTOR=openai or install the claude CLI")
+    proc = subprocess.run(  # noqa: S603
+        [claude, "-p", "--output-format", "json", prompt],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        cwd=tempfile.gettempdir(),
+    )
+    if proc.returncode != 0:
+        raise ChatCompletionError(f"claude exited {proc.returncode}: {proc.stderr[:300]}")
+    return str(json.loads(proc.stdout).get("result") or "")
