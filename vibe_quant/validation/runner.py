@@ -296,11 +296,13 @@ class ValidationRunner:
                 result.execution_time_seconds,
             )
 
-            if result.total_trades == 0:
-                error_msg = "Validation produced 0 trades — likely missing/empty data"
+            if result.total_trades == 0 and not result.notes.get("engine_iterations"):
+                error_msg = "Validation processed no bars — no data in the run window"
                 logger.error("Run %d: %s", run_id, error_msg)
                 self._state.update_backtest_run_status(run_id, "failed", error_message=error_msg)
             else:
+                if result.total_trades == 0:
+                    logger.info("Run %d: ran through the data, no entry signal (0 trades)", run_id)
                 self._state.update_backtest_run_status(run_id, "completed")
             return result
         except Exception as exc:
@@ -495,11 +497,15 @@ class ValidationRunner:
             if aggregate.notes:
                 self._state.update_result_notes(run_id, json.dumps(aggregate.notes))
 
-            if aggregate.total_trades == 0:
-                error_msg = "Walk-forward produced 0 trades — likely missing/empty data"
+            if aggregate.total_trades == 0 and not any(
+                r.notes.get("engine_iterations") for r in window_results
+            ):
+                error_msg = "Walk-forward processed no bars — no data in any window"
                 logger.error("Run %d: %s", run_id, error_msg)
                 self._state.update_backtest_run_status(run_id, "failed", error_message=error_msg)
             else:
+                if aggregate.total_trades == 0:
+                    logger.info("Run %d: walk-forward ran through the data, no entries (0 trades)", run_id)
                 self._state.update_backtest_run_status(run_id, "completed")
             return window_results
         except Exception as exc:
@@ -1247,6 +1253,9 @@ class ValidationRunner:
                     maker_entry_timeout_bars=timeout_bars,
                 )
 
+            # Data points the engine stepped through: a run with bars but no trades
+            # completed (no entry signal fired); one with none had no data.
+            result.notes["engine_iterations"] = bt_result.iterations
             return result
         finally:
             # Reset engines before dispose to avoid

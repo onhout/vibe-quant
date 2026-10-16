@@ -681,8 +681,8 @@ class RegimeTuner:
         if status != "completed":
             meta = self._api("GET", f"/api/results/runs/{run_id}/meta")
             error = str(meta.get("error_message") or f"run {run_id} ended {status}")
-            # Validation fails a run that never traded; with bars present that is a flat window
-            # (no entry = stay out), not an error.
+            # Runs from before validation completed no-trade runs were marked failed with
+            # "0 trades"; with bars present that is a flat window (no entry = stay out).
             if "0 trades" in error and self._has_data(symbols, timeframe, window):
                 row.update(
                     verdict="flat",

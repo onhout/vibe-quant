@@ -53,7 +53,7 @@ def cmd_validation_run(args: argparse.Namespace) -> int:
         runner = ValidationRunner(db_path=db_path)
         result = runner.run(run_id=run_id, latency_preset=latency)
 
-        # mark_completed keeps a failure the runner recorded (e.g. 0 trades).
+        # mark_completed keeps a failure the runner recorded (e.g. no data).
         job_manager.mark_completed(run_id)
         run_error = job_manager.run_failure(run_id)
         if run_error is not None:

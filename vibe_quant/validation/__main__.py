@@ -31,7 +31,7 @@ def main() -> int:
     runner = ValidationRunner(db_path=db_path)
     try:
         result = runner.run(args.run_id, detail_timeframe=args.detail_timeframe)
-        # mark_completed keeps a failure the runner recorded (e.g. 0 trades).
+        # mark_completed keeps a failure the runner recorded (e.g. no data).
         job_manager.mark_completed(args.run_id)
         run_error = job_manager.run_failure(args.run_id)
         if run_error is not None:

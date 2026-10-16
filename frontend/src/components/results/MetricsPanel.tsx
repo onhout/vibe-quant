@@ -47,6 +47,8 @@ export function MetricsPanel({ runId }: MetricsPanelProps) {
     data.win_rate != null && data.avg_win != null && data.avg_loss != null
       ? data.win_rate * data.avg_win - (1 - data.win_rate) * Math.abs(data.avg_loss)
       : null;
+  // A run that went through the data without an entry signal: no profit factor to judge.
+  const noTrades = data.total_trades === 0;
 
   return (
     <div>
@@ -83,16 +85,24 @@ export function MetricsPanel({ runId }: MetricsPanelProps) {
         />
         <MetricCard
           label="Profit Factor"
-          value={fmt(data.profit_factor)}
-          trend={data.profit_factor != null ? (data.profit_factor >= 1 ? "up" : "down") : "neutral"}
+          value={noTrades ? "N/A" : fmt(data.profit_factor)}
+          trend={
+            !noTrades && data.profit_factor != null
+              ? data.profit_factor >= 1
+                ? "up"
+                : "down"
+              : "neutral"
+          }
         />
         <MetricCard
           label="Total Trades"
           value={data.total_trades ?? "N/A"}
           subtitle={
-            data.winning_trades != null && data.losing_trades != null
-              ? `${data.winning_trades}W / ${data.losing_trades}L`
-              : undefined
+            noTrades
+              ? "no entry signal in this window"
+              : data.winning_trades != null && data.losing_trades != null
+                ? `${data.winning_trades}W / ${data.losing_trades}L`
+                : undefined
           }
         />
         <MetricCard

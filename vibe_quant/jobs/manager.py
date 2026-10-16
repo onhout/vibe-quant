@@ -157,7 +157,7 @@ _JOB_TO_MODES: dict[str, set[str]] = {
 }
 
 # Terminal run/job statuses a later "completed" report must not overwrite
-# (a run the runner marked failed — e.g. 0 trades — stays failed).
+# (a run the runner marked failed — e.g. no data — stays failed).
 _STICKY_ON_COMPLETE = frozenset({"failed", "killed", "cancelled"})
 # ... and that a later failure report must not overwrite (user intent wins).
 _STICKY_ON_FAIL = frozenset({"killed", "cancelled"})
@@ -486,7 +486,7 @@ class BacktestJobManager:
         """Mark a job as completed or failed.
 
         A plain "completed" never overwrites a failure the run itself recorded
-        (e.g. the validation runner's 0-trade failure) nor a kill: the job row
+        (e.g. the validation runner's no-data failure) nor a kill: the job row
         then adopts the run's failed status and error.
 
         Args:
@@ -497,7 +497,7 @@ class BacktestJobManager:
         self._finish(run_id, status, error)
 
     def run_failure(self, run_id: int) -> str | None:
-        """Error message if the backtest run is marked failed (e.g. 0 trades), else None."""
+        """Error message if the backtest run is marked failed (e.g. no data), else None."""
         with self._db_lock:
             row = self.conn.execute(
                 "SELECT status, error_message FROM backtest_runs WHERE id = ?", (run_id,)
