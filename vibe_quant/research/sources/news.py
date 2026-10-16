@@ -5,9 +5,10 @@ Each run (every cycle of the research loop) reads
 - Google News RSS search for general market queries (``VQ_NEWS_QUERIES``,
   ``|``-separated, or the default list: the market, the Fed, indexes, yields,
   oil, crypto) and for every ticker that matters right now,
-- the SEC EDGAR submissions of those tickers for new 8-K filings (material
-  events: results, deals, officer changes, offerings),
-- Nasdaq's earnings calendar for the coming week (those tickers and mega caps).
+- the SEC EDGAR submissions of those tickers for new 8-K (6-K for foreign
+  issuers) filings: material events such as results, deals, officer changes,
+- Nasdaq's earnings calendar for the coming week (those tickers and mega caps;
+  the 8-K results filings of the ones that reported yesterday or today are read too).
 
 The tickers come from the caller (the pipeline passes the tickers tagged on
 recent research items, WallStreetBets' hot names and the core watch list), or
@@ -32,6 +33,7 @@ from datetime import UTC, date, datetime, timedelta
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 from urllib.parse import urlsplit, urlunsplit
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -72,6 +74,7 @@ BROWSER_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0 Safari/537.36"
 )
+NEW_YORK = ZoneInfo("America/New_York")
 HTTP_TIMEOUT_S = 20.0
 # Request floors per host: Google News is polite at ~1 req/s, SEC allows 10 req/s.
 MIN_INTERVAL_S = {
@@ -100,6 +103,8 @@ HEADLINES_PER_TICKER = 4
 EARNINGS_DAYS = 7
 # Upcoming earnings of companies this big are listed even when no one is talking about them.
 MEGA_CAP_USD = 200e9
+# Current reports: 8-K (US companies, with item codes) and 6-K (foreign issuers such as TSM).
+CURRENT_REPORT_FORMS = ("8-K", "8-K/A", "6-K", "6-K/A")
 # 8-K filings of the last few days on a first run (afterwards: since the last run).
 FILING_LOOKBACK = timedelta(days=3)
 
@@ -251,6 +256,8 @@ class NewsSource:
         )
         self._last_request: dict[str, float] = {}
         self._ciks: dict[str, int | None] = {}
+        # Calendar companies reporting yesterday or today: their 8-K results filings are read too.
+        self._reporters: list[str] = []
 
     def close(self) -> None:
         self._client.close()
@@ -310,7 +317,8 @@ class NewsSource:
         sections.append(("earnings", collect("earnings calendar", self._earnings)))
         filings: list[RawItem] = []
         filing_since = since or datetime.now(tz=UTC) - FILING_LOOKBACK
-        for ticker in self._tickers:
+        filers = list(dict.fromkeys([*self._tickers, *self._reporters]))
+        for ticker in filers:
             filings += collect(f"8-K {ticker}", lambda t=ticker: self._filings(t, filing_since))
         sections.append(("filings", filings))
         per_query = [
@@ -327,7 +335,7 @@ class NewsSource:
         # Round robin across queries so ``limit`` never starves the later ones.
         headlines = [i for row in zip_longest(*per_query) for i in row if i is not None]
         sections.append(("headlines", headlines))
-        attempted = 1 + len(self._tickers) + len(per_query)
+        attempted = 1 + len(filers) + len(per_query)
         if len(errors) == attempted:
             raise RuntimeError(f"every news request failed: {errors[-1]}")
 
@@ -423,7 +431,7 @@ class NewsSource:
         )
         out: list[RawItem] = []
         for form, accession, accepted, filed, items, document, doc_description in rows:
-            if form not in ("8-K", "8-K/A"):
+            if form not in CURRENT_REPORT_FORMS:
                 continue
             when = _sec_time(accepted, filed)
             if when is None or when < since:
@@ -431,6 +439,8 @@ class NewsSource:
             codes = [c.strip() for c in str(items or "").split(",") if c.strip()]
             described = [f"{ITEM_8K.get(c, 'Item')} ({c})" for c in codes]
             headline = "; ".join(ITEM_8K[c] for c in codes if c in ITEM_8K and c != "9.01")
+            if not headline and doc_description and str(doc_description).upper() != form:
+                headline = str(doc_description)
             title = f"{ticker} {form}: {headline or 'current report'}"
             body = (
                 f"{company} ({ticker}) filed a Form {form} with the SEC on {filed}.\n"
@@ -467,16 +477,23 @@ class NewsSource:
     # -- Nasdaq earnings calendar --------------------------------------------------------------
 
     def _earnings(self) -> list[RawItem]:
+        """Earnings dates from today to ``earnings_days`` ahead; the previous weekday's and
+        today's reporters also go to ``_reporters`` (their results 8-K is due)."""
         watch = set(self._tickers)
         now = datetime.now(tz=UTC)
-        day = now.date()
+        today = now.astimezone(NEW_YORK).date()
+        day = today - timedelta(days=3 if today.weekday() == 0 else 1)
         out: list[RawItem] = []
-        for _ in range(self._earnings_days + 1):
+        while day <= today + timedelta(days=self._earnings_days):
             if day.weekday() < 5:
                 payload = self._get(NASDAQ_EARNINGS_URL, {"date": day.isoformat()}).json()
                 for row in ((payload.get("data") or {}).get("rows")) or []:
                     item = self._earnings_item(row, day, now, watch)
-                    if item is not None:
+                    if item is None:
+                        continue
+                    if day <= today:
+                        self._reporters.append(item.extras["tickers"][0])
+                    if day >= today:
                         out.append(item)
             day += timedelta(days=1)
         return out

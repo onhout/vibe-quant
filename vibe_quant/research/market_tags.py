@@ -265,6 +265,21 @@ STOPWORDS: frozenset[str] = frozenset(
         "HODL",
         "APE",
         "APES",
+        # Company-form suffixes in news headlines ("Oodash Group AB", "Siemens AG").
+        "AB",
+        "AG",
+        "ASA",
+        "BV",
+        "CORP",
+        "INC",
+        "LLC",
+        "LTD",
+        "NV",
+        "OYJ",
+        "PLC",
+        "SA",
+        "SE",
+        "SPA",
     }
 )
 
@@ -484,8 +499,7 @@ _PROMPT = """You tag one trading post or market news item with the markets it in
 {{"markets": [...], "tickers": [...], "primary_ticker": "XYZ" or null, "direction": "bullish" | "bearish" | "neutral" | "mixed" | null}}
 
 markets: every asset class the post trades or discusses concretely, chosen from
-  us_stocks (individual US-listed stocks; a stock listed only abroad, e.g. in Tokyo, London or
-  Milan, is not), options (any options trade or options talk), crypto,
+  us_stocks (individual US-listed stocks), options (any options trade or options talk), crypto,
   futures (ES/NQ/CL/... contracts), forex (currency pairs, spot gold XAUUSD),
   etf_index (SPY/QQQ/IWM and other ETFs, the S&P 500 / Nasdaq / VIX indexes), macro (Fed, rates,
   yields, inflation, jobs, tariffs, the economy).
@@ -495,7 +509,11 @@ markets: every asset class the post trades or discusses concretely, chosen from
 tickers: US stock/ETF symbols, index symbols (SPX, NDX, VIX), futures roots (ES, NQ, CL) and
   crypto coin symbols (BTC, ETH) the post is about, upper case, no "$". Include companies named
   in words when you are sure of the symbol (Chevron -> CVX, Nvidia -> NVDA, Micron -> MU).
-  Leave out tickers merely mentioned in passing.
+  Leave out tickers merely mentioned in passing. Company-form suffixes (AB, AG, SA, NV, PLC)
+  are not tickers.
+Stocks that trade only outside the US (India's NSE/BSE such as Tech Mahindra, Tokyo "3387.T",
+  Frankfurt/Munich ".MU", London, Milan, Seoul) are not us_stocks and have no ticker here; a
+  post or article only about them gets markets [] unless it involves another market above.
 primary_ticker: the main ticker, else null.
 direction: the author's stance on the primary ticker or market: bullish / bearish / neutral /
   mixed, only when the author states or clearly implies an expected move or holds a position
