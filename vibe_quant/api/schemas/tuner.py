@@ -13,7 +13,7 @@ class TunerWindowResult(BaseModel):
     symbols: list[str]
     note: str = ""
     run_id: int | None = None
-    verdict: str | None = None  # win | lose | flat | error | None (running)
+    verdict: str | None = None  # win | lose | flat | invalid | error | None (running)
     total_return: float | None = None
     profit_factor: float | None = None
     trades: int | None = None
@@ -58,7 +58,7 @@ class TunerCandidateSummary(BaseModel):
     root_name: str
     timeframe: str | None = None
     symbols: list[str]
-    status: str  # testing | tuning | settled | exhausted
+    status: str  # testing | tuning | settled | exhausted | blocked
     stage: str
     current_strategy_id: int
     round: int
@@ -93,6 +93,7 @@ class TunerSettings(BaseModel):
     timeframes: list[str]
     windows: list[TunerWindowConfig]
     queued: list[int]
+    initial_balance: int
     auto_paper: bool
 
 

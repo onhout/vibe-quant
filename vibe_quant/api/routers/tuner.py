@@ -55,6 +55,7 @@ def _settings(cfg: TunerConfig) -> TunerSettings:
         timeframes=list(cfg.timeframes),
         windows=[TunerWindowConfig(**w.__dict__) for w in cfg.windows],
         queued=list(cfg.candidate_ids),
+        initial_balance=cfg.initial_balance,
         auto_paper=cfg.auto_paper,
     )
 
@@ -108,7 +109,7 @@ async def queue_strategy(body: TunerQueueRequest, state_mgr: StateMgr) -> TunerS
         candidates = state.setdefault("candidates", {})
         if str(body.strategy_id) in candidates and candidates[str(body.strategy_id)].get(
             "status"
-        ) in ("settled", "exhausted"):
+        ) in ("settled", "exhausted", "blocked"):
             candidates.pop(str(body.strategy_id))
             save_state(state, STATE_PATH)
     return await get_tuner()

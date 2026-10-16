@@ -9,6 +9,8 @@ const TONES: Record<string, string> = {
   fail: "bg-red-500/15 text-red-300 border-red-500/25",
   exhausted: "bg-amber-500/15 text-amber-300 border-amber-500/25",
   error: "bg-amber-500/15 text-amber-300 border-amber-500/25",
+  invalid: "bg-amber-500/15 text-amber-300 border-amber-500/25",
+  blocked: "bg-amber-500/15 text-amber-300 border-amber-500/25",
   flat: "bg-muted text-muted-foreground border-border",
   testing: "bg-sky-500/15 text-sky-300 border-sky-500/25",
   tuning: "bg-violet-500/15 text-violet-300 border-violet-500/25",

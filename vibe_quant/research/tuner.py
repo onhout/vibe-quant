@@ -117,7 +117,10 @@ class TunerConfig:
     )
     min_total_trades: int = 30
     max_rounds: int = 5
-    initial_balance: int = 1000
+    # Large enough that every tested stock can be bought within the strategy's position cap
+    # (whole shares at <= position_cap_pct of equity): at $1,000 anything above ~$500 never trades.
+    initial_balance: int = 25_000
+    position_cap_pct: float = 0.5
     run_timeout_minutes: int = 30
     candidate_ids: list[int] = field(default_factory=list)  # queued first (UI "Tune" button)
     auto_paper: bool = True
@@ -180,8 +183,9 @@ def window_verdict(result: dict[str, Any], cfg: TunerConfig) -> str:
 
 
 def stage_passed(stage: str, windows: list[dict[str, Any]], cfg: TunerConfig) -> tuple[bool, str]:
-    if any(w.get("verdict") in (None, "error") for w in windows):
-        return False, "a window failed to run"
+    broken = [w["label"] for w in windows if w.get("verdict") in (None, "error", "invalid")]
+    if broken:
+        return False, f"untestable: {', '.join(broken)} (a run failed or a symbol was unaffordable)"
     losers = [w["label"] for w in windows if w["verdict"] == "lose"]
     if losers:
         return False, f"lost in {', '.join(losers)}"
@@ -258,7 +262,9 @@ Results of this version on each market window (return and drawdown are fractions
 worst trades show where it bought and sold badly):
 {results}
 
-Earlier versions already tried for this strategy (do not repeat them):
+Every version tried so far, with its results per stage and the changes that made it
+("best_so_far" marks the version you are changing now; versions that did worse show what not
+to do, e.g. too many filters made it stop trading):
 {history}
 
 Change the parameters so it stops losing in the losing windows while staying profitable in
@@ -476,6 +482,45 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     return value
 
 
+# -- versions ----------------------------------------------------------------------------------------
+
+
+def version_score(attempts: list[dict[str, Any]], strategy_id: int) -> tuple[float, ...]:
+    """How far a version got: stages passed, then (in the stage it failed) fewer losing
+    windows, a better total return there, then more trades. Higher is better."""
+    mine = [a for a in attempts if a.get("strategy_id") == strategy_id and "passed" in a]
+    passed = sum(1 for a in mine if a.get("passed"))
+    failed = next((a for a in reversed(mine) if not a.get("passed")), None)
+    windows = failed["windows"] if failed else []
+    losers = sum(1 for w in windows if w.get("verdict") in ("lose", "error", "invalid"))
+    ret = sum(float(w.get("total_return") or 0.0) for w in windows)
+    trades = sum(int(w.get("trades") or 0) for a in mine for w in a["windows"])
+    return (float(passed), float(-losers), ret, float(trades))
+
+
+def version_summary(attempts: list[dict[str, Any]], strategy_id: int) -> dict[str, Any]:
+    """One version's outcome per stage, compact, for the model's history."""
+    mine = [a for a in attempts if a.get("strategy_id") == strategy_id and "passed" in a]
+    return {
+        "strategy_id": strategy_id,
+        "stages": [
+            {
+                "stage": a["stage"],
+                "passed": a.get("passed"),
+                "reason": a.get("reason"),
+                "windows": {
+                    w["label"]: (
+                        f"{w.get('verdict')} return={w.get('total_return')} "
+                        f"pf={w.get('profit_factor')} trades={w.get('trades')}"
+                    )
+                    for w in a["windows"]
+                },
+            }
+            for a in mine
+        ],
+    }
+
+
 # -- the tuner -------------------------------------------------------------------------------------
 
 
@@ -586,6 +631,14 @@ class RegimeTuner:
                 symbols,
             )
             return row
+        unaffordable = self._unaffordable(symbols, window)
+        if unaffordable:
+            row.update(
+                verdict="invalid",
+                error=f"{', '.join(unaffordable)} cost more than "
+                f"{self.cfg.position_cap_pct:.0%} of ${self.cfg.initial_balance:,}: no share could be bought",
+            )
+            return row
         body = {
             "strategy_id": strategy_id,
             "symbols": symbols,
@@ -643,6 +696,36 @@ class RegimeTuner:
         )
         row["verdict"] = window_verdict(result, self.cfg)
         return row
+
+    def _unaffordable(self, symbols: list[str], window: TunerWindow) -> list[str]:
+        """Symbols whose price in the window exceeds what one position may spend."""
+        budget = self.cfg.initial_balance * self.cfg.position_cap_pct
+        out = []
+        for symbol in symbols:
+            try:
+                bars = (
+                    self._api(
+                        "GET",
+                        f"/api/data/browse/{symbol}",
+                        params={"interval": "1d", "start": window.start, "end": window.end},
+                    ).get("data")
+                    or []
+                )
+            except RuntimeError:
+                continue  # unknown here: the run itself reports missing data
+            if bars and max(float(b.get("high") or 0.0) for b in bars) > budget:
+                out.append(symbol)
+        return out
+
+    def _trades_for(self, attempt: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        out: dict[str, list[dict[str, Any]]] = {}
+        for w in attempt.get("windows") or []:
+            if w.get("run_id") and w.get("trades"):
+                try:
+                    out[w["label"]] = self._api("GET", f"/api/results/runs/{w['run_id']}/trades")
+                except RuntimeError:
+                    out[w["label"]] = []
+        return out
 
     def _has_data(self, symbols: list[str], timeframe: str, window: TunerWindow) -> bool:
         try:
@@ -747,6 +830,9 @@ class RegimeTuner:
                 )
             else:
                 self._settle(cand)
+        elif reason.startswith("untestable"):
+            cand.update(status="blocked", verdict=reason, finished_at=_now())
+            logger.warning("regime tuner: %s blocked: %s", cand["root_name"], reason)
         else:
             self._retune(cand, dsl, attempt, trades_by_window)
         self.state["current"] = None
@@ -768,19 +854,44 @@ class RegimeTuner:
             )
             logger.info("regime tuner: %s exhausted", cand["root_name"])
             return
-        history = [
-            {
-                "attempt": a["n"],
-                "stage": a["stage"],
-                "reason": a.get("reason"),
-                "changes": (a.get("ai") or {}).get("suggestion"),
-            }
-            for a in cand["attempts"][:-1]
-        ]
+        # Tune from the best version so far, not blindly from the latest: a round that made it
+        # worse is reverted, and the model sees every version's results so it stops over-tightening.
+        attempts = cand["attempts"]
+        versions = list(dict.fromkeys(int(a["strategy_id"]) for a in attempts))
+        best = max(versions, key=lambda v: version_score(attempts, v))
+        base_dsl, base_attempt = dsl, attempt
+        if best != int(attempt["strategy_id"]):
+            failed = next(
+                (
+                    a
+                    for a in reversed(attempts)
+                    if a["strategy_id"] == best and a.get("passed") is False
+                ),
+                None,
+            )
+            if failed is not None:
+                base_dsl, base_attempt = dict(failed["dsl"]), failed
+                trades_by_window = self._trades_for(failed)
+                logger.info(
+                    "regime tuner: %s: version %s did worse; tuning from best version %s",
+                    cand["root_name"],
+                    attempt["strategy_id"],
+                    best,
+                )
+        history = []
+        for v in versions:
+            entry = version_summary(attempts, v)
+            made_by = next(
+                (a for a in attempts if (a.get("ai") or {}).get("new_strategy_id") == v), None
+            )
+            if made_by is not None:
+                entry["changes_that_made_it"] = (made_by.get("ai") or {}).get("suggestion")
+            entry["best_so_far"] = v == best
+            history.append(entry)
         try:
             new_dsl, suggestion, notes = suggest_parameters(
-                dsl,
-                attempt["windows"],
+                base_dsl,
+                base_attempt["windows"],
                 trades_by_window,
                 history,
                 self.cfg,
@@ -811,6 +922,7 @@ class RegimeTuner:
             },
         )
         attempt["ai"] = {
+            "base_strategy_id": int(base_attempt["strategy_id"]),
             "reasoning": suggestion.get("reasoning"),
             "suggestion": suggestion,
             "notes": notes,

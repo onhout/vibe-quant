@@ -41,7 +41,8 @@ export function TunerPage() {
             <p>
               Pass: return &gt; {(s.min_return * 100).toFixed(0)}% and profit factor ≥{" "}
               {s.min_profit_factor} in every market it traded, ≥ {s.min_total_trades} trades in
-              total. Settled strategies start an Alpaca paper session
+              total. Backtests start with ${s.initial_balance.toLocaleString()} so every tested stock is
+              affordable. Settled strategies start an Alpaca paper session
               {s.auto_paper ? "" : " (auto paper is off)"}.
             </p>
           </div>
