@@ -213,6 +213,10 @@ async def compare_runs(
         row = mgr.get_backtest_result(rid)
         if row is not None:
             results.append(BacktestResultResponse(**_enrich_result_with_notes(row)))
+            continue
+        best = _best_sweep_row(mgr, rid)  # screening runs: same result as GET /runs/{id}
+        if best is not None:
+            results.append(_best_sweep_result(best, rid))
     return ComparisonResponse(runs=results)
 
 
@@ -239,6 +243,11 @@ async def get_run_summary(run_id: int, mgr: StateMgr) -> BacktestResultResponse:
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         raise HTTPException(status_code=404, detail="No results available for this run yet")
+    return _best_sweep_result(best, run_id)
+
+
+def _best_sweep_result(best: dict[str, Any], run_id: int) -> BacktestResultResponse:
+    """A screening run's result: its best sweep row (screening doesn't fill backtest_results)."""
     return BacktestResultResponse(
         id=best["id"],
         run_id=run_id,

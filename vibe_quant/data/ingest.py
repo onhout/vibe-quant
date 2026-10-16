@@ -176,13 +176,18 @@ def get_download_preview(
         archive = RawDataArchive()
 
     months = get_months_in_range(start_date, end_date)
+    # Stocks: every month the range touches, the current one included (topped up on every
+    # ingest), the same months ingest_equity_symbol downloads.
+    equity_months = list(generate_month_range(start_date, min(end_date, datetime.now(UTC))))
+    now = datetime.now(UTC)
     preview: list[dict[str, Any]] = []
 
     try:
         for symbol in symbols:
-            for year, month in months:
+            equity = is_equity_symbol(symbol)
+            for year, month in equity_months if equity else months:
                 actual = archive.get_month_kline_count(symbol, "1m", year, month)
-                if is_equity_symbol(symbol):
+                if equity:
                     from vibe_quant.data.alpaca import expected_month_klines
 
                     expected = expected_month_klines(year, month)
@@ -190,7 +195,8 @@ def get_download_preview(
                     _, days = calendar.monthrange(year, month)
                     expected = days * 24 * 60
 
-                if actual >= expected * 0.9:
+                current = equity and (year, month) == (now.year, now.month)
+                if actual >= expected * 0.9 and not current:
                     status = "Archived"
                 elif actual > 0:
                     status = "Partial - will re-download"

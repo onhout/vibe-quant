@@ -1828,6 +1828,8 @@ class StrategyCompiler:
         lines = [
             "def _is_near_funding_time(self, ts_ns: int) -> bool:",
             '    """Check if near funding settlement (Binance: 00:00, 08:00, 16:00 UTC)."""',
+            "    if self.instrument_id.venue.value == 'ALPACA':  # US stocks have no funding",
+            "        return False",
             "    from datetime import datetime, timezone",
             "",
             "    dt = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)",

@@ -220,10 +220,20 @@ def _compute_single(
         return [("value", result)]
 
     if upper == "VWAP":
-        result = df.ta.vwap(high=high, low=low, close=close, volume=volume)
+        # pandas-ta resets VWAP per day from a DatetimeIndex; a RangeIndex raises. UTC days
+        # (one US stock session sits inside one UTC day).
+        from pandas import DatetimeIndex, to_datetime
+
+        when = DatetimeIndex(to_datetime(df["open_time"], unit="ms"))  # naive UTC
+        result = df.set_axis(when).ta.vwap(
+            high=high.set_axis(when),
+            low=low.set_axis(when),
+            close=close.set_axis(when),
+            volume=volume.set_axis(when),
+        )
         if result is None:
             return []
-        return [("value", result)]
+        return [("value", result.set_axis(df.index))]
 
     if upper in {"KC", "DONCHIAN"}:
         period = params.get("period", 20)

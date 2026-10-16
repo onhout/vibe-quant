@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, TypedDict, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
     from vibe_quant.data.archive import RawDataArchive
 
@@ -40,6 +40,7 @@ def scan_klines(
     klines: Iterable[KlineRow],
     max_gap_minutes: int = 1,
     min_flat_run: int = 1,
+    session_gaps_only: bool = False,
 ) -> VerifyResult:
     """Single pass over 1m klines (sorted by open_time): gaps, OHLC errors, filler runs.
 
@@ -49,12 +50,17 @@ def scan_klines(
     - gaps: any step other than <= ``max_gap_minutes`` whole minutes (default
       1 = exact continuity; also flags duplicates/off-grid timestamps). The old
       5-minute threshold passed every gap of up to 4 missing bars.
+      With ``session_gaps_only`` (US stocks) only breaks inside one New York
+      trading day count: the overnight/weekend/holiday step between sessions
+      is the market being closed, not missing data.
     - zero_volume_runs: runs of flat (O=H=L=C) zero-volume bars. Binance Vision
       fills exchange outages with such candles (e.g. BTC 2024-10-28
       20:00-21:14, 74 bars) although the market traded; they pass the OHLC
       checks but are not real prices.
     """
     max_gap_ms = max_gap_minutes * _MINUTE_MS
+    if session_gaps_only:
+        from vibe_quant.data.catalog import ny_offset_ns
     gaps: list[tuple[int, int, int]] = []
     errors: list[tuple[int, str]] = []
     runs: list[tuple[int, int, int]] = []
@@ -74,7 +80,11 @@ def scan_klines(
 
         if prev_time is not None:
             gap_ms = open_time - prev_time
-            if gap_ms > max_gap_ms or gap_ms <= 0 or gap_ms % _MINUTE_MS != 0:
+            broken = gap_ms > max_gap_ms or gap_ms <= 0 or gap_ms % _MINUTE_MS != 0
+            if broken and (
+                not session_gaps_only
+                or _ny_day(prev_time, ny_offset_ns) == _ny_day(open_time, ny_offset_ns)
+            ):
                 gaps.append((prev_time, open_time, gap_ms // _MINUTE_MS))
         prev_time = open_time
 
@@ -103,6 +113,12 @@ def scan_klines(
         runs.append((run_start, run_last, run_len))
 
     return {"gaps": gaps, "ohlc_errors": errors, "zero_volume_runs": runs, "kline_count": count}
+
+
+def _ny_day(open_time_ms: int, ny_offset_ns: Callable[[int], int]) -> int:
+    """New York calendar day (days since epoch, local) of a 1m bar's open time."""
+    ts_ns = open_time_ms * 1_000_000
+    return (ts_ns + ny_offset_ns(ts_ns)) // 86_400_000_000_000
 
 
 def _volume(k: KlineRow) -> float | None:
@@ -189,7 +205,13 @@ def verify_symbol(
             - zero_volume_runs: list of (first_ts, last_ts, bars) flat filler runs
             - kline_count: int
     """
-    return scan_klines(archive.get_klines(symbol, interval), max_gap_minutes)
+    from vibe_quant.data.catalog import is_equity_symbol
+
+    return scan_klines(
+        archive.get_klines(symbol, interval),
+        max_gap_minutes,
+        session_gaps_only=is_equity_symbol(symbol),
+    )
 
 
 def interior_missing_days(
@@ -213,10 +235,15 @@ def interior_missing_days(
     Returns:
         Dict with ``klines`` / ``mark_klines``: missing UTC days, oldest first.
     """
+    from vibe_quant.data.catalog import is_equity_symbol
+
+    # Stocks don't trade on weekends: those days are never missing.
+    equity = is_equity_symbol(symbol)
     return {
         "klines": [
             day.isoformat()
             for day in archive.missing_days(symbol, interval, table="raw_klines")
+            if not (equity and day.weekday() >= 5)
         ],
         "mark_klines": [
             day.isoformat()
