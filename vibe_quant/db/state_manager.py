@@ -1414,6 +1414,31 @@ class StateManager:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_promotable_extractions(
+        self, *, min_trades: int, min_profit_factor: float, min_return: float
+    ) -> list[JsonDict]:
+        """Parsed extractions whose auto-screen cleared the research loop's promote bar."""
+        with self._write_lock:
+            rows = self.conn.execute(
+                """SELECT * FROM research_extractions
+                   WHERE status = 'parsed' AND screen_status = 'done'
+                     AND screen_trades >= ? AND screen_pf >= ? AND screen_return > ?
+                   ORDER BY id""",
+                (min_trades, min_profit_factor, min_return),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_recent_extraction_dsls(self, since_iso: str) -> list[str]:
+        """``parsed_dsl_json`` of parsed/promoted extractions extracted since ``since_iso``."""
+        with self._write_lock:
+            rows = self.conn.execute(
+                """SELECT parsed_dsl_json FROM research_extractions
+                   WHERE status IN ('parsed', 'promoted') AND parsed_dsl_json IS NOT NULL
+                     AND extracted_at >= ?""",
+                (since_iso,),
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+
     def get_extraction(self, extraction_id: int) -> JsonDict | None:
         with self._write_lock:
             row = self.conn.execute(

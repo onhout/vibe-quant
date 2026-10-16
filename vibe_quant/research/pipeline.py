@@ -54,8 +54,8 @@ def _build_source(
     load_builtin_sources()
     cls = get_source(source_name)
     kwargs: dict[str, object] = dict(source_kwargs or {})
-    if source_name == "reddit":
-        saved = sm.get_research_subreddits("reddit")
+    if source_name in ("reddit", "arctic_shift"):
+        saved = sm.get_research_subreddits(source_name)
         if saved and "subreddits" not in kwargs:
             kwargs["subreddits"] = saved
     return cls(**kwargs)  # each source supplies its own env-driven defaults
@@ -267,6 +267,49 @@ def persist_extractions(
     item_statuses = [_ITEM_STATUS_MAP.get(r.status, "failed") for r in results]
     rolled = min(item_statuses, key=lambda s: _ITEM_STATUS_PRIORITY.get(s, 99))
     sm.update_research_item_status(item_id, rolled)
+
+
+class PromoteError(ValueError):
+    """An extraction that can't be promoted (``status_code`` maps to the API's HTTP status)."""
+
+    def __init__(self, message: str, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def promote_extraction(sm: StateManager, extraction_id: int) -> int:
+    """Turn a parsed extraction into a ``strategies`` row; return its id.
+
+    Shared by the API (``POST /api/research/extractions/{id}/promote``) and the
+    research loop.
+    """
+    import json
+
+    ex = sm.get_extraction(extraction_id)
+    if not ex:
+        raise PromoteError(f"extraction {extraction_id} not found", 404)
+    status = ex.get("status")
+    if status == "promoted":
+        raise PromoteError(f"already promoted to strategy_id={ex.get('strategy_id')}")
+    if status == "rejected":
+        raise PromoteError("cannot promote a rejected extraction; re-extract first")
+    if status != "parsed":
+        raise PromoteError(f"cannot promote unparsed extraction (status={status})")
+    parsed_json = ex.get("parsed_dsl_json")
+    if not isinstance(parsed_json, str) or not parsed_json:
+        raise PromoteError("extraction has no parsed_dsl_json")
+    try:
+        dsl_dict = json.loads(parsed_json)
+    except json.JSONDecodeError as e:
+        raise PromoteError(f"corrupt parsed_dsl_json: {e}", 500) from e
+    item = sm.get_research_item(int(ex["research_item_id"]))
+    base_name = (
+        f"{item['source']}_{item['external_id']}" if item else f"research_extraction_{extraction_id}"
+    )
+    name = base_name.lower().replace("-", "_")[:100]
+    strategy_id = sm.create_strategy(name=name, dsl_config=dsl_dict)
+    sm.update_extraction_status(extraction_id, status="promoted", strategy_id=strategy_id)
+    return int(strategy_id)
 
 
 def persist_extraction(sm: StateManager, item_id: int, result: ExtractionResult) -> None:

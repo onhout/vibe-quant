@@ -548,47 +548,13 @@ def cancel_extraction_job(
 
 @router.post("/extractions/{extraction_id}/promote", response_model=PromoteResponse)
 def promote_extraction(extraction_id: int, sm: StateMgr) -> PromoteResponse:
-    ex = sm.get_extraction(extraction_id)
-    if not ex:
-        raise HTTPException(status_code=404, detail=f"extraction {extraction_id} not found")
-
-    status = ex.get("status")
-    if status == "promoted":
-        existing = ex.get("strategy_id")
-        raise HTTPException(
-            status_code=400,
-            detail=f"already promoted to strategy_id={existing}",
-        )
-    if status == "rejected":
-        raise HTTPException(
-            status_code=400,
-            detail="cannot promote a rejected extraction; re-extract first",
-        )
-    if status != "parsed":
-        raise HTTPException(
-            status_code=400,
-            detail=f"cannot promote unparsed extraction (status={status})",
-        )
-
-    parsed_json = ex.get("parsed_dsl_json")
-    if not isinstance(parsed_json, str) or not parsed_json:
-        raise HTTPException(status_code=400, detail="extraction has no parsed_dsl_json")
+    from vibe_quant.research.pipeline import PromoteError
+    from vibe_quant.research.pipeline import promote_extraction as _promote
 
     try:
-        dsl_dict = json.loads(parsed_json)
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"corrupt parsed_dsl_json: {e}") from e
-
-    item = sm.get_research_item(int(ex["research_item_id"]))
-    base_name = (
-        f"{item['source']}_{item['external_id']}"
-        if item
-        else f"research_extraction_{extraction_id}"
-    )
-    name = base_name.lower().replace("-", "_")[:100]
-
-    strategy_id = sm.create_strategy(name=name, dsl_config=dsl_dict)
-    sm.update_extraction_status(extraction_id, status="promoted", strategy_id=strategy_id)
+        strategy_id = _promote(sm, extraction_id)
+    except PromoteError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e)) from e
     return PromoteResponse(strategy_id=strategy_id, extraction_id=extraction_id)
 
 

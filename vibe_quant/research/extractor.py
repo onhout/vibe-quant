@@ -17,6 +17,7 @@ Prompt-injection defenses:
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import hashlib
 import json
@@ -34,6 +35,7 @@ import yaml
 
 from vibe_quant.dsl.indicators import indicator_registry
 from vibe_quant.dsl.parser import DSLParseError, parse_strategy_string
+from vibe_quant.research import openai_chat
 from vibe_quant.research.schema import EvidenceLevel, ExtractionBatch, ExtractionResult
 
 if TYPE_CHECKING:
@@ -122,13 +124,39 @@ def extractor_version() -> str:
     side-by-side analysis. Cached because the prompt is immutable per-process.
     """
     digest = hashlib.sha256(_build_system_prompt().encode("utf-8")).hexdigest()[:12]
-    return f"{LLM_MODEL_LABEL}:{digest}"
+    return f"{_active_model_label()}:{digest}"
 
 
-@functools.lru_cache(maxsize=1)
-def _build_system_prompt() -> str:
-    indicators = ", ".join(indicator_registry.list_indicators())
-    operators = "<, <=, >, >=, ==, !=, between, crosses_above, crosses_below"
+def _active_model_label() -> str:
+    """The model label of the backend ``get_default_extractor`` returns."""
+    if openai_chat.use_openai():
+        try:
+            return openai_chat.config_from_env().label
+        except FileNotFoundError:
+            return LLM_MODEL_LABEL
+    return LLM_MODEL_LABEL
+
+
+# Which market the pipeline trades: "crypto_perps" (default) or "us_stocks"
+# (Alpaca US equities; adds daily bars and stock-specific porting guidance).
+ENV_RESEARCH_MARKET = "VQ_RESEARCH_MARKET"
+
+
+def _market_intro() -> tuple[str, str]:
+    """(market sentence, allowed DSL timeframes) for the configured market."""
+    if os.getenv(ENV_RESEARCH_MARKET, "").strip().lower() == "us_stocks":
+        return (
+            "You are a quantitative research analyst mining retail-trader social "
+            "posts (r/wallstreetbets, r/algotrading and similar) and published "
+            "trading methods for ideas worth backtesting. Every finding you emit "
+            "feeds an automated US-stock pipeline (long/short on the stock itself): "
+            "complete strategies compile and run immediately; captured parameters "
+            "and risk rules seed parameter sweeps; proposed indicators get "
+            "implemented as plugins. Ideas from ANY market qualify — an options "
+            "play (calls/puts, YOLOs) becomes the equivalent long/short stock "
+            "signal on the underlying; note the original instrument in `rationale`.\n\n",
+            '"1h" "4h" "1d"',
+        )
     return (
         "You are a quantitative research analyst mining retail-trader social "
         "posts (r/algotrading and similar) for ideas worth backtesting. Every "
@@ -137,7 +165,36 @@ def _build_system_prompt() -> str:
         "and risk rules seed parameter sweeps; proposed indicators get "
         "implemented as plugins. Ideas from ANY market (stocks, forex, futures, "
         "options, crypto) qualify — we port them to crypto perps; note the "
-        "original market in `rationale` when it differs.\n\n"
+        "original market in `rationale` when it differs.\n\n",
+        '"1m" "5m" "15m" "1h" "4h"',
+    )
+
+
+def _indicator_params_line() -> str:
+    """Per-indicator parameter keys (US-stocks prompt only; the default prompt stays unchanged).
+
+    Unknown parameter keys fail DSL validation closed, so naming the valid keys
+    keeps the model from inventing ones like ``ma_type``.
+    """
+    if os.getenv(ENV_RESEARCH_MARKET, "").strip().lower() != "us_stocks":
+        return ""
+    parts = []
+    for name in indicator_registry.list_indicators():
+        spec = indicator_registry.get(name)
+        keys = sorted(spec.param_schema) if spec is not None else []
+        parts.append(f"{name}({', '.join(keys)})")
+    return (
+        "INDICATOR PARAMETERS — besides `type` and `source`, an indicator may set ONLY "
+        f"these keys: {'; '.join(parts)}.\n"
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _build_system_prompt() -> str:
+    indicators = ", ".join(indicator_registry.list_indicators())
+    operators = "<, <=, >, >=, ==, !=, between, crosses_above, crosses_below"
+    intro, timeframes = _market_intro()
+    return intro + (
         "You have FOUR capture channels. Use every channel that applies to a "
         "finding — a scrap that doesn't form a complete strategy still belongs "
         "in channels 2-4:\n"
@@ -200,7 +257,7 @@ def _build_system_prompt() -> str:
         "entry/exit rules, or you can't be confident. "
         "When extracted=true, dsl MUST follow this shape:\n"
         "  name: snake_case identifier (1-100 chars, [a-z][a-z0-9_]*)\n"
-        '  timeframe: one of "1m" "5m" "15m" "1h" "4h"\n'
+        f"  timeframe: one of {timeframes}\n"
         "  indicators: dict of name -> {type, period?, source?, ...}\n"
         "  entry_conditions: {long: [str, ...], short: [str, ...]}\n"
         "  exit_conditions: {long: [str, ...], short: [str, ...]}\n"
@@ -218,6 +275,7 @@ def _build_system_prompt() -> str:
         '{type:"fixed_pct", percent:2.0} for stop_loss and '
         '{type:"fixed_pct", percent:5.0} for take_profit.\n\n'
         f"REGISTERED INDICATOR TYPES (the dsl field may use ONLY these): {indicators}.\n"
+        f"{_indicator_params_line()}"
         f"ALLOWED OPERATORS in conditions: {operators}.\n"
         "Conditions reference indicators by their dict key, e.g. 'rsi < 30'.\n"
         "CONDITION GRAMMAR (each list entry is ONE comparison; the engine "
@@ -869,12 +927,55 @@ class ClaudePExtractor:
         return _coerce_findings(outer)
 
 
+class OpenAIChatExtractor(ClaudePExtractor):
+    """Same prompt, parsing and DSL validation as :class:`ClaudePExtractor`, but the
+    model is reached through an OpenAI-compatible chat-completions endpoint
+    (``VQ_EXTRACTOR=openai``). Images are sent inline instead of via the Read tool.
+    """
+
+    def __init__(
+        self,
+        config: openai_chat.OpenAIConfig,
+        *,
+        timeout_seconds: int = CLAUDE_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__(timeout_seconds=timeout_seconds, model=config.model)
+        self.config = config
+
+    def extract_all(self, item: RawItem) -> ExtractionBatch:
+        batch = super().extract_all(item)
+        results = [
+            dataclasses.replace(r, llm_model=self.config.label) if r.llm_model else r
+            for r in batch.results
+        ]
+        return dataclasses.replace(batch, results=results)
+
+    def _run_claude(self, prompt: str, *, image_paths: list[str] | None = None) -> str:
+        cancel_event = _thread_cancel_event()
+        if cancel_event is not None and cancel_event.is_set():
+            raise ExtractionCancelled(grace_expired=False)
+        # The Read-tool image section is for claude -p; the images go inline here.
+        prompt = prompt.split("\nATTACHED IMAGES", 1)[0]
+        content = openai_chat.chat_completion(
+            prompt,
+            config=self.config,
+            timeout_seconds=self.timeout_seconds,
+            image_paths=image_paths,
+        )
+        # Same envelope as ``claude -p --output-format json`` so _parse_response unwraps it.
+        return json.dumps({"result": content})
+
+
 def get_default_extractor() -> ClaudePExtractor:
     """Return a configured extractor or raise if the tool is unavailable.
 
+    ``VQ_EXTRACTOR=openai`` selects the OpenAI-compatible endpoint
+    (``VQ_OPENAI_BASE_URL``, ``VQ_OPENAI_MODEL``); otherwise the ``claude`` CLI.
     Probes the CLI up-front so the caller can fall back to ``--no-extract``
     semantics rather than discovering the failure mid-scrape.
     """
+    if openai_chat.use_openai():
+        return OpenAIChatExtractor(openai_chat.config_from_env())
     path = shutil.which(CLAUDE_BIN)
     if path is None:
         raise FileNotFoundError(
