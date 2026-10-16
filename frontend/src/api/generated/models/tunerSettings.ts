@@ -16,5 +16,6 @@ export interface TunerSettings {
   timeframes: string[];
   windows: TunerWindowConfig[];
   queued: number[];
+  initial_balance: number;
   auto_paper: boolean;
 }
