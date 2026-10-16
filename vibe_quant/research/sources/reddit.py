@@ -13,7 +13,7 @@ from __future__ import annotations
 import html
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 from urllib.parse import urlparse
 
@@ -31,6 +31,8 @@ from vibe_quant.research.sources._reddit_challenge import ChallengeClient
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
+    from vibe_quant.research.sources._arctic_shift import ArcticShiftClient
+
 
 class _HttpGetter(Protocol):
     """The subset of ``httpx.Client`` this source relies on."""
@@ -38,6 +40,7 @@ class _HttpGetter(Protocol):
     def get(self, url: str, *, params: Mapping[str, str] | None = None) -> httpx.Response: ...
 
     def close(self) -> None: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,8 @@ MAX_RETRIES = len(RETRY_BACKOFF_S)
 RETRY_AFTER_BUFFER_S = 0.5
 HTTP_TIMEOUT_S = 15.0
 TOP_COMMENT_COUNT = 10
+# How far back the Arctic Shift fallback reads when the scrape has no ``since``.
+ARCHIVE_FALLBACK_WINDOW = timedelta(days=7)
 DELETED_AUTHOR_PLACEHOLDERS = frozenset({"[deleted]", "[removed]"})
 KIND_POST = "t3"
 KIND_COMMENT = "t1"
@@ -78,6 +83,7 @@ class RedditSource:
         listing: str = "new",
         time_filter: str | None = None,
         use_challenge: bool | None = None,
+        archive: ArcticShiftClient | None = None,
     ) -> None:
         if listing not in VALID_LISTINGS:
             raise ValueError(f"listing must be one of {sorted(VALID_LISTINGS)}, got {listing!r}")
@@ -110,9 +116,15 @@ class RedditSource:
                 },
             )
         self._last_request_at: float = 0.0
+        # 403 fallback to the Arctic Shift archive: on for the real client, off when a
+        # client is injected (tests) unless an archive client is injected too.
+        self._archive: ArcticShiftClient | None = archive
+        self._archive_fallback = client is None or archive is not None
 
     def close(self) -> None:
         self._client.close()
+        if self._archive is not None:
+            self._archive.close()
 
     def fetch(self, since: datetime | None, limit: int) -> Iterable[RawItem]:
         """Yield RawItems from each configured subreddit's `/new` listing.
@@ -129,6 +141,19 @@ class RedditSource:
         for subreddit in self._subreddits:
             try:
                 for item in self._fetch_subreddit(subreddit, since_ts, limit):
+                    yielded = True
+                    yield item
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code != 403 or not self._archive_fallback:
+                    logger.warning("subreddit %r failed: %s", subreddit, e)
+                    failures.append((subreddit, e))
+                    continue
+                # Reddit blocks unauthenticated .json (403 since 2026-05): read the
+                # same subreddit's newest posts from the Arctic Shift archive instead.
+                logger.info(
+                    "subreddit %r blocked by Reddit (403); reading it from Arctic Shift", subreddit
+                )
+                for item in self._fetch_archive(subreddit, since, limit):
                     yielded = True
                     yield item
             except httpx.HTTPError as e:
@@ -163,6 +188,49 @@ class RedditSource:
                         return
                     continue
             yield self._to_raw_item(data, subreddit)
+
+    def _fetch_archive(
+        self, subreddit: str, since: datetime | None, limit: int
+    ) -> Iterable[RawItem]:
+        """The subreddit's newest posts (up to ``limit``) from the Arctic Shift archive."""
+        # Imported here: _arctic_shift reuses this module's helpers (circular at import time).
+        from vibe_quant.research.sources._arctic_shift import (
+            PAGE_LIMIT,
+            ArcticShiftClient,
+            is_removed,
+            post_to_raw_item,
+        )
+
+        if self._archive is None:
+            self._archive = ArcticShiftClient()
+        now = datetime.now(tz=UTC)
+        after = since or now - ARCHIVE_FALLBACK_WINDOW
+        posts: list[dict[str, Any]] = []
+        cursor = now
+        while len(posts) < limit:
+            page = self._archive.get(
+                "posts/search",
+                {
+                    "subreddit": subreddit,
+                    "after": after.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "before": cursor.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "limit": str(PAGE_LIMIT),
+                    "sort": "desc",
+                },
+            )
+            posts.extend(p for p in page if not is_removed(p))
+            oldest = min((int(p.get("created_utc") or 0) for p in page), default=0)
+            if len(page) < PAGE_LIMIT or not oldest or oldest >= cursor.timestamp():
+                break
+            cursor = datetime.fromtimestamp(oldest, tz=UTC)
+        for post in posts[:limit]:
+            post_id = str(post.get("id") or "")
+            comments = (
+                self._archive.top_comments(post_id)
+                if post_id and int(post.get("num_comments") or 0)
+                else []
+            )
+            yield post_to_raw_item(post, source="reddit", comments=comments)
 
     def _fetch_listing(self, subreddit: str, limit: int) -> list[dict[str, Any]] | None:
         url = f"{BASE_URL}/r/{subreddit}/{self._listing}.json"
