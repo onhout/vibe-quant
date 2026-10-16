@@ -22,7 +22,7 @@ the existing pipeline unattended, every ``interval_minutes``:
 5. **Trade.** A holdout validation that clears the paper thresholds is queued for
    the regime tuner (``require_regime_pass``): it must make money in bull and bear
    markets first, and the tuner starts the paper session (``POST /api/paper/start``)
-   with the protected sizing caps once it settles. With ``require_regime_pass`` off
+   once it settles. With ``require_regime_pass`` off
    the loop starts the session itself when none is running.
 
 Heavy jobs go through the backend API so they are tracked and visible in the
@@ -107,7 +107,7 @@ class LoopConfig:
     group_size: int = 8
     static_groups: dict[str, list[str]] = field(default_factory=dict)
     idea_lookback_days: int = 30
-    # Paper (protected sizing caps apply to every loop session)
+    # Paper sessions started by the loop
     auto_paper: bool = True
     # A holdout winner must also make money in bear and bull markets: it is queued for the
     # regime tuner (vibe_quant.research.tuner), which starts the paper session once it settles.
@@ -115,7 +115,7 @@ class LoopConfig:
     paper_min_trades: int = 5
     paper_min_profit_factor: float = 1.2
     paper_min_return: float = 0.0
-    paper_max_position_pct: float = 0.5
+    paper_max_position_pct: float = 1.0  # the full account per position (Peter: no 50% cap)
     paper_max_position_count: int = 1
 
     @classmethod

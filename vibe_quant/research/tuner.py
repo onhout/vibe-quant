@@ -17,8 +17,9 @@ Peter's loop (long-only stocks: buy low, sell high; no entry = stay flat):
    ``bull`` stage. ``max_rounds`` attempts per candidate.
 4. **Winning -> widen.** A stage that passes moves the candidate to the next stage.
 5. **Settled.** Passing every stage (with ``min_total_trades`` across them) settles the
-   candidate: an Alpaca PAPER session starts from its bull validation run with the protected
-   sizing caps, when none is running. Never live.
+   candidate: an Alpaca PAPER session starts from its bull validation run, sized like the
+   backtests (``max_position_pct``, the full account by default), when none is running.
+   Never live.
 
 Runs through the backend API (tracked and visible like manual runs); bookkeeping in
 ``data/state/regime_tuner.json``, config overrides in ``data/state/regime_tuner_config.json``.
@@ -117,14 +118,15 @@ class TunerConfig:
     )
     min_total_trades: int = 30
     max_rounds: int = 5
-    # Large enough that every tested stock can be bought within the strategy's position cap
-    # (whole shares at <= position_cap_pct of equity): at $1,000 anything above ~$500 never trades.
+    # Large enough that every tested stock can be bought in whole shares: at $1,000 with the
+    # compiled default sizing anything above ~$500 never traded.
     initial_balance: int = 25_000
-    position_cap_pct: float = 0.5
+    # Position size as a fraction of equity, the same in the backtests and the paper session
+    # (Peter: the full account, no 50% cap).
+    max_position_pct: float = 1.0
     run_timeout_minutes: int = 30
     candidate_ids: list[int] = field(default_factory=list)  # queued first (UI "Tune" button)
     auto_paper: bool = True
-    paper_max_position_pct: float = 0.5
     paper_max_position_count: int = 1
 
     @classmethod
@@ -636,7 +638,7 @@ class RegimeTuner:
             row.update(
                 verdict="invalid",
                 error=f"{', '.join(unaffordable)} cost more than "
-                f"{self.cfg.position_cap_pct:.0%} of ${self.cfg.initial_balance:,}: no share could be bought",
+                f"{self.cfg.max_position_pct:.0%} of ${self.cfg.initial_balance:,}: no share could be bought",
             )
             return row
         body = {
@@ -645,7 +647,10 @@ class RegimeTuner:
             "timeframe": timeframe,
             "start_date": window.start,
             "end_date": window.end,
-            "parameters": {"initial_balance": self.cfg.initial_balance},
+            "parameters": {
+                "initial_balance": self.cfg.initial_balance,
+                "max_position_pct": self.cfg.max_position_pct,
+            },
         }
         for _ in range(120):
             try:
@@ -699,7 +704,7 @@ class RegimeTuner:
 
     def _unaffordable(self, symbols: list[str], window: TunerWindow) -> list[str]:
         """Symbols whose price in the window exceeds what one position may spend."""
-        budget = self.cfg.initial_balance * self.cfg.position_cap_pct
+        budget = self.cfg.initial_balance * self.cfg.max_position_pct
         out = []
         for symbol in symbols:
             try:
@@ -985,7 +990,7 @@ class RegimeTuner:
                 json={
                     "validation_run_id": int(bull["run_id"]),
                     "testnet": True,
-                    "max_position_pct": self.cfg.paper_max_position_pct,
+                    "max_position_pct": self.cfg.max_position_pct,
                     "max_position_count": self.cfg.paper_max_position_count,
                 },
             )
