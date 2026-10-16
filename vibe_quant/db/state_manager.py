@@ -1661,6 +1661,62 @@ class StateManager:
             ).fetchone()
         return dict(row) if row else None
 
+    def find_research_item(self, *, external_id: str, sources: Iterable[str]) -> JsonDict | None:
+        """The oldest item with this external id under any of ``sources`` (e.g. one Reddit post
+        stored by reddit / arctic_shift / wsb_archive)."""
+        source_list = list(sources)
+        placeholders = ",".join("?" for _ in source_list)
+        with self._write_lock:
+            row = self.conn.execute(
+                f"SELECT * FROM research_items WHERE external_id = ? AND source IN ({placeholders})"
+                " ORDER BY id LIMIT 1",
+                (external_id, *source_list),
+            ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["extras"] = json.loads(d["extras_json"]) if d.get("extras_json") else {}
+        return d
+
+    def research_item_with_url(self, *, source: str, url: str) -> int | None:
+        """Id of the source's item stored under this link, if any."""
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT id FROM research_items WHERE source = ? AND url = ? ORDER BY id LIMIT 1",
+                (source, url),
+            ).fetchone()
+        return int(row["id"]) if row else None
+
+    def list_research_external_ids(self, sources: Iterable[str]) -> set[str]:
+        """External ids stored under any of ``sources``."""
+        source_list = list(sources)
+        placeholders = ",".join("?" for _ in source_list)
+        with self._write_lock:
+            rows = self.conn.execute(
+                f"SELECT external_id FROM research_items WHERE source IN ({placeholders})",
+                source_list,
+            ).fetchall()
+        return {str(r["external_id"]) for r in rows}
+
+    def merge_research_item(self, item_id: int, *, score: int | None, extras: JsonDict) -> None:
+        """Refresh a stored item from a newer copy of the same post (score, extras)."""
+        with self._write_lock:
+            self.conn.execute(
+                "UPDATE research_items SET score = COALESCE(?, score), extras_json = ? WHERE id = ?",
+                (score, json.dumps(extras), item_id),
+            )
+            self.conn.commit()
+
+    def last_completed_scrape_start(self, source: str) -> str | None:
+        """``started_at`` of the source's latest completed scrape run (UTC, SQLite format)."""
+        with self._write_lock:
+            row = self.conn.execute(
+                "SELECT started_at FROM research_scrape_runs WHERE source = ? AND status = 'completed'"
+                " ORDER BY id DESC LIMIT 1",
+                (source,),
+            ).fetchone()
+        return str(row["started_at"]) if row and row["started_at"] else None
+
     def latest_scrape_run(self, source: str) -> JsonDict | None:
         with self._write_lock:
             row = self.conn.execute(

@@ -3,10 +3,14 @@
 One long-running process (``python -m vibe_quant.research loop``) that drives
 the existing pipeline unattended, every ``interval_minutes``:
 
-1. **Ideas.** Each due source (default: ``arctic_shift`` WallStreetBets plays,
-   ``wsb_archive`` backfill, weekly ``trader_methods``) is scraped through
-   :func:`run_scrape` with the default extractor, so every new item is
-   extracted, DSL-validated and auto-screened exactly as a manual scrape.
+1. **Ideas.** Each due source is scraped through :func:`run_scrape` with the
+   default extractor, so every new item is tagged, extracted, DSL-validated and
+   auto-screened exactly as a manual scrape. Default schedule: ``reddit`` (the
+   saved subreddits' new posts since the last run) and ``news`` (market and
+   company headlines, 8-K filings, upcoming earnings) every cycle, the
+   ``wsb_archive`` backfill every cycle, ``arctic_shift`` settled high-score
+   posts daily, ``trader_methods`` weekly. A post seen by several Reddit
+   sources is one item.
 2. **Promote ideas.** Parsed extractions whose auto-screen clears the promote
    thresholds become strategies (:func:`promote_extraction`), and their
    indicators steer the next discovery runs' indicator pool — Reddit decides
@@ -64,17 +68,25 @@ CONFIG_PATH = STATE_DIR / "research_loop_config.json"
 ENV_API_URL = "VQ_API_URL"
 
 
+# Re-read this much before the last run's start: archives index posts and articles late.
+SINCE_OVERLAP = timedelta(hours=3)
+
+
 @dataclass
 class SourceSchedule:
     name: str
     limit: int
     every_cycles: int = 1
+    # Only what appeared since the source's last completed run (minus SINCE_OVERLAP).
+    since_last_run: bool = False
 
 
 def _default_sources() -> list[SourceSchedule]:
     return [
-        SourceSchedule("arctic_shift", 25),
-        SourceSchedule("wsb_archive", 25),
+        SourceSchedule("reddit", 15, since_last_run=True),  # per subreddit
+        SourceSchedule("news", 150, since_last_run=True),
+        SourceSchedule("wsb_archive", 10),
+        SourceSchedule("arctic_shift", 10, every_cycles=24),  # per subreddit
         SourceSchedule("trader_methods", 10, every_cycles=168),
     ]
 
@@ -285,15 +297,25 @@ class ResearchLoop:
                 logger.info("research loop (dry run): would scrape %s limit=%d", spec.name, spec.limit)
                 continue
             try:
-                summary = run_scrape(sm=self.sm, source_name=spec.name, limit=spec.limit, extract_fn=extractor)
+                since = self._since_last_run(spec.name) if spec.since_last_run else None
+                summary = run_scrape(
+                    sm=self.sm, source_name=spec.name, limit=spec.limit, extract_fn=extractor, since=since
+                )
                 logger.info(
-                    "research loop: %s fetched=%d new=%d extracted=%d failed=%d status=%s",
-                    spec.name, summary.items_fetched, summary.items_new, summary.items_extracted,
-                    summary.items_failed, summary.status,
+                    "research loop: %s fetched=%d new=%d duplicate=%d extracted=%d skipped=%d failed=%d status=%s",
+                    spec.name, summary.items_fetched, summary.items_new,
+                    summary.items_fetched - summary.items_new, summary.items_extracted,
+                    summary.items_skipped, summary.items_failed, summary.status,
                 )
             except Exception:  # noqa: BLE001 — one bad source never stops the loop
                 logger.exception("research loop: source %s failed", spec.name)
             self.state.last_source_cycle[spec.name] = self.state.cycle
+
+    def _since_last_run(self, source: str) -> datetime | None:
+        started = self.sm.last_completed_scrape_start(source)
+        if not started:
+            return None
+        return datetime.fromisoformat(started).replace(tzinfo=UTC) - SINCE_OVERLAP
 
     # -- stage 2: promote ideas --------------------------------------------------------------------
 

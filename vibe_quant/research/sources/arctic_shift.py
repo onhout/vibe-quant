@@ -44,7 +44,7 @@ def subreddits_from_env() -> list[str]:
     raw = os.getenv(ENV_SUBREDDITS, "").strip()
     if not raw:
         return list(DEFAULT_SUBREDDITS)
-    return [s.strip() for s in raw.split(",") if s.strip()]
+    return [s.strip().lower() for s in raw.split(",") if s.strip()]
 
 
 @register_source("arctic_shift")

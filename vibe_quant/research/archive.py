@@ -17,6 +17,35 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+# Sources that store Reddit posts under the Reddit post id: one research item per post.
+REDDIT_SOURCES: frozenset[str] = frozenset({"reddit", "arctic_shift", "wsb_archive"})
+# Sources whose link identifies the story: a link already stored is a duplicate.
+URL_KEYED_SOURCES: frozenset[str] = frozenset({"news"})
+
+
+def _merged_extras(old: dict[str, Any], new: dict[str, Any], new_source: str) -> dict[str, Any]:
+    """Keep the stored post, refreshed with a newer copy's counts, comments and images."""
+    merged = dict(old)
+    for key in ("num_comments",):
+        values = [v for v in (old.get(key), new.get(key)) if isinstance(v, int)]
+        if values:
+            merged[key] = max(values)
+    if len(new.get("comments") or []) >= len(old.get("comments") or []) and new.get("comments"):
+        merged["comments"] = new["comments"]
+    for key in ("image_urls", "image_paths"):
+        combined = list(old.get(key) or [])
+        combined += [x for x in new.get(key) or [] if x not in combined]
+        if combined:
+            merged[key] = combined
+    for key in ("flair", "subreddit"):
+        if not merged.get(key) and new.get(key):
+            merged[key] = new[key]
+    seen = set(merged.get("seen_via") or [])
+    seen.add(new_source)
+    merged["seen_via"] = sorted(seen)
+    return merged
+
+
 def archive_item(
     sm: StateManager,
     item: RawItem,
@@ -25,8 +54,30 @@ def archive_item(
 
     If `(source, external_id)` already exists, returns `(False, None)` rather
     than raising — pipelines can use the boolean to decide whether to spawn
-    extraction.
+    extraction. A Reddit post already stored by any Reddit source (same post
+    id) is not stored again: the stored item gets the newer score, comment
+    count, comments and images instead. A news link already stored is a
+    duplicate even under another headline.
     """
+    if item.source in URL_KEYED_SOURCES and sm.research_item_with_url(
+        source=item.source, url=item.url
+    ):
+        return False, None
+    if item.source in REDDIT_SOURCES and item.external_id:
+        existing = sm.find_research_item(external_id=item.external_id, sources=REDDIT_SOURCES)
+        if existing is not None:
+            old_score = existing.get("score")
+            score = (
+                max(s for s in (old_score, item.score) if s is not None)
+                if (old_score is not None or item.score is not None)
+                else None
+            )
+            sm.merge_research_item(
+                int(existing["id"]),
+                score=score,
+                extras=_merged_extras(existing.get("extras") or {}, item.extras or {}, item.source),
+            )
+            return False, None
     posted_at_str = item.posted_at.isoformat() if item.posted_at is not None else None
     try:
         item_id = sm.create_research_item(

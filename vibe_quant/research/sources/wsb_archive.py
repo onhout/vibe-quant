@@ -53,8 +53,10 @@ class WsbArchiveSource:
         flairs: tuple[str, ...] | None = None,
         min_score: int = DEFAULT_MIN_SCORE,
         client: ArcticShiftClient | None = None,
+        exclude_ids: set[str] | frozenset[str] | None = None,
     ) -> None:
         self._db_path = db_path or archive_path()
+        self._exclude_ids = frozenset(exclude_ids or ())
         if not self._db_path.exists():
             raise FileNotFoundError(f"WallStreetBets archive not found: {self._db_path}")
         self._flairs = flairs or DEFAULT_FLAIRS["wallstreetbets"]
@@ -69,20 +71,25 @@ class WsbArchiveSource:
         query = (
             f"SELECT id FROM posts WHERE flair IN ({marks}) AND score >= ?"  # noqa: S608 (placeholders only)
             + (" AND created_utc >= ?" if since is not None else "")
-            + " ORDER BY score DESC LIMIT ?"
+            + " ORDER BY score DESC"
         )
         args: list[object] = [*self._flairs, self._min_score]
         if since is not None:
             args.append(int(since.timestamp()))
-        args.append(limit)
         db = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True, timeout=30)
         try:
-            return [str(r[0]) for r in db.execute(query, args)]
+            ids: list[str] = []
+            for (post_id,) in db.execute(query, args):
+                if str(post_id) not in self._exclude_ids:
+                    ids.append(str(post_id))
+                    if len(ids) >= limit:
+                        break
+            return ids
         finally:
             db.close()
 
     def fetch(self, since: datetime | None, limit: int) -> Iterable[RawItem]:
-        """Yield up to ``limit`` posts, highest score first (the pipeline skips already archived ones)."""
+        """Yield up to ``limit`` posts, highest score first, skipping ``exclude_ids`` (already stored)."""
         ids = self._post_ids(since, limit)
         posts = {str(p.get("id")): p for p in self._client.posts_by_id(ids)}
         yielded = 0

@@ -67,6 +67,7 @@ export function ResearchPage() {
 
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as {
+    source?: string;
     sort?: string;
     hide_low_trade?: boolean;
     q?: string;
@@ -79,6 +80,9 @@ export function ResearchPage() {
   useEffect(() => {
     if (hydratedRef.current) return;
     hydratedRef.current = true;
+    if (typeof search.source === "string" && search.source.length > 0) {
+      setSource(search.source);
+    }
     if (search.sort && (VALID_SORTS as string[]).includes(search.sort)) {
       setSort(search.sort as ResearchSort);
     }
@@ -88,18 +92,24 @@ export function ResearchPage() {
     if (typeof search.q === "string" && search.q.length > 0) {
       setQ(search.q);
     }
-    if (typeof search.market === "string" && MARKET_ORDER.includes(search.market)) {
-      setMarket(search.market);
-    }
-    if (typeof search.ticker === "string" && search.ticker.length > 0) {
-      setTicker(search.ticker);
+    // A link with a market or ticker filter sets both (no stale remembered filter on top).
+    const urlMarket =
+      typeof search.market === "string" && MARKET_ORDER.includes(search.market)
+        ? search.market
+        : "";
+    const urlTicker = typeof search.ticker === "string" ? search.ticker : "";
+    if (urlMarket || urlTicker) {
+      setMarket(urlMarket);
+      setTicker(urlTicker);
     }
   }, [
+    search.source,
     search.sort,
     search.hide_low_trade,
     search.q,
     search.market,
     search.ticker,
+    setSource,
     setSort,
     setHideLowTrade,
     setQ,
@@ -114,6 +124,7 @@ export function ResearchPage() {
       to: "/research",
       search: (prev) => ({
         ...prev,
+        source: source === "reddit" ? undefined : source,
         sort: sort === "newest_scraped" ? undefined : sort,
         hide_low_trade: hideLowTrade ? true : undefined,
         q: q ? q : undefined,
@@ -122,7 +133,7 @@ export function ResearchPage() {
       }),
       replace: true,
     });
-  }, [sort, hideLowTrade, q, market, ticker, navigate]);
+  }, [source, sort, hideLowTrade, q, market, ticker, navigate]);
 
   const { data: facetsData } = useGetTagFacetsApiResearchTagsFacetsGet({ source });
   const facets = facetsData && facetsData.status === 200 ? facetsData.data : null;

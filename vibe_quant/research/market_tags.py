@@ -441,6 +441,10 @@ def prepass(item: RawItem | dict[str, Any], universe: Universe) -> MarketTags:
         if symbol not in tickers:
             tickers.append(symbol)
 
+    # The source's own subject tickers first (news query ticker, SEC filer, earnings company).
+    for hint in extras.get("tickers") or []:
+        if universe.is_real(str(hint).upper()) or not universe.equities:
+            add(str(hint))
     for tag in _CASHTAG.findall(text):
         if universe.is_real(tag.upper()) or not universe.equities:
             add(tag)
@@ -476,11 +480,12 @@ def prepass(item: RawItem | dict[str, Any], universe: Universe) -> MarketTags:
 
 # -- model ---------------------------------------------------------------------------------------
 
-_PROMPT = """You tag one trading post with the markets it involves. Reply with ONLY a JSON object:
+_PROMPT = """You tag one trading post or market news item with the markets it involves. Reply with ONLY a JSON object:
 {{"markets": [...], "tickers": [...], "primary_ticker": "XYZ" or null, "direction": "bullish" | "bearish" | "neutral" | "mixed" | null}}
 
 markets: every asset class the post trades or discusses concretely, chosen from
-  us_stocks (individual US stocks), options (any options trade or options talk), crypto,
+  us_stocks (individual US-listed stocks; a stock listed only abroad, e.g. in Tokyo, London or
+  Milan, is not), options (any options trade or options talk), crypto,
   futures (ES/NQ/CL/... contracts), forex (currency pairs, spot gold XAUUSD),
   etf_index (SPY/QQQ/IWM and other ETFs, the S&P 500 / Nasdaq / VIX indexes), macro (Fed, rates,
   yields, inflation, jobs, tariffs, the economy).
@@ -497,7 +502,7 @@ direction: the author's stance on the primary ticker or market: bullish / bearis
   (long/short, calls/puts). Methodology, backtesting, tooling, questions and education posts -> null.
 
 Keyword scan hints (may be incomplete or wrong): markets={hint_markets} tickers={hint_tickers}
-Subreddit: {subreddit}   Flair: {flair}{image_note}
+Source: {where}   Flair: {flair}{image_note}
 Title: {title}
 Post:
 {body}
@@ -535,7 +540,13 @@ def classify(item: RawItem | dict[str, Any], hints: MarketTags, universe: Univer
         ),
         hint_markets=hints.markets,
         hint_tickers=hints.tickers,
-        subreddit=extras.get("subreddit") or "-",
+        where=(
+            f"r/{extras['subreddit']}"
+            if extras.get("subreddit")
+            else f"news ({extras['publisher']})"
+            if extras.get("publisher")
+            else "-"
+        ),
         flair=extras.get("flair") or "-",
         title=title[:300],
         body=body[:2500] or "(no text)",
@@ -571,6 +582,12 @@ def classify(item: RawItem | dict[str, Any], hints: MarketTags, universe: Univer
             and symbol not in tickers
         ):
             tickers.append(symbol)
+    # A filing's or earnings date's company is certain: it stays even if the model left it out.
+    if extras.get("kind") in ("sec_filing", "earnings"):
+        for symbol in extras.get("tickers") or []:
+            symbol = str(symbol).upper()
+            if symbol in known and symbol not in tickers:
+                tickers.insert(0, symbol)
     # Explicit cashtags stay even if the model left them out.
     title_body = f"{title}\n{body[:6000]}"
     for tag in _CASHTAG.findall(title_body):

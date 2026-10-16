@@ -21,6 +21,11 @@ function getNumComments(extras: { [k: string]: unknown } | null | undefined): nu
   return typeof n === "number" ? n : null;
 }
 
+function getPublisher(extras: { [k: string]: unknown } | null | undefined): string | null {
+  const p = extras?.publisher;
+  return typeof p === "string" && p ? p : null;
+}
+
 interface Props {
   item: ResearchItemResponse;
 }
@@ -28,6 +33,8 @@ interface Props {
 function ItemRowImpl({ item }: Props) {
   const confidence = getConfidence(item.extras);
   const numComments = getNumComments(item.extras);
+  // News rows name their publisher (list rows carry no extras; the author is the publisher).
+  const publisher = getPublisher(item.extras) ?? (item.source === "news" ? item.author : null);
   const setMarket = useResearchStore((s) => s.setMarket);
   const setTicker = useResearchStore((s) => s.setTicker);
   const showConfidence =
@@ -60,6 +67,14 @@ function ItemRowImpl({ item }: Props) {
         <Badge variant="outline" className="font-mono text-[10px] text-muted-foreground">
           {item.source}
         </Badge>
+        {publisher && (
+          <div
+            className="mt-0.5 max-w-[8rem] truncate text-[10px] text-muted-foreground"
+            title={publisher}
+          >
+            {publisher}
+          </div>
+        )}
       </TableCell>
       <TableCell className="text-right font-mono text-xs tabular-nums text-muted-foreground">
         {item.score ?? "—"}

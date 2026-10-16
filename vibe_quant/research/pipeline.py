@@ -15,14 +15,16 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from vibe_quant.research.archive import archive_item
+from vibe_quant.research.archive import REDDIT_SOURCES, archive_item
 from vibe_quant.research.extraction_log import log_dir_for_scrape, write_extraction_log
 from vibe_quant.research.extractor import extractor_version
 from vibe_quant.research.image_archive import archive_item_images
 from vibe_quant.research.sources import get_source, load_builtin_sources
+from vibe_quant.research.sources.arctic_shift import ENV_SUBREDDITS as ARCTIC_ENV_SUBREDDITS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import datetime
 
     from vibe_quant.db.state_manager import StateManager
     from vibe_quant.research.market_tags import MarketTagger
@@ -57,8 +59,18 @@ def _build_source(
     kwargs: dict[str, object] = dict(source_kwargs or {})
     if source_name in ("reddit", "arctic_shift"):
         saved = sm.get_research_subreddits(source_name)
+        if not saved and source_name == "arctic_shift" and not os.getenv(ARCTIC_ENV_SUBREDDITS):
+            # Same subreddits as the reddit source unless arctic_shift has its own list.
+            saved = sm.get_research_subreddits("reddit")
         if saved and "subreddits" not in kwargs:
-            kwargs["subreddits"] = saved
+            kwargs["subreddits"] = [s.lower() for s in saved]
+    elif source_name == "news" and "tickers" not in kwargs:
+        from vibe_quant.research.sources.news import watch_tickers
+
+        kwargs["tickers"] = watch_tickers(sm)
+    elif source_name == "wsb_archive" and "exclude_ids" not in kwargs:
+        # A backfill: skip posts any Reddit source already stored, so each run adds new ones.
+        kwargs["exclude_ids"] = sm.list_research_external_ids(REDDIT_SOURCES)
     return cls(**kwargs)  # each source supplies its own env-driven defaults
 
 
@@ -121,6 +133,7 @@ def run_scrape(
     extract_fn: ExtractFn | None = None,
     scrape_run_id: int | None = None,
     source_kwargs: dict[str, object] | None = None,
+    since: datetime | None = None,
 ) -> ScrapeSummary:
     """Run one scrape pass and return a summary.
 
@@ -188,7 +201,9 @@ def run_scrape(
     tagger = _market_tagger(sm)
 
     try:
-        for item in source.fetch(since=None, limit=limit):  # type: ignore[attr-defined]
+        # A source may opt items out of the extraction call (e.g. news without rules).
+        wants_extraction = getattr(source, "wants_extraction", None)
+        for item in source.fetch(since=since, limit=limit):  # type: ignore[attr-defined]
             if kill_flag.is_set():
                 final_status = "killed"
                 break
@@ -219,6 +234,10 @@ def run_scrape(
                         tagger.tag(item_id, item)
                     except Exception:  # noqa: BLE001
                         logger.exception("market tagging failed for item_id=%s", item_id)
+                if item_id is not None and callable(wants_extraction) and not wants_extraction(item):
+                    sm.update_research_item_status(item_id, "skipped")
+                    skipped += 1
+                    continue
                 if extract_fn is not None and item_id is not None:
                     try:
                         batch: ExtractionBatch = extract_fn(item, item_id)
