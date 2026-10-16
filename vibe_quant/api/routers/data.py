@@ -463,6 +463,7 @@ def data_quality(symbol: str) -> DataQualityResponse:
     """Verify the archived 1m klines: exact 1-minute continuity, OHLC sanity,
     flat zero-volume filler runs. Sync endpoint (threadpool): it streams ~1M rows.
     """
+    from vibe_quant.data.catalog import is_equity_symbol
     from vibe_quant.data.verify import scan_klines
 
     archive = _get_archive()
@@ -473,7 +474,7 @@ def data_quality(symbol: str) -> DataQualityResponse:
             (symbol,),
         )
         cursor.row_factory = sqlite3.Row
-        result = scan_klines(cursor)
+        result = scan_klines(cursor, session_gaps_only=is_equity_symbol(symbol))
     finally:
         archive.close()
 

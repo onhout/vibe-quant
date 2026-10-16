@@ -8,6 +8,7 @@ import {
   getGetRunSummaryApiResultsRunsRunIdGetQueryKey,
   getGetSweepsApiResultsRunsRunIdSweepsGetQueryKey,
   getGetTradesApiResultsRunsRunIdTradesGetQueryKey,
+  useGetRunMetaApiResultsRunsRunIdMetaGet,
   useGetSweepsApiResultsRunsRunIdSweepsGet,
   useListRunsApiResultsRunsGet,
 } from "@/api/generated/results/results";
@@ -33,6 +34,7 @@ import { TradeLog } from "@/components/results/TradeLog";
 import { WinLossPanel } from "@/components/results/WinLossPanel";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { isStockRun } from "@/lib/venue";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -103,6 +105,9 @@ interface ResultsDetailPageProps {
 export function ResultsDetailPage({ runId }: ResultsDetailPageProps) {
   const hasSweeps = useSweepAvailable(runId);
   useRunPolling(runId);
+  // Funding/perpetual analytics don't apply to Alpaca stock runs.
+  const metaQuery = useGetRunMetaApiResultsRunsRunIdMetaGet(runId);
+  const stocks = metaQuery.data?.status === 200 && isStockRun(metaQuery.data.data.symbols);
   const [hoveredTradeId, setHoveredTradeId] = useState<number | null>(null);
   const [pinnedTradeId, setPinnedTradeId] = useState<number | null>(null);
   const highlightedTradeId = pinnedTradeId ?? hoveredTradeId;
@@ -162,7 +167,7 @@ export function ResultsDetailPage({ runId }: ResultsDetailPageProps) {
       <WinLossPanel runId={runId} />
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <FuturesAnalytics runId={runId} />
+        {!stocks && <FuturesAnalytics runId={runId} />}
         <LongShortSplit runId={runId} />
       </div>
 
