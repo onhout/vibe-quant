@@ -79,6 +79,15 @@ class ArxivSource:
 - Duplicate `register_source(name=...)` raises `ValueError` at import time.
 - A class without a `fetch` method raises `TypeError` at registration time.
 
+## Built-in sources
+
+| Name             | What it reads |
+|------------------|---------------|
+| `reddit`         | Live `r/<sub>/new.json` listings (403 without OAuth since 2026-05). |
+| `arctic_shift`   | Reddit via the Arctic Shift archive: posts of the last `window_days` older than `settle_days` (scores settled), above `min_score`, WallStreetBets limited to its play flairs (DD, YOLO, Gain, Loss, Technical Analysis), with top comments and images. `VQ_ARCTIC_SUBREDDITS`. |
+| `wsb_archive`    | Backfill: the best-scored play posts in the local WallStreetBets title archive (`VQ_WSB_ARCHIVE_DB`), hydrated through Arctic Shift. Also provides `mention_counts()` for the research loop's ticker groups. |
+| `trader_methods` | Model-written rule summaries of well-known traders' methods (`VQ_TRADER_METHODS`), extracted like any post (`extras.model_written`). |
+
 ## Local test loop
 
 ```bash

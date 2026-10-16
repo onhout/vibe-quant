@@ -51,6 +51,21 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("sources", help="List registered sources")
 
+    loop = sub.add_parser(
+        "loop",
+        help="Run the autonomous research loop (sources -> extraction -> discovery -> gates -> paper)",
+    )
+    loop.add_argument("--once", action="store_true", help="Run one cycle and exit")
+    loop.add_argument("--dry-run", action="store_true", help="Log what each stage would do; change nothing")
+    loop.add_argument("--config", type=Path, default=None, help="Loop config JSON (default data/state/research_loop_config.json)")
+    loop.add_argument("--interval-min", type=int, default=None, help="Minutes between cycles (overrides config)")
+    loop.add_argument("--db-path", type=Path, default=None, help="Override SQLite path")
+    loop.add_argument("--log-level", default="INFO")
+
+    groups = sub.add_parser("groups", help="Print the research loop's ticker groups for a timeframe")
+    groups.add_argument("--timeframe", default="1d")
+    groups.add_argument("--config", type=Path, default=None)
+
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -65,6 +80,27 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "sources":
         for n in list_sources():
             print(n)
+        return 0
+
+    if args.cmd in ("loop", "groups"):
+        from vibe_quant.research.loop import CONFIG_PATH, LoopConfig, ResearchLoop, ticker_groups
+
+        cfg = LoopConfig.load(args.config or CONFIG_PATH)
+        if args.cmd == "groups":
+            for name, members in sorted(ticker_groups(cfg, args.timeframe).items()):
+                print(f"{name}: {', '.join(members)}")
+            return 0
+        if args.interval_min is not None:
+            cfg.interval_minutes = args.interval_min
+        sm = StateManager(args.db_path)
+        try:
+            research_loop = ResearchLoop(sm, cfg, dry_run=args.dry_run)
+            if args.once or args.dry_run:
+                research_loop.cycle()
+            else:
+                research_loop.run_forever()
+        finally:
+            sm.close()
         return 0
 
     if args.cmd == "scrape":

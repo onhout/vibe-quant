@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import signal
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -31,6 +32,26 @@ DEFAULT_LOOKBACK_DAYS: int = 180
 DEFAULT_TIMEFRAME: str = "1h"
 DEFAULT_TIMEOUT_SECONDS: int = 300
 
+# Deployment overrides (the defaults above apply when unset): the research loop
+# screens on the market it trades, e.g. VQ_AUTO_SCREEN_SYMBOLS=SPY,NVDA,TSLA.
+ENV_SYMBOLS = "VQ_AUTO_SCREEN_SYMBOLS"
+ENV_LOOKBACK_DAYS = "VQ_AUTO_SCREEN_LOOKBACK_DAYS"
+
+
+def screen_symbols() -> list[str]:
+    raw = os.getenv(ENV_SYMBOLS, "").strip()
+    symbols = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    return symbols or list(DEFAULT_SYMBOLS)
+
+
+def screen_lookback_days() -> int:
+    raw = os.getenv(ENV_LOOKBACK_DAYS, "").strip()
+    try:
+        days = int(raw) if raw else DEFAULT_LOOKBACK_DAYS
+    except ValueError:
+        days = DEFAULT_LOOKBACK_DAYS
+    return days if days > 0 else DEFAULT_LOOKBACK_DAYS
+
 
 class _ScreenTimeout(Exception):
     """Raised when a single screening run exceeds DEFAULT_TIMEOUT_SECONDS."""
@@ -49,14 +70,14 @@ def _default_window(timeframe: str) -> tuple[str, str] | None:
         from vibe_quant.data.catalog import DEFAULT_CATALOG_PATH, CatalogManager
 
         date_range = CatalogManager(DEFAULT_CATALOG_PATH).get_bar_date_range(
-            DEFAULT_SYMBOLS[0], timeframe
+            screen_symbols()[0], timeframe
         )
         if date_range is None:
             return None
         end = min(today, date_range[1].date())
     except Exception:  # noqa: BLE001 — clamping is best-effort
         logger.warning("auto_screen: could not read catalog coverage, using today")
-    start = end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
+    start = end - timedelta(days=screen_lookback_days())
     return start.isoformat(), end.isoformat()
 
 
@@ -98,7 +119,7 @@ def auto_screen_extraction(
 
     window = _default_window(timeframe)
     if window is None:
-        msg = f"no {timeframe} catalog data for {DEFAULT_SYMBOLS[0]}"
+        msg = f"no {timeframe} catalog data for {screen_symbols()[0]}"
         logger.warning("auto_screen: %s (extraction %s)", msg, extraction_id)
         sm.update_extraction_screen_results(
             extraction_id,
@@ -114,7 +135,7 @@ def auto_screen_extraction(
     run_id = sm.create_backtest_run(
         strategy_id=None,
         run_mode="screening",
-        symbols=DEFAULT_SYMBOLS,
+        symbols=screen_symbols(),
         timeframe=timeframe,
         start_date=start_date,
         end_date=end_date,
@@ -199,12 +220,13 @@ def _run_single_metrics(
     from vibe_quant.screening.nt_runner import NTScreeningRunner
     from vibe_quant.screening.pipeline import resolve_parent_fill_ticks
 
+    symbols = screen_symbols()
     runner = NTScreeningRunner(
         dsl_dict=dsl_dict,
-        symbols=DEFAULT_SYMBOLS,
+        symbols=symbols,
         start_date=start_date,
         end_date=end_date,
-        fill_ticks=resolve_parent_fill_ticks(dsl_dict, DEFAULT_SYMBOLS, start_date, end_date),
+        fill_ticks=resolve_parent_fill_ticks(dsl_dict, symbols, start_date, end_date),
         # Auto-screen is always mode off and carries no liquidation run params
         # (E13): pass it explicitly, and never import the liquidation package.
         liquidation_mode="off",

@@ -428,6 +428,29 @@ def _run_claude_codegen(
     return _strip_code_fence(result).strip()
 
 
+def _run_openai_codegen(
+    prompt: str, *, timeout_seconds: int = CODEGEN_TIMEOUT_SECONDS
+) -> str:
+    """``_run_claude_codegen`` through the OpenAI-compatible endpoint (``VQ_EXTRACTOR=openai``)."""
+    from vibe_quant.research import openai_chat
+
+    try:
+        config = openai_chat.config_from_env()
+    except FileNotFoundError as e:
+        raise CodegenError("codegen_unavailable", str(e)) from e
+    try:
+        result = openai_chat.chat_completion(prompt, config=config, timeout_seconds=timeout_seconds)
+    except openai_chat.ChatCompletionError as e:
+        raise CodegenError("openai_error", str(e)) from e
+    return _strip_code_fence(result).strip()
+
+
+def _default_codegen_runner() -> Any:
+    from vibe_quant.research import openai_chat
+
+    return _run_openai_codegen if openai_chat.use_openai() else _run_claude_codegen
+
+
 def _strip_code_fence(text: str) -> str:
     """Remove a leading ```python``` fence if the model emitted one anyway."""
     s = text.strip()
@@ -712,7 +735,7 @@ def synthesize_and_write(
     """
     fn_name = f"compute_{spec.name.lower()}"
     prompt = _build_codegen_prompt(spec, formula, source_quote)
-    call = runner if runner is not None else _run_claude_codegen
+    call = runner if runner is not None else _default_codegen_runner()
     body = call(prompt)
     if not isinstance(body, str) or not body.strip():
         raise CodegenError("empty_body", "runner returned empty string")
